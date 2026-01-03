@@ -18,6 +18,7 @@ fn _kafpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_class::<KafkaMessage>()?;
     m.add_class::<PyConsumer>()?;
+    m.add_class::<config::KafkaConfig>()?;
     m.add_class::<config::AppConfig>()?;
     Ok(())
 }
