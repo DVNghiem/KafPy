@@ -46,8 +46,15 @@ jobs:
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
           before-script-linux: |
-            apt-get update
-            apt-get install -y clang cmake llvm llvm-dev clang-dev build-essential librdkafka-dev
+            if command -v apk &> /dev/null; then
+              apk add --no-cache clang cmake llvm-dev build-base librdkafka-dev || \
+              apk add --no-cache clang cmake llvm-dev build-base
+            elif command -v yum &> /dev/null; then
+              yum install -y clang cmake llvm llvm-devel clang-devel gcc gcc-c++ make librdkafka-devel
+            elif command -v apt-get &> /dev/null; then
+              apt-get update
+              apt-get install -y clang cmake llvm llvm-dev build-essential librdkafka-dev
+            fi
   musllinux:
     runs-on: ${{ matrix.platform.runner }}
     strategy:
@@ -74,53 +81,59 @@ jobs:
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
           before-script-linux: |
-            apt-get update
-            apt-get install -y clang cmake llvm llvm-dev clang-dev build-essential librdkafka-dev
+            if command -v apk &> /dev/null; then
+              apk add --no-cache clang cmake llvm-dev build-base librdkafka-dev || \
+              apk add --no-cache clang cmake llvm-dev build-base
+            elif command -v yum &> /dev/null; then
+              yum install -y clang cmake llvm llvm-devel clang-devel gcc gcc-c++ make librdkafka-devel
+            elif command -v apt-get &> /dev/null; then
+              apt-get update
+              apt-get install -y clang cmake llvm llvm-dev build-essential librdkafka-dev
+            fi
+  # windows:
+  #   runs-on: ${{ matrix.platform.runner }}
+  #   strategy:
+  #     matrix:
+  #       platform:
+  #         - runner: windows-latest
+  #           target: x64
+  #         # - runner: windows-latest
+  #         #   target: x86
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: 3.x
+  #         architecture: ${{ matrix.platform.target }}
+  #     - name: Build wheels
+  #       uses: PyO3/maturin-action@v1
+  #       with:
+  #         target: ${{ matrix.platform.target }}
+  #         args: --release --out dist --find-interpreter
+  #         sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
-  windows:
-    runs-on: ${{ matrix.platform.runner }}
-    strategy:
-      matrix:
-        platform:
-          - runner: windows-latest
-            target: x64
-          # - runner: windows-latest
-          #   target: x86
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: 3.x
-          architecture: ${{ matrix.platform.target }}
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.platform.target }}
-          args: --release --out dist --find-interpreter
-          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
-
-  macos:
-    runs-on: ${{ matrix.platform.runner }}
-    strategy:
-      matrix:
-        platform:
-          - runner: macos-15
-            target: x86_64
-          # - runner: macos-14
-          #   target: aarch64
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: 3.x
-      - name: Install dependencies
-        run: |
-          brew install llvm cmake
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.platform.target }}
-          args: --release --out dist --find-interpreter
-          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        env:
-          LLVM_CONFIG_PATH: /opt/homebrew/opt/llvm/bin/llvm-config
+  # macos:
+  #   runs-on: ${{ matrix.platform.runner }}
+  #   strategy:
+  #     matrix:
+  #       platform:
+  #         - runner: macos-15
+  #           target: x86_64
+  #         # - runner: macos-14
+  #         #   target: aarch64
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: 3.x
+  #     - name: Install dependencies
+  #       run: |
+  #         brew install llvm cmake
+  #     - name: Build wheels
+  #       uses: PyO3/maturin-action@v1
+  #       with:
+  #         target: ${{ matrix.platform.target }}
+  #         args: --release --out dist --find-interpreter
+  #         sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  #       env:
+  #         LLVM_CONFIG_PATH: /opt/homebrew/opt/llvm/bin/llvm-config
