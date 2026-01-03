@@ -45,7 +45,7 @@ jobs:
           args: --release --out dist --find-interpreter
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
-          before-script-linux: apt-get update && apt-get install -y zlib1g-dev clang libclang-dev cmake
+          before-script-linux: apt-get update && apt-get install -y --no-install-recommends zlib1g-dev clang libclang-dev cmake libssl3 libsasl2-2 liblz4-1 libzstd1 libsnappy1v5 zlib1g ca-certificates
 
   musllinux:
     runs-on: ${{ matrix.platform.runner }}
@@ -72,7 +72,7 @@ jobs:
           args: --release --out dist --find-interpreter
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
-          before-script-linux: apt-get update && apt-get install -y zlib1g-dev clang libclang-dev cmake
+          before-script-linux: apt-get update && apt-get install -y --no-install-recommends zlib1g-dev clang libclang-dev cmake libssl3 libsasl2-2 liblz4-1 libzstd1 libsnappy1v5 zlib1g ca-certificates
 
   windows:
     runs-on: ${{ matrix.platform.runner }}
