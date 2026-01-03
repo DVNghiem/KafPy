@@ -1,0 +1,34 @@
+# IDE
+.idea/
+.vscode/
+
+# Environment files
+.env
+.env.*
+stag.env
+dev.env
+
+# Configuration (keep example files)
+config/config.yaml
+
+# Logs
+log/
+*.log
+
+# Temporary files
+*.model
+*.tmp
+db.json
+
+# Rust specific
+target/
+Cargo.lock
+debug/
+release/
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+config.yaml
+test.py

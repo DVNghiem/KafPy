@@ -1,0 +1,51 @@
+[package]
+name = "KafPy"
+version = "0.1.0"
+edition = "2021"
+authors = ["Dang Van Nghiem <vannghiem848@gmail.com>"]
+description = "High-performance Rust Kafka consumer"
+
+[lib]
+name = "_kafpy"
+crate-type = ["cdylib"]
+
+[dependencies]
+
+pyo3 = { version = "0.27.2", features = ["extension-module", "generate-import-lib"] }
+pyo3-async-runtimes = { version = "0.27.0", features = ["tokio-runtime"] }
+
+# Async runtime
+tokio = { version = "1.40", features = ["full"] }
+tokio-util = "0.7.17"
+async-trait = "0.1"
+
+# Kafka client
+rdkafka = { version = "0.38", features = ["cmake-build", "libz", "zstd"] }
+
+dotenvy = "0.15.7"
+
+# Logging
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+# tracing-appender = "0.2"
+
+thiserror = "2.0.17"
+
+[build-dependencies]
+pyo3-build-config = "=0.27.2"
+
+[package.metadata.maturin]
+name = "kafpy"
+python-source = "kafpy"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = true
+
+[profile.dev]
+opt-level = 0
+debug = true
