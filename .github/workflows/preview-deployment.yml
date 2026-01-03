@@ -46,16 +46,19 @@ jobs:
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
           before-script-linux: |
-            apt-get update && apt-get install -y --no-install-recommends \
-              librdkafka-dev \
-              zlib1g-dev \
-              libssl-dev \
-              libsasl2-dev \
-              liblz4-dev \
-              libzstd-dev \
-              libsnappy-dev \
-              ca-certificates \
-              pkg-config
+            if command -v yum &> /dev/null; then
+              yum install -y librdkafka-devel openssl-devel cyrus-sasl-devel zlib-devel lz4-devel libzstd-devel
+            elif command -v apt-get &> /dev/null; then
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                librdkafka-dev \
+                libssl-dev \
+                libsasl2-dev \
+                zlib1g-dev \
+                liblz4-dev \
+                libzstd-dev \
+                pkg-config
+            fi
 
   musllinux:
     runs-on: ${{ matrix.platform.runner }}
@@ -83,15 +86,16 @@ jobs:
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
           before-script-linux: |
-            apk add --no-cache \
-              librdkafka-dev \
-              zlib-dev \
-              openssl-dev \
-              cyrus-sasl-dev \
-              lz4-dev \
-              zstd-dev \
-              snappy-dev \
-              pkgconfig
+            if command -v apk &> /dev/null; then
+              apk add --no-cache \
+                librdkafka-dev \
+                openssl-dev \
+                cyrus-sasl-dev \
+                zlib-dev \
+                lz4-dev \
+                zstd-dev \
+                pkgconfig
+            fi
 
   windows:
     runs-on: ${{ matrix.platform.runner }}
@@ -108,15 +112,22 @@ jobs:
         with:
           python-version: 3.x
           architecture: ${{ matrix.platform.target }}
-      - name: Install vcpkg dependencies
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 'c8696863d371ab7f46e213d8f5ca923c4aef2a00'
+      - name: Install dependencies
         run: |
-          vcpkg install librdkafka:x64-windows
+          vcpkg install librdkafka:x64-windows openssl:x64-windows
+        shell: powershell
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --find-interpreter
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
 
   macos:
     runs-on: ${{ matrix.platform.runner }}
@@ -133,10 +144,14 @@ jobs:
         with:
           python-version: 3.x
       - name: Install dependencies
-        run: brew install librdkafka
+        run: |
+          brew install librdkafka openssl@3 pkg-config
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --find-interpreter
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        env:
+          PKG_CONFIG_PATH: /opt/homebrew/opt/openssl@3/lib/pkgconfig:/usr/local/opt/openssl@3/lib/pkgconfig
+          OPENSSL_DIR: /opt/homebrew/opt/openssl@3
