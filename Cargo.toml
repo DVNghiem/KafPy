@@ -31,6 +31,11 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 
 thiserror = "2.0.17"
 
+[dependencies.zstd-sys]
+version = "2.0.16"  
+features = ["legacy", "zstdmt"] 
+default-features = false 
+
 [build-dependencies]
 pyo3-build-config = "=0.27.2"
 
