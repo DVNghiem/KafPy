@@ -45,7 +45,17 @@ jobs:
           args: --release --out dist --find-interpreter
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
-          before-script-linux: apt-get update && apt-get install -y --no-install-recommends zlib1g-dev clang libclang-dev cmake libssl3 libsasl2-2 liblz4-1 libzstd1 libsnappy1v5 zlib1g ca-certificates pkg-config
+          before-script-linux: |
+            apt-get update && apt-get install -y --no-install-recommends \
+              librdkafka-dev \
+              zlib1g-dev \
+              libssl-dev \
+              libsasl2-dev \
+              liblz4-dev \
+              libzstd-dev \
+              libsnappy-dev \
+              ca-certificates \
+              pkg-config
 
   musllinux:
     runs-on: ${{ matrix.platform.runner }}
@@ -72,7 +82,16 @@ jobs:
           args: --release --out dist --find-interpreter
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
-          before-script-linux: apt-get update && apt-get install -y --no-install-recommends zlib1g-dev clang libclang-dev cmake libssl3 libsasl2-2 liblz4-1 libzstd1 libsnappy1v5 zlib1g ca-certificates pkg-config
+          before-script-linux: |
+            apk add --no-cache \
+              librdkafka-dev \
+              zlib-dev \
+              openssl-dev \
+              cyrus-sasl-dev \
+              lz4-dev \
+              zstd-dev \
+              snappy-dev \
+              pkgconfig
 
   windows:
     runs-on: ${{ matrix.platform.runner }}
@@ -89,6 +108,9 @@ jobs:
         with:
           python-version: 3.x
           architecture: ${{ matrix.platform.target }}
+      - name: Install vcpkg dependencies
+        run: |
+          vcpkg install librdkafka:x64-windows
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -110,6 +132,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
+      - name: Install dependencies
+        run: brew install librdkafka
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:

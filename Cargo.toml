@@ -19,8 +19,7 @@ tokio = { version = "1.40", features = ["full"] }
 tokio-util = "0.7.17"
 async-trait = "0.1"
 
-# Kafka client
-rdkafka = { version = "0.38", features = ["cmake-build", "libz", "zstd"] }
+rdkafka = { version = "0.38", features = ["libz", "ssl", "gssapi", "zstd"] }
 
 dotenvy = "0.15.7"
 
@@ -30,10 +29,6 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 # tracing-appender = "0.2"
 
 thiserror = "2.0.17"
-
-[dependencies.zstd-sys]
-version = "2.0.16"  
-features = ["legacy", "zstdmt", "pkg-config"] 
 
 [build-dependencies]
 pyo3-build-config = "=0.27.2"
