@@ -19,6 +19,7 @@ tokio = { version = "1.40", features = ["full"] }
 tokio-util = "0.7.17"
 async-trait = "0.1"
 
+[target.'cfg(unix)'.dependencies]
 rdkafka = { version = "0.38" }
 
 dotenvy = "0.15.7"
@@ -29,6 +30,9 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 # tracing-appender = "0.2"
 
 thiserror = "2.0.17"
+
+[target.'cfg(windows)'.dependencies]
+rdkafka = { version = "0.38", features = ["cmake-build"] }
 
 [build-dependencies]
 pyo3-build-config = "=0.27.2"
