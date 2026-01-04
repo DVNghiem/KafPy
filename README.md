@@ -1,10 +1,10 @@
-# KafPy - High-Performance Kafka Consumer for Python
+# KafPy - High-Performance Kafka Consumer & Producer for Python
 
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![Rust](https://img.shields.io/badge/rust-latest-orange)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-green)](LICENSE)
 
-KafPy is a high-performance Apache Kafka consumer library for Python, built with Rust using PyO3. It provides an asynchronous, efficient, and easy-to-use interface for consuming messages from Kafka topics.
+KafPy is a high-performance Apache Kafka consumer and producer library for Python, built with Rust using PyO3. It provides an asynchronous, efficient, and easy-to-use interface for consuming messages from Kafka topics.
 
 ## Features
 
@@ -34,7 +34,7 @@ KafPy is a high-performance Apache Kafka consumer library for Python, built with
 
 - Python 3.11 or higher
 - Rust toolchain (for building from source)
-- librdkafka (installed automatically during build)
+- [librdkafka](https://github.com/confluentinc/librdkafka).
 
 ### Install from PyPI (Coming Soon)
 
@@ -46,7 +46,7 @@ pip install kafpy
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/KafPy.git
+git clone https://github.com/DVNghiem/KafPy.git
 cd KafPy
 ```
 
@@ -72,10 +72,10 @@ Here's a simple example to get you started:
 
 ```python
 import asyncio
-from kafpy import Consumer, AppConfig, KafkaConfig, KafkaMessage
+from kafpy import Consumer, ConsumerConfig, KafkaMessage
 
 # Create Kafka configuration
-kafka_config = KafkaConfig(
+kafka_config = ConsumerConfig(
     brokers="localhost:9092",
     group_id="my-consumer-group",
     topics=["my-topic"],
@@ -95,13 +95,6 @@ kafka_config = KafkaConfig(
     message_batch_size=100
 )
 
-# Create application configuration
-app_config = AppConfig(
-    kafka=kafka_config,
-    processing_timeout_ms=30000,
-    graceful_shutdown_timeout_ms=10000
-)
-
 # Define message handler
 def handle_message(message: KafkaMessage):
     print(f"Received message from {message.topic}:")
@@ -112,7 +105,7 @@ def handle_message(message: KafkaMessage):
     print(f"  Headers: {message.headers}")
 
 # Create consumer and register handler
-consumer = Consumer(app_config)
+consumer = Consumer(kafka_config)
 consumer.add_handler("my-topic", handle_message)
 
 # Start consuming
@@ -170,10 +163,10 @@ GRACEFUL_SHUTDOWN_TIMEOUT_MS=10000
 Then load configuration from environment:
 
 ```python
-from kafpy import Consumer, AppConfig
+from kafpy import Consumer, ConsumerConfig
 
 # Load configuration from .env file
-config = AppConfig.from_env()
+config = ConsumerConfig.from_env()
 
 # Create consumer
 consumer = Consumer(config)
@@ -221,14 +214,14 @@ consumer = Consumer(config)
 
 ```python
 import asyncio
-from kafpy import Consumer, AppConfig, KafkaMessage
+from kafpy import Consumer, ConsumerConfig, KafkaMessage
 
 def process_message(message: KafkaMessage):
     payload = message.payload.decode('utf-8') if message.payload else ""
     print(f"Processing: {payload}")
 
 async def main():
-    config = AppConfig.from_env()
+    config = ConsumerConfig.from_env()
     consumer = Consumer(config)
     consumer.add_handler("my-topic", process_message)
     await consumer.start()
@@ -239,7 +232,7 @@ asyncio.run(main())
 ### Multiple Topic Handlers
 
 ```python
-from kafpy import Consumer, AppConfig, KafkaMessage
+from kafpy import Consumer, ConsumerConfig, KafkaMessage
 
 def handle_orders(message: KafkaMessage):
     print(f"Order received: {message.payload}")
@@ -251,7 +244,7 @@ def handle_notifications(message: KafkaMessage):
     print(f"Notification received: {message.payload}")
 
 async def main():
-    config = AppConfig.from_env()
+    config = ConsumerConfig.from_env()
     consumer = Consumer(config)
     
     # Register different handlers for different topics
@@ -267,7 +260,7 @@ asyncio.run(main())
 ### Processing Message Headers and Keys
 
 ```python
-from kafpy import Consumer, AppConfig, KafkaMessage
+from kafpy import Consumer, ConsumerConfig, KafkaMessage
 
 def process_with_metadata(message: KafkaMessage):
     # Access message key
@@ -292,7 +285,7 @@ def process_with_metadata(message: KafkaMessage):
     print(f"Offset: {message.offset}")
 
 async def main():
-    config = AppConfig.from_env()
+    config = ConsumerConfig.from_env()
     consumer = Consumer(config)
     consumer.add_handler("my-topic", process_with_metadata)
     await consumer.start()
@@ -304,7 +297,7 @@ asyncio.run(main())
 
 ```python
 import json
-from kafpy import Consumer, AppConfig, KafkaMessage
+from kafpy import Consumer, ConsumerConfig, KafkaMessage
 
 def process_json_message(message: KafkaMessage):
     try:
@@ -320,7 +313,7 @@ def process_json_message(message: KafkaMessage):
         print(f"Failed to decode JSON: {e}")
 
 async def main():
-    config = AppConfig.from_env()
+    config = ConsumerConfig.from_env()
     consumer = Consumer(config)
     consumer.add_handler("events", process_json_message)
     await consumer.start()
@@ -333,7 +326,7 @@ asyncio.run(main())
 ```python
 import asyncio
 import signal
-from kafpy import Consumer, AppConfig, KafkaMessage
+from kafpy import Consumer, ConsumerConfig, KafkaMessage
 
 consumer = None
 
@@ -352,7 +345,7 @@ async def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    config = AppConfig.from_env()
+    config = ConsumerConfig.from_env()
     consumer = Consumer(config)
     consumer.add_handler("my-topic", handle_message)
     
@@ -369,7 +362,7 @@ asyncio.run(main())
 ### Error Handling
 
 ```python
-from kafpy import Consumer, AppConfig, KafkaMessage
+from kafpy import Consumer, ConsumerConfig, KafkaMessage
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -393,7 +386,7 @@ def process_with_error_handling(message: KafkaMessage):
 
 async def main():
     try:
-        config = AppConfig.from_env()
+        config = ConsumerConfig.from_env()
         consumer = Consumer(config)
         consumer.add_handler("my-topic", process_with_error_handling)
         await consumer.start()
@@ -407,13 +400,13 @@ asyncio.run(main())
 
 ### Classes
 
-#### `KafkaConfig`
+#### `ConsumerConfig`
 
 Configuration for Kafka consumer.
 
 **Constructor:**
 ```python
-KafkaConfig(
+ConsumerConfig(
     brokers: str,
     group_id: str,
     topics: list[str],
@@ -433,27 +426,6 @@ KafkaConfig(
     message_batch_size: int
 )
 ```
-
-#### `AppConfig`
-
-Application-level configuration.
-
-**Constructor:**
-```python
-AppConfig(
-    kafka: KafkaConfig,
-    processing_timeout_ms: int,
-    graceful_shutdown_timeout_ms: int
-)
-```
-
-**Class Methods:**
-- `from_env() -> AppConfig`: Load configuration from environment variables
-
-**Instance Methods:**
-- `processing_timeout() -> int`: Get processing timeout in milliseconds
-- `graceful_shutdown_timeout() -> int`: Get graceful shutdown timeout in milliseconds
-- `get_kafka_properties() -> dict[str, str]`: Get Kafka properties as dictionary
 
 #### `KafkaMessage`
 
@@ -477,7 +449,7 @@ Kafka consumer instance.
 
 **Constructor:**
 ```python
-Consumer(config: AppConfig)
+Consumer(config: ConsumerConfig)
 ```
 
 **Methods:**
@@ -492,7 +464,7 @@ Consumer(config: AppConfig)
 For high-throughput scenarios, adjust these parameters:
 
 ```python
-kafka_config = KafkaConfig(
+kafka_config = ConsumerConfig(
     # ... other params ...
     fetch_min_bytes=1048576,           # 1MB - fetch more data per request
     max_partition_fetch_bytes=10485760, # 10MB - larger partition fetch
@@ -506,7 +478,7 @@ kafka_config = KafkaConfig(
 When `enable_auto_commit=False`, KafPy handles offset commits after successful message processing:
 
 ```python
-kafka_config = KafkaConfig(
+kafka_config = ConsumerConfig(
     # ... other params ...
     enable_auto_commit=False,  # Manual offset control
 )
@@ -523,7 +495,7 @@ KafPy supports different partition assignment strategies:
 - `cooperative-sticky`: Minimizes partition movement during rebalance
 
 ```python
-kafka_config = KafkaConfig(
+kafka_config = ConsumerConfig(
     # ... other params ...
     partition_assignment_strategy="cooperative-sticky",
 )
@@ -534,7 +506,7 @@ kafka_config = KafkaConfig(
 #### SASL/PLAIN Authentication
 
 ```python
-kafka_config = KafkaConfig(
+kafka_config = ConsumerConfig(
     brokers="kafka.example.com:9093",
     security_protocol="SASL_SSL",
     sasl_mechanism="PLAIN",
@@ -547,7 +519,7 @@ kafka_config = KafkaConfig(
 #### SASL/SCRAM Authentication
 
 ```python
-kafka_config = KafkaConfig(
+kafka_config = ConsumerConfig(
     brokers="kafka.example.com:9093",
     security_protocol="SASL_SSL",
     sasl_mechanism="SCRAM-SHA-256",
@@ -637,11 +609,6 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 This project is licensed under the BSD-3-Clause License. See the LICENSE file for details.
 
-## Author
-
-**Dang Van Nghiem**
-- Email: vannghiem848@gmail.com
-
 ## Acknowledgments
 
 - Built with [PyO3](https://pyo3.rs/) for Python-Rust interoperability
@@ -650,4 +617,4 @@ This project is licensed under the BSD-3-Clause License. See the LICENSE file fo
 
 ## Support
 
-For issues, questions, or contributions, please visit the [GitHub repository](https://github.com/yourusername/KafPy).
+For issues, questions, or contributions, please visit the [GitHub repository](https://github.com/DVNghiem/KafPy).

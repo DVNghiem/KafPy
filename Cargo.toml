@@ -22,6 +22,7 @@ dotenvy = "0.15.7"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 thiserror = "2.0.17"
+num_cpus = "1.16"
 
 [target.'cfg(unix)'.dependencies]
 rdkafka = { version = "0.38" }

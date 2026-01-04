@@ -11,14 +11,14 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 use crate::{
-    config::{AppConfig, KafkaConfig},
+    config::ConsumerConfig,
     kafka_message::KafkaMessage,
     message_processor::{MessageProcessor, MessageRouter, PyProcessor},
 };
 
 #[pyclass(name="Consumer")]
 pub struct PyConsumer {
-    config: AppConfig,
+    config: ConsumerConfig,
     message_router: Arc<MessageRouter>,
     cancellation_token: CancellationToken,
 }
@@ -26,7 +26,7 @@ pub struct PyConsumer {
 #[pymethods]
 impl PyConsumer {
     #[new]
-    pub fn new(config: AppConfig) -> PyResult<Self> {
+    pub fn new(config: ConsumerConfig) -> PyResult<Self> {
         Ok(Self {
             config,
             message_router: Arc::new(MessageRouter::new()),
@@ -52,12 +52,12 @@ impl PyConsumer {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             // Now we are in a Tokio context
             let context = CustomConsumerContext::new();
-            let consumer = KafkaManager::create_consumer(&config.kafka, context)
+            let consumer = KafkaManager::create_consumer(&config, context)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
             let kafka_manager = KafkaManager {
                 consumer: Arc::new(consumer),
-                config: config.kafka,
+                config: config,
             };
 
             kafka_manager
@@ -78,12 +78,12 @@ impl PyConsumer {
 
 pub struct KafkaManager {
     consumer: Arc<StreamConsumer<CustomConsumerContext>>,
-    config: KafkaConfig,
+    config: ConsumerConfig,
 }
 
 impl KafkaManager {
     fn create_consumer(
-        config: &KafkaConfig,
+        config: &ConsumerConfig,
         context: CustomConsumerContext,
     ) -> Result<StreamConsumer<CustomConsumerContext>, KafkaError> {
         let mut client_config = ClientConfig::new();

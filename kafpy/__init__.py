@@ -1,14 +1,16 @@
 __version__ = "0.1.0"
 from ._kafpy import (
-    KafkaConfig,
-    AppConfig,
+    ConsumerConfig,
+    ProducerConfig,
     KafkaMessage,
     Consumer,
+    Producer,
 )
 
 __all__ = [
-    "KafkaConfig",
-    "AppConfig",
+    "ConsumerConfig",
+    "ProducerConfig",
     "KafkaMessage",
     "Consumer",
+    "Producer",
 ]
