@@ -19,7 +19,7 @@ tokio = { version = "1.40", features = ["full"] }
 tokio-util = "0.7.17"
 async-trait = "0.1"
 
-rdkafka = { version = "0.38", features = ["cmake-build", "naive-runtime", "tracing", "tokio","zstd"] }
+rdkafka = { version = "0.38" }
 
 dotenvy = "0.15.7"
 
