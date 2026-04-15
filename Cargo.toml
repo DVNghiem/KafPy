@@ -30,6 +30,16 @@ rdkafka = { version = "0.38" }
 [target.'cfg(windows)'.dependencies]
 rdkafka = { version = "0.38", features = ["cmake-build"] }
 
+[dependencies.async-stream]
+version = "0.3"
+
+[dependencies.futures-util]
+version = "0.3"
+
+[dependencies.tokio-stream]
+version = "0.1"
+features = ["sync"]
+
 [build-dependencies]
 pyo3-build-config = "=0.27.2"
 

@@ -1,12 +1,15 @@
 use pyo3::prelude::*;
 
-mod config;
-mod consume;
-mod errors;
-mod kafka_message;
-mod logging;
-mod message_processor;
-mod produce;
+pub mod config;
+pub mod consume;
+pub mod errors;
+pub mod kafka_message;
+pub mod logging;
+pub mod message_processor;
+pub mod produce;
+
+// Pure Rust consumer core — no PyO3 dependencies
+pub mod consumer;
 
 use consume::PyConsumer;
 use kafka_message::KafkaMessage;
