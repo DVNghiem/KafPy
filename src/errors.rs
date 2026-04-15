@@ -1,41 +1,19 @@
-use rdkafka::error::KafkaError;
+//! Domain error types for Python-facing operations.
+//!
+//! Note: The pure-Rust consumer uses `consumer::error::ConsumerError` internally.
+//! This module is for errors that surface at the PyO3 boundary.
 
-// Kafka error wrapper
-#[derive(thiserror::Error, Debug)]
-#[allow(dead_code)]
-pub enum KafkaConsumerError {
-    #[error("Kafka error: {0}")]
-    Kafka(#[from] KafkaError),
+use thiserror::Error;
 
-    #[error("Message processing error: {0}")]
-    Processing(String),
+/// Errors that cross the PyO3 boundary (Python-callable functions).
+#[derive(Error, Debug)]
+pub enum PyError {
+    #[error("consumer error: {0}")]
+    Consumer(String),
 
-    #[error("Serialization error: {0}")]
-    Serialization(String),
-}
+    #[error("producer error: {0}")]
+    Producer(String),
 
-// Common error types for domain operations
-#[derive(thiserror::Error, Debug)]
-#[allow(dead_code)]
-pub enum DomainError {
-    #[error("Validation error: {0}")]
-    Validation(String),
-
-    #[error("Business rule violation: {0}")]
-    BusinessRule(String),
-
-    #[error("Entity not found: {0}")]
-    NotFound(String),
-
-    #[error("Conflict: {0}")]
-    Conflict(String),
-
-    #[error("Serialization error: {0}")]
-    Serialization(String),
-
-    #[error("Database error: {0}")]
-    Database(String),
-
-    #[error("Processing error: {0}")]
-    Processing(String),
+    #[error("configuration error: {0}")]
+    Config(String),
 }
