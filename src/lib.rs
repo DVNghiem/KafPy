@@ -19,6 +19,9 @@ pub mod python;
 // Worker pool — N Tokio workers polling handler queues, invoking Python callbacks
 pub mod worker_pool;
 
+// Offset commit coordinator — per-topic-partition ack tracking with highest-contiguous-offset
+pub mod coordinator;
+
 use kafka_message::KafkaMessage;
 use logging::Logger;
 use produce::PyProducer;
