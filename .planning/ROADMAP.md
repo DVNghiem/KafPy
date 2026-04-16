@@ -25,7 +25,7 @@
   5. DispatchError enum variants: QueueFull, UnknownTopic, HandlerNotRegistered, QueueClosed — all with thiserror Display/Debug
 **Plans**: 2 plans
 **Plan list**:
-- [ ] 06-01-PLAN.md — Dispatcher core: error.rs, mod.rs, lib.rs
+- [x] 06-01-PLAN.md — Dispatcher core: error.rs, mod.rs, lib.rs
 - [ ] 06-02-PLAN.md — Dispatcher unit tests
 
 ### Phase 7: Backpressure + Queue Manager
@@ -55,7 +55,7 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 6. Dispatcher Core | 0/N | Not started | - |
+| 6. Dispatcher Core | 1/2 | In Progress|  |
 | 7. Backpressure + Queue Manager | 0/N | Not started | - |
 | 8. ConsumerRunner Integration | 0/N | Not started | - |
 

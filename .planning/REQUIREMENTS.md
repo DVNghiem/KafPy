@@ -8,11 +8,11 @@
 
 ### Dispatcher Core
 
-- [ ] **DISP-01**: Dispatcher receives `OwnedMessage` from consumer layer and routes by topic
-- [ ] **DISP-02**: Handler registration API — register handler slots by topic name
-- [ ] **DISP-03**: Per-handler bounded Tokio `mpsc` channel (configurable capacity)
-- [ ] **DISP-04**: Bounded queues only — no unbounded channels in hot path
-- [ ] **DISP-05**: `send()` to handler queue returns `Result<DispatchOutcome, DispatchError>`
+- [x] **DISP-01**: Dispatcher receives `OwnedMessage` from consumer layer and routes by topic
+- [x] **DISP-02**: Handler registration API — register handler slots by topic name
+- [x] **DISP-03**: Per-handler bounded Tokio `mpsc` channel (configurable capacity)
+- [x] **DISP-04**: Bounded queues only — no unbounded channels in hot path
+- [x] **DISP-05**: `send()` to handler queue returns `Result<DispatchOutcome, DispatchError>`
 
 ### Backpressure
 
@@ -41,8 +41,8 @@
 
 ### Error Handling
 
-- [ ] **DISP-19**: `DispatchError` enum: `QueueFull`, `UnknownTopic`, `HandlerNotRegistered`, `QueueClosed`
-- [ ] **DISP-20**: All errors are `thiserror` types with `Display` and `Debug`
+- [x] **DISP-19**: `DispatchError` enum: `QueueFull`, `UnknownTopic`, `HandlerNotRegistered`, `QueueClosed`
+- [x] **DISP-20**: All errors are `thiserror` types with `Display` and `Debug`
 
 ---
 
