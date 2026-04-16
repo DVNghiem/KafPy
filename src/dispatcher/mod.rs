@@ -22,13 +22,18 @@
 //!
 //! Queue depth and inflight tracking is delegated to [`QueueManager`].
 
+pub mod backpressure;
 pub mod error;
 pub mod queue_manager;
 
 pub use crate::consumer::OwnedMessage;
+pub use backpressure::{BackpressureAction, DefaultBackpressurePolicy, PauseOnFullPolicy};
+pub(crate) use backpressure::BackpressurePolicy;
 pub use error::DispatchError;
 use queue_manager::QueueManager;
+use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 
 /// Outcome returned on successful dispatch.
 #[derive(Debug, Clone)]
@@ -73,14 +78,71 @@ impl Dispatcher {
         self.queue_manager.register_handler(topic, capacity)
     }
 
-    /// Sends `message` to the handler registered for `message.topic`.
+    /// Sends `message` to the handler registered for `message.topic`,
+    /// using the provided backpressure policy when the queue is full.
     ///
     /// Non-blocking — returns immediately. Returns [`DispatchError`] if:
-    /// - No handler is registered for the topic ([`DispatchError::HandlerNotRegistered`])
-    /// - The handler's queue is full ([`DispatchError::QueueFull`])
-    /// - The handler's receiver has been dropped ([`DispatchError::QueueClosed`])
+    /// - No handler is registered ([`DispatchError::HandlerNotRegistered`])
+    /// - Queue is full and policy returns Drop or Wait ([`DispatchError::Backpressure`])
+    /// - Handler's receiver has been dropped ([`DispatchError::QueueClosed`])
+    pub(crate) fn send_with_policy(
+        &self,
+        message: OwnedMessage,
+        policy: &dyn BackpressurePolicy,
+    ) -> Result<DispatchOutcome, DispatchError> {
+        let topic = message.topic.clone();
+        let partition = message.partition;
+        let offset = message.offset;
+
+        // Get handler entry - must be inside the lock
+        let guard = self.queue_manager.handlers.lock();
+        let entry = guard
+            .get(&topic)
+            .ok_or_else(|| DispatchError::HandlerNotRegistered(topic.clone()))?;
+
+        // Increment inflight immediately on dispatch attempt
+        entry.metadata.inflight.fetch_add(1, Ordering::Relaxed);
+
+        match entry.sender.try_send(message) {
+            Ok(()) => {
+                entry.metadata.queue_depth.fetch_add(1, Ordering::Relaxed);
+                let depth = entry.metadata.queue_depth.load(Ordering::Relaxed);
+                Ok(DispatchOutcome {
+                    topic,
+                    partition,
+                    offset,
+                    queue_depth: depth,
+                })
+            }
+            Err(TrySendError::Full(_)) => {
+                // Decrement inflight since we're not actually dispatching
+                entry.metadata.inflight.fetch_sub(1, Ordering::Relaxed);
+                let action = policy.on_queue_full(&topic, &entry.metadata);
+                match action {
+                    BackpressureAction::Drop | BackpressureAction::Wait => {
+                        Err(DispatchError::Backpressure(topic))
+                    }
+                    BackpressureAction::FuturePausePartition(_) => {
+                        // FuturePausePartition is a signal - still return Backpressure error
+                        // Actual pause/resume implementation comes in Phase 8 (DISP-18)
+                        Err(DispatchError::Backpressure(topic))
+                    }
+                }
+            }
+            Err(TrySendError::Closed(_)) => {
+                entry.metadata.inflight.fetch_sub(1, Ordering::Relaxed);
+                Err(DispatchError::QueueClosed(topic))
+            }
+        }
+    }
+
+    /// Sends `message` to the handler registered for `message.topic`.
+    ///
+    /// Non-blocking — returns immediately. Uses [`DefaultBackpressurePolicy`] internally.
+    ///
+    /// Returns [`DispatchError::Backpressure`] if the queue is full (per DISP-08).
     pub fn send(&self, message: OwnedMessage) -> Result<DispatchOutcome, DispatchError> {
-        self.queue_manager.send_to_handler(message)
+        self.send_with_policy(message, &DefaultBackpressurePolicy)
     }
 }
 

@@ -14,13 +14,13 @@ pub use crate::consumer::OwnedMessage;
 use crate::dispatcher::error::DispatchError;
 
 /// Metadata for a registered handler — tracks queue depth and inflight counts.
-pub struct HandlerMetadata {
+pub(crate) struct HandlerMetadata {
     /// Bounded channel capacity for this handler.
     pub capacity: usize,
     /// Messages currently buffered in the channel.
-    queue_depth: AtomicUsize,
+    pub(crate) queue_depth: AtomicUsize,
     /// Messages dispatched but not yet acknowledged.
-    inflight: AtomicUsize,
+    pub(crate) inflight: AtomicUsize,
 }
 
 impl HandlerMetadata {
@@ -83,14 +83,14 @@ impl HandlerMetadata {
 }
 
 /// Pairs a handler's sender with its metadata.
-pub struct HandlerEntry {
+pub(crate) struct HandlerEntry {
     pub sender: mpsc::Sender<OwnedMessage>,
-    pub metadata: HandlerMetadata,
+    pub(crate) metadata: HandlerMetadata,
 }
 
 /// Owns all handler queues and their atomic metadata counters.
-pub struct QueueManager {
-    handlers: parking_lot::Mutex<std::collections::HashMap<String, HandlerEntry>>,
+pub(crate) struct QueueManager {
+    pub(crate) handlers: parking_lot::Mutex<std::collections::HashMap<String, HandlerEntry>>,
 }
 
 impl QueueManager {
