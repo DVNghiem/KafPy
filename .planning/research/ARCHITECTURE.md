@@ -1,524 +1,517 @@
-# Architecture Research: Python Execution Lane
+# Architecture Research: Offset Commit Coordinator
 
-**Domain:** PyO3 Native Extension - Kafka Consumer Python Callback Invocation
+**Domain:** PyO3 Native Extension - Kafka at-least-once delivery with highest-contiguous-offset commit
 **Researched:** 2026-04-16
 **Confidence:** HIGH
 
 ## Executive Summary
 
-The Python execution lane is a layer that sits between the dispatcher (which routes `OwnedMessage` to per-handler bounded channels) and the Python callbacks (which process messages). It receives messages from `mpsc::Receiver<OwnedMessage>` (returned by `ConsumerDispatcher::register_handler()`), polls them asynchronously, invokes Python callbacks via `spawn_blocking`, and returns normalized `ExecutionResult` values.
+Adding an offset commit coordinator to KafPy requires a new `src/coordinator/` module with two components: `OffsetTracker` (per-topic-partition ack state) and `OffsetCommitter` (rdkafka commit orchestration). The coordinator integrates with the existing `WorkerPool` by extending the `Executor` trait with an ack callback, and with `ConsumerRunner` through a new commit method. No changes are needed to `ConsumerDispatcher` or `Dispatcher` -- they remain purely about message routing.
 
-The architecture introduces four new components: `ExecutionResult` (outcome enum), `PythonHandler` (callback invoker), `WorkerPool` (concurrency manager), and `Executor` trait (policy interface). Data flows: `ConsumerRunner` → `ConsumerDispatcher.send()` → handler's `mpsc::Receiver` → `WorkerPool` → `PythonHandler` → Python callback → `ExecutionResult`.
+The critical insight is that out-of-order execution means we cannot commit per-message. Instead, `OffsetTracker` maintains per-partition committed and inflight state, calculates highest-contiguous-offset on each ack, and signals `OffsetCommitter` when the committed offset advances. The commit task runs as a background Tokio task, decoupled from the hot worker path.
 
-The build order is: `Executor` trait and `ExecutionResult` (no deps) → `PythonHandler` (depends on trait) → `WorkerPool` (depends on handler) → PyO3 bridge (integrates with `ConsumerDispatcher`).
-
-## Integration with Existing Architecture
-
-### Current State (After v1.1)
+## Current Architecture (After v1.2)
 
 ```
 ConsumerRunner (src/consumer/runner.rs)
-    └─ stream() → ConsumerStream (impl Stream<Item=Result<OwnedMessage, ConsumerError>>)
+    └─ stream() → ConsumerStream
             │
 ConsumerDispatcher (src/dispatcher/mod.rs)
     ├─ owns: ConsumerRunner + Dispatcher
     ├─ run() → polls ConsumerStream, calls dispatcher.send()
     └─ register_handler(topic, capacity, max_concurrency)
-            → returns mpsc::Receiver<OwnedMessage>
-
-Dispatcher (src/dispatcher/mod.rs)
-    └─ send(OwnedMessage) → Result<DispatchOutcome, DispatchError>
-            └─ routes to per-topic bounded channel
-
-PyConsumer (src/pyconsumer.rs)  [NOT using dispatcher yet]
-    ├─ stores Py<PyAny> callbacks in HashMap
-    ├─ directly streams from ConsumerRunner
-    └─ calls Python via pyo3::Python::attach() in stream loop
-```
-
-### Target State (After v1.2)
-
-```
-ConsumerRunner
-    └─ stream() → ConsumerStream
-            │
-ConsumerDispatcher
-    ├─ run() polls stream, calls dispatcher.send()
-    └─ register_handler(topic, capacity, max_concurrency)
             └─ returns mpsc::Receiver<OwnedMessage>
                     │
                     ▼
-PythonHandler (new)
-    ├─ poll mpsc::Receiver<OwnedMessage>
-    ├─ convert to KafkaMessage
-    ├─ call Python via spawn_blocking + GIL
-    └─ return ExecutionResult
-
-WorkerPool (new)
-    └─ N workers polling same receiver (compete for messages)
-            │
-            ▼
-Executor trait (new)  [pluggable policy]
-    └─ handle(ExecutionResult) → handles retry/commit/ack
+WorkerPool (src/worker_pool/mod.rs)
+    ├─ N workers polling same receiver
+    ├─ worker_loop() → handler.invoke() → executor.execute()
+    └─ On ExecutionResult::Ok: queue_manager.ack(topic, 1)
+                                                    ↑
+                                            (no offset info)
+Executor trait (src/python/executor.rs)
+    ├─ execute(ctx, msg, result) → ExecutorOutcome
+    └─ Placeholder OffsetAck trait already exists
 ```
 
-## New Components
+**What already exists:**
+- `ConsumerRunner::commit()` -- calls `rdkafka::consumer::Consumer::commit_consumer_state(Async)`
+- `ConsumerRunner::assignment()` -- returns `TopicPartitionList` for pause/resume
+- `Executor` trait with placeholder `OffsetAck` and `RetryExecutor` stubs
+- `QueueManager::ack(topic, count)` -- decrements inflight, no offset semantics
 
-### 1. ExecutionResult
+## Integration Design
 
-**Purpose:** Normalized outcome from Python callback execution.
+### New Module: `src/coordinator/`
+
+```
+src/coordinator/
+├── mod.rs              # Module init, public exports
+├── offset_tracker.rs    # Per-topic-partition ack state machine
+├── commit_task.rs       # Background Tokio task managing rdkafka commits
+└── error.rs             # CoordinatorError
+```
+
+**Why a new module (not in `python/` or `dispatcher/`):**
+- Coordinator orchestrates cross-cutting concerns (commit coordination) that span `WorkerPool` (ack source) and `ConsumerRunner` (commit sink). Putting it in `python/` would create an unwanted dependency direction (python should not know about ConsumerRunner).
+- `dispatcher/` is message routing only -- adding offset semantics would violate single responsibility.
+- A dedicated `coordinator/` module keeps all commit-related logic in one place.
+
+### Component: OffsetTracker
+
+**Purpose:** Track per-partition acknowledged offsets and compute highest-contiguous-offset.
 
 ```rust
-// New file: src/python/execution_result.rs
-#[derive(Debug, Clone)]
-pub enum ExecutionResult {
-    /// Python callback returned successfully.
-    Ok,
-    /// Python callback raised an exception.
-    Error { exception: String, traceback: String },
-    /// Message was rejected by callback (e.g., schema mismatch, business rule).
-    Rejected { reason: String },
+// src/coordinator/offset_tracker.rs
+
+use std::collections::HashMap;
+use tokio::sync::RwLock;
+
+/// Per-partition offset state.
+struct PartitionState {
+    /// Highest offset we have committed to Kafka.
+    committed_offset: i64,
+    /// Highest offset we have acknowledged from a worker (may be > committed if gaps exist).
+    highest_ack: i64,
+    /// Offsets we have acknowledged but not yet committed (gaps from out-of-order processing).
+    pending_offsets: std::collections::BTreeSet<i64>,
+    /// Set of offsets that are "ready to commit" (no gaps below them).
+    ready_to_commit: i64,
 }
 ```
 
-**Why normalize:** `Py<PyAny>` call can return `PyResult<PyAny>`, which contains either success or a Python exception. We need to map this to a Rust enum that can be passed across thread boundaries and inspected by an `Executor` for retry/commit decisions. `ExecutionResult` is simple (no PyO3 types), Send+Sync, and serde-serializable for future metrics.
-
-**Source of truth:** Python callback return value / exception caught via `PyErr::fetch()`.
-
-### 2. PythonHandler
-
-**Purpose:** Owns a `mpsc::Receiver<OwnedMessage>` and a `Py<PyAny>` callback. Polls the receiver and invokes the callback.
+**Key operations:**
 
 ```rust
-// New file: src/python/handler.rs
-use pyo3::prelude::*;
-use tokio::sync::mpsc;
-use crate::consumer::OwnedMessage;
-use crate::kafka_message::KafkaMessage;
+impl OffsetTracker {
+    /// Called when a worker acknowledges a message as successfully processed.
+    /// Returns the new highest-contiguous-offset to commit, if any.
+    pub async fn ack(&self, topic: &str, partition: i32, offset: i64) -> Option<i64>;
 
-pub struct PythonHandler {
-    receiver: mpsc::Receiver<OwnedMessage>,
-    callback: Py<PyAny>,
+    /// Returns the current committed offset for a topic-partition.
+    pub async fn get_committed_offset(&self, topic: &str, partition: i32) -> Option<i64>;
+
+    /// Returns the highest offset that is safe to commit (no gaps below it).
+    pub async fn highest_contiguous(&self, topic: &str, partition: i32) -> Option<i64>;
 }
+```
 
-impl PythonHandler {
-    /// Polls the receiver once, invokes Python, returns result.
-    /// Returns None when receiver is closed.
-    pub async fn poll_once(&mut self) -> Option<ExecutionResult> {
-        let msg = self.receiver.recv().await?;
-        let result = self.invoke(msg).await;
-        Some(result)
-    }
+**Highest-contiguous-offset algorithm:**
+```
+On ack(partition, offset):
+  1. If offset <= committed_offset: no-op (already committed)
+  2. Add offset to pending_offsets
+  3. If offset == committed_offset + 1:
+     - committed_offset = offset
+     - while committed_offset + 1 in pending_offsets:
+         remove from pending_offsets
+         committed_offset += 1
+     - return committed_offset (new commit point)
+  4. Else:
+     - return None (gap exists, cannot commit yet)
+```
 
-    /// Invokes Python callback via spawn_blocking.
-    async fn invoke(&self, msg: OwnedMessage) -> ExecutionResult {
-        let py_msg = KafkaMessage::from(msg);
-        let callback = self.callback.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            pyo3::Python::with(|py| {
-                let cb = callback.as_ref(py);
-                match cb.call1((py_msg,)) {
-                    Ok(_) => ExecutionResult::Ok,
-                    Err(e) => {
-                        let exception = e.stringify(py).unwrap_or_else(|_| "unknown".to_string());
-                        ExecutionResult::Error { exception, traceback: String::new() }
-                    }
-                }
-            })
-        }).await.unwrap_or_else(|e| ExecutionResult::Error {
-            exception: format!("spawn_blocking failed: {e}"),
-            traceback: String::new()
-        });
-        result
-    }
+This correctly handles out-of-order: if we ack 5, then 3, then 4:
+- ack(5): pending={5}, no contiguous, return None
+- ack(3): pending={3,5}, no contiguous, return None
+- ack(4): pending={3,4,5}, committed=3, contiguous up to 3+1=4 in pending, committed=4, loop finds 5 is next, committed=5, return Some(5)
+
+### Component: OffsetCommitter (Background Task)
+
+**Purpose:** Runs as a Tokio task, receives commit signals and calls `ConsumerRunner::commit()`.
+
+```rust
+// src/coordinator/commit_task.rs
+
+pub struct OffsetCommitter {
+    runner: Arc<ConsumerRunner>,
+    tracker: Arc<OffsetTracker>,
+    /// Channel to receive commit signals.
+    commit_rx: watch::Receiver<Option<(String, i32, i64)>>,
+    /// Minimum interval between commits to avoid thrashing.
+    min_commit_interval: Duration,
+    last_commit: std::sync::Mutex<Instant>,
 }
+```
+
+**Commit signal flow:**
+```
+WorkerLoop
+    ↓ (on ExecutionResult::Ok)
+Executor.execute()
+    ↓ (calls tracker.ack())
+OffsetTracker
+    ↓ (if highest-contiguous advances)
+commit_tx.send((topic, partition, new_highest_offset))
+    ↓
+OffsetCommitter task
+    ↓ (receives signal)
+runner.store_offset(topic, partition, offset)?  // rdkafka store
+runner.commit()?                                 // rdkafka commit
 ```
 
 **Key design decisions:**
-- `Py<PyAny>` is Send+Sync — can be cloned and moved into `spawn_blocking` without GIL
-- `spawn_blocking` holds the GIL only for the duration of `handler.call1()`, minimizing GIL contention
-- `KafkaMessage::from(msg)` copies fields to owned Python objects at the boundary
+1. **Signalling via `watch` channel** -- a single sender (the tracker) broadcasting to one receiver (the committer task). Simple, no ownership complexity.
+2. **Commit interval throttle** -- `min_commit_interval` prevents calling rdkafka commit more than once per N ms, even if tracker signals multiple times.
+3. **Store before commit** -- rdkafka requires `store_offset()` before `commit_consumer_state()` for manual offset management. This is called on the committer task before the commit.
 
-### 3. Executor Trait
+### Modified Component: Executor Trait
 
-**Purpose:** Pluggable policy for what happens after Python returns `ExecutionResult`. Enables retry logic, offset commit decisions, DLQ routing, async processing, or batch accumulation — without coupling `PythonHandler` to specific policies.
+The `Executor` trait is extended to receive the coordinator reference:
 
 ```rust
-// New file: src/python/executor.rs
-use crate::consumer::OwnedMessage;
+// src/python/executor.rs (modified)
 
-/// Outcome of an execute() call — signals to WorkerPool how to proceed.
-#[derive(Debug)]
-pub enum ExecutorOutcome {
-    /// Message was processed successfully — advance offset.
-    Ack,
-    /// Message failed — apply retry or signal error.
-    Retry { count: u32, delay_ms: u64 },
-    /// Message was rejected by business logic — route to DLQ or log.
-    Rejected { reason: String },
-}
-
-/// Policy interface for handling ExecutionResult from Python callbacks.
 pub trait Executor: Send + Sync {
-    /// Called after Python callback returns.
-    /// Receives the original OwnedMessage and the ExecutionResult.
-    /// Returns what action the WorkerPool should take.
-    fn execute(&self, msg: OwnedMessage, result: ExecutionResult) -> ExecutorOutcome;
+    fn execute(
+        &self,
+        ctx: &ExecutionContext,
+        message: &OwnedMessage,
+        result: &ExecutionResult,
+    ) -> ExecutorOutcome;
+
+    /// Called on successful execution -- allows executor to update offset tracker.
+    /// Default implementation does nothing (maintains backward compatibility).
+    fn on_ack(&self, _ctx: &ExecutionContext) {}
 }
 
-/// Default executor — ACK everything, no retry.
-pub struct DefaultExecutor;
-
-impl Executor for DefaultExecutor {
-    fn execute(&self, _msg: OwnedMessage, result: ExecutionResult) -> ExecutorOutcome {
-        match result {
-            ExecutionResult::Ok => ExecutorOutcome::Ack,
-            ExecutionResult::Error { .. } => ExecutorOutcome::Retry { count: 1, delay_ms: 100 },
-            ExecutionResult::Rejected { reason } => ExecutorOutcome::Rejected { reason },
-        }
-    }
+/// Extension trait for executors that coordinate offset commits.
+pub trait OffsetCommittingExecutor: Executor {
+    fn track_offset(&self, topic: &str, partition: i32, offset: i64);
 }
 ```
 
-**Why a trait:** Different consumers have different needs. A batch consumer wants to accumulate messages before ACKing. A real-time consumer wants immediate ACK. A DLQ-capable consumer wants to route rejections to a dead-letter topic. The `Executor` trait decouples the execution loop from the policy.
-
-**Lifetime considerations:** `Executor::execute()` takes `OwnedMessage` by value (owned) — this avoids tying the trait to the receiver's lifetime and keeps the PyO3 boundary clean (DISP-17: "Python integration boundary preserved — dispatcher API uses only owned types").
-
-### 4. WorkerPool
-
-**Purpose:** Runs N concurrent workers, each polling the same `mpsc::Receiver<OwnedMessage>`. Tokio's `select!` with `biased` on `recv()` provides fair distribution across workers. Workers invoke callbacks via `PythonHandler` and report results to the `Executor`.
+**Alternative (cleaner):** Rather than extending `Executor`, add a separate `OffsetCoordinator` interface that the `WorkerPool` calls directly on each ack:
 
 ```rust
-// New file: src/python/worker_pool.rs
-use tokio::select;
-use tokio::time::{sleep, Duration};
-
-pub struct WorkerPool {
-    workers: usize,
-    handler: Arc<PythonHandler>,
-    executor: Arc<dyn Executor>,
+// WorkerPool calls this on each ExecutionResult::Ok
+pub trait OffsetCoordinator: Send + Sync {
+    fn record_ack(&self, topic: &str, partition: i32, offset: i64);
 }
+```
 
-impl WorkerPool {
-    pub fn new(
-        workers: usize,
-        handler: Arc<PythonHandler>,
-        executor: Arc<dyn Executor>,
-    ) -> Self {
-        Self { workers, handler, executor }
-    }
+**Chosen approach:** `OffsetCoordinator` trait + `OffsetTracker` implements it. `WorkerPool` holds `Arc<dyn OffsetCoordinator>`. `Executor` remains unchanged (the ack path goes through coordinator, not executor).
 
-    /// Starts N workers, each running the poll-invoke-report loop.
-    pub async fn run(&self) {
-        let handlers: Vec<_> = (0..self.workers)
-            .map(|_| self.handler.clone())
-            .collect();
+**Rationale:** `Executor` policy (retry vs reject) and `OffsetCoordinator` tracking (ack vs offset advance) are two separate concerns. Mixing them in `Executor` creates a violation of single responsibility and forces every executor implementation to handle offset tracking.
 
-        let futures: Vec<_> = handlers
-            .into_iter()
-            .map(|h| self.run_worker(h))
-            .collect();
+### Modified Component: WorkerPool
 
-        futures::future::join_all(futures).await;
-    }
+```rust
+// src/worker_pool/mod.rs (modified worker_loop)
 
-    async fn run_worker(&self, handler: Arc<PythonHandler>) {
-        let mut handler = handler.clone();
-        loop {
-            let result = handler.poll_once().await;
-            match result {
-                Some(exec_result) => {
-                    let outcome = self.executor.execute(
-                        handler.last_message().await.unwrap(), // TODO: fix this
-                        exec_result
-                    );
-                    match outcome {
-                        ExecutorOutcome::Ack => { /* ack tracking */ }
-                        ExecutorOutcome::Retry { count, delay_ms } => {
-                            sleep(Duration::from_millis(delay_ms)).await;
-                        }
-                        ExecutorOutcome::Rejected { .. } => { /* DLQ routing */ }
-                    }
-                }
-                None => break, // receiver closed
+async fn worker_loop(
+    // ... existing params ...
+    offset_coordinator: Option<Arc<dyn OffsetCoordinator>>,
+) {
+    // ...
+    match result {
+        ExecutionResult::Ok => {
+            // Existing queue ack
+            queue_manager.ack(&msg.topic, 1);
+            // New: record offset for commit coordination
+            if let Some(ref coord) = offset_coordinator {
+                coord.record_ack(&msg.topic, msg.partition, msg.offset);
             }
         }
+        // ...
     }
 }
 ```
 
-**Note:** `last_message()` on `PythonHandler` is a design issue — the handler consumes the message. Refactor to:
+**Key change:** `WorkerPool::new()` takes an optional `Arc<dyn OffsetCoordinator>`. When `None`, behavior is unchanged (backward compatible).
+
+### Modified Component: ConsumerRunner
 
 ```rust
-impl PythonHandler {
-    /// Polls and processes a message, returning (OwnedMessage, ExecutionResult).
-    /// This separates consumption from the callback result.
-    pub async fn process_one(&mut self) -> Option<(OwnedMessage, ExecutionResult)> {
-        let msg = self.receiver.recv().await?;
-        let result = self.invoke(msg.clone()).await;
-        Some((msg, result))
+// src/consumer/runner.rs (new methods)
+
+impl ConsumerRunner {
+    /// Stores the current consumer offset for a topic-partition.
+    /// Must be called before commit_consumer_state() for manual offset management.
+    pub fn store_offset(&self, topic: &str, partition: i32, offset: i64) -> Result<(), ConsumerError> {
+        let mut tpl = rdkafka::TopicPartitionList::new();
+        tpl.add_partition_offset(topic, partition, rdkafka::Offset::Offset(offset))
+            .map_err(|e| ConsumerError::Kafka(KafkaError::from(e)))?;
+        self.consumer.store_offsets(tpl)
+            .map_err(ConsumerError::from)
+    }
+
+    /// Commits all stored offsets asynchronously.
+    pub fn commit(&self) -> Result<(), ConsumerError> {
+        self.consumer
+            .commit_consumer_state(rdkafka::consumer::CommitMode::Async)
+            .map_err(ConsumerError::from)
     }
 }
 ```
+
+`store_offset` is needed because rdkafka requires explicit offset storage before manual commit.
 
 ## Data Flow
 
-### Primary Flow: Message to ExecutionResult
+### Ack → Commit Flow
 
 ```
-1. ConsumerDispatcher::register_handler("events", 100, None)
-       ↓
-   returns mpsc::Receiver<OwnedMessage>
-
-2. WorkerPool::run() spawns N workers
-
-3. Each worker calls PythonHandler::process_one()
-       ↓
-   receiver.recv().await  ( Tokio mpsc, fair distribution via select! )
-
-4. OwnedMessage → KafkaMessage (PyO3 boundary copy)
-       ↓
-5. tokio::task::spawn_blocking {
-       pyo3::Python::with(|py| {
-           callback.call1((py_msg,))
-       })
-   }
-       ↓
-6. ExecutionResult::Ok | Error | Rejected
-       ↓
-7. Executor::execute(msg, result) → ExecutorOutcome
-       ↓
-8. WorkerPool handles: Ack → track offset | Retry → re-enqueue | Rejected → DLQ
+1. ConsumerDispatcher::run() dispatches message
+        ↓
+2. WorkerPool worker picks up from mpsc::Receiver
+        ↓
+3. PythonHandler::invoke() → Python callback (spawn_blocking)
+        ↓
+4. ExecutionResult (Ok/Error/Rejected) returned
+        ↓
+5. WorkerLoop: if Ok:
+        queue_manager.ack(topic, 1)           // existing inflight tracking
+        offset_coordinator.record_ack(topic, partition, offset)  // NEW
+        ↓
+6. OffsetTracker::ack(topic, partition, offset)
+        - Updates pending_offsets
+        - Computes highest_contiguous
+        - If contiguous advance:
+          commit_tx.send((topic, partition, new_offset))
+        ↓
+7. OffsetCommitter task (background):
+        - Receives commit signal
+        - runner.store_offset(topic, partition, offset)
+        - runner.commit()
 ```
 
-### Backpressure Flow
+### No Duplicate Commit Logic
 
 ```
-ConsumerDispatcher::send(msg) → try_send to bounded channel
-       │
-       ├── Ok → Message buffered in handler's queue
-       │
-       └── Err(TrySendError::Full) → DispatchError::Backpressure
-                │
-                └── ConsumerDispatcher sees Backpressure
-                        ├── pause_partition() via rdkafka
-                        └── Resume when queue_depth < threshold (0.5 * capacity)
+OffsetTracker maintains per-partition committed_offset.
+On ack(topic, partition, offset):
+  if offset <= committed_offset: return  // already committed, no-op
+  // ... proceed with pending tracking
 ```
 
-This flow already exists in v1.1. The Python execution lane adds workers that poll from the handler's queue, draining it and preventing the queue from filling up (which would trigger backpressure).
+This prevents duplicate commits when the same offset is ack'd from multiple workers (which should not happen with single-partition mpsc channel, but is defensively prevented).
 
-### Channel Ownership
+## New vs Modified Components
 
-```
-ConsumerDispatcher
-    └── Dispatcher (owns mpsc::Sender half)
-            └── QueueManager (stores sender + metadata per topic)
-                    └── HandlerEntry { sender, metadata }
-
-ConsumerDispatcher::register_handler() returns the Receiver half
-    └── PythonHandler owns this Receiver
-            └── WorkerPool workers poll from it
-```
-
-## Component Responsibilities
-
-| Component | Responsibility | Location |
-|-----------|----------------|----------|
-| `ConsumerDispatcher` | Owns Runner+Dispatcher, dispatches messages, manages backpressure | `src/dispatcher/mod.rs` |
-| `mpsc::Receiver<OwnedMessage>` | Per-handler message queue (bounded) | Returned by `register_handler()` |
-| `PythonHandler` | Polls receiver, converts OwnedMessage→KafkaMessage, invokes Python callback | `src/python/handler.rs` |
-| `WorkerPool` | Runs N workers, distributes work across receiver | `src/python/worker_pool.rs` |
-| `Executor` | Policy: retry, commit, DLQ routing | `src/python/executor.rs` |
-| `ExecutionResult` | Normalized outcome enum | `src/python/execution_result.rs` |
+| Component | New/Modified | Reason |
+|-----------|-------------|--------|
+| `src/coordinator/mod.rs` | **NEW** | Module init for coordinator |
+| `src/coordinator/offset_tracker.rs` | **NEW** | Per-partition ack state machine |
+| `src/coordinator/commit_task.rs` | **NEW** | Background rdkafka commit task |
+| `src/coordinator/error.rs` | **NEW** | CoordinatorError |
+| `src/consumer/runner.rs` | **MODIFIED** | Add `store_offset()` method |
+| `src/python/executor.rs` | **MODIFIED** | Add `OffsetCoordinator` trait (alongside existing `Executor`) |
+| `src/worker_pool/mod.rs` | **MODIFIED** | Accept optional `Arc<dyn OffsetCoordinator>`, call `record_ack()` |
+| `src/pyconsumer.rs` | **MODIFIED** | Wire coordinator into WorkerPool and committer task |
 
 ## Project Structure
 
 ```
 src/
-├── lib.rs                    # Module init, pyclass exports
-├── consumer/                 # Pure Rust consumer core (PyO3-free)
+├── lib.rs                      # Module init, pyclass exports
+├── consumer/                   # Pure Rust consumer core
 │   ├── config.rs
 │   ├── error.rs
-│   ├── message.rs            # OwnedMessage
-│   └── runner.rs             # ConsumerRunner, ConsumerStream
-├── dispatcher/               # Pure Rust dispatcher (PyO3-free)
-│   ├── mod.rs                # Dispatcher, ConsumerDispatcher
-│   ├── queue_manager.rs      # QueueManager, HandlerMetadata
-│   ├── backpressure.rs       # BackpressurePolicy, BackpressureAction
-│   └── error.rs              # DispatchError
-├── python/                   # Python execution lane (NEW)
+│   ├── message.rs              # OwnedMessage
+│   └── runner.rs               # ConsumerRunner (MODIFIED: add store_offset)
+├── dispatcher/                 # Pure Rust dispatcher (unchanged)
+│   ├── mod.rs                  # Dispatcher, ConsumerDispatcher
+│   ├── queue_manager.rs        # QueueManager, HandlerMetadata
+│   ├── backpressure.rs
+│   └── error.rs
+├── python/                     # Python execution lane (unchanged)
 │   ├── mod.rs
-│   ├── execution_result.rs   # ExecutionResult enum
-│   ├── executor.rs           # Executor trait + DefaultExecutor
-│   ├── handler.rs            # PythonHandler
-│   └── worker_pool.rs        # WorkerPool
-├── kafka_message.rs          # PyO3 KafkaMessage (converts OwnedMessage)
-├── pyconsumer.rs             # PyO3 Consumer pyclass
-└── config.rs                 # PyO3 config structs
+│   ├── execution_result.rs
+│   ├── executor.rs             # MODIFIED: add OffsetCoordinator trait
+│   ├── handler.rs
+│   └── context.rs
+├── worker_pool/                # Worker pool (MODIFIED)
+│   └── mod.rs                  # WorkerPool: add offset_coordinator param
+├── coordinator/                # NEW: offset commit coordinator
+│   ├── mod.rs                  # OffsetTracker, OffsetCommitter, OffsetCoordinator traits
+│   ├── offset_tracker.rs       # PartitionState, highest-contiguous algorithm
+│   ├── commit_task.rs          # Background Tokio task
+│   └── error.rs                # CoordinatorError
+├── kafka_message.rs
+├── pyconsumer.rs               # PyO3 Consumer bridge (MODIFIED)
+└── config.rs
 ```
 
 **Structure rationale:**
-- `src/python/` is a new module for the execution lane — separates Python callback invocation from pure-Rust dispatcher logic
-- `execution_result.rs` has no PyO3 dependencies — can be unit tested with plain Rust
-- `executor.rs` is a pure Rust trait — no GIL needed, enables test doubles
-- `handler.rs` bridges Rust async (`mpsc::Receiver`) with Python GIL (`spawn_blocking`)
-- `worker_pool.rs` is async orchestration — depends on handler and executor
+- `coordinator/` is a new top-level module because it orchestrates cross-component behavior
+- `offset_tracker.rs` is pure Rust (no PyO3, no async in the tracking logic itself -- internal state uses tokio RwLock)
+- `commit_task.rs` is async (Tokio task managing the rdkafka commit loop)
+- No changes to `consumer/`, `dispatcher/`, or `python/` modules beyond the specific interfaces listed above
 
 ## Build Order
 
-### Phase 1: Foundation (No dependencies)
+### Phase 1: OffsetTracker (No dependencies on other new components)
 
-**1a. `src/python/execution_result.rs`**
-- Defines `ExecutionResult` enum
-- No dependencies on any other new module
-- Can be unit tested with plain Rust assertions
+**`src/coordinator/offset_tracker.rs`**
+- `PartitionState` struct with `committed_offset`, `pending_offsets`, `highest_ack`
+- `OffsetTracker` struct with `RwLock<HashMap<(String, i32), PartitionState>>`
+- `ack(topic, partition, offset) -> Option<i64>` -- the core algorithm
+- `highest_contiguous(topic, partition) -> Option<i64>`
+- Unit tests for the contiguous-offset algorithm
 
-**1b. `src/python/executor.rs`**
-- Defines `Executor` trait and `ExecutorOutcome`
-- Depends only on `ExecutionResult` and `OwnedMessage` (already exists)
-- Can be tested with a mock executor
+**`src/coordinator/error.rs`**
+- `CoordinatorError` enum
 
-### Phase 2: PythonHandler (Depends on Phase 1)
+**Testing:** Can be tested with plain Rust -- no Kafka, no Python, no async I/O needed for unit tests of the algorithm.
 
-**`src/python/handler.rs`**
-- Stores `mpsc::Receiver<OwnedMessage>` + `Py<PyAny>`
-- `process_one()` → `(OwnedMessage, ExecutionResult)`
-- Uses `spawn_blocking` for GIL-holding call
-- Depends on `Executor` (trait, can use `DefaultExecutor` for now)
+### Phase 2: OffsetCommitter (Depends on Phase 1 + ConsumerRunner)
 
-**Testing strategy:** Can be tested in isolation using a mock `Py<PyAny>` callback. No need for real Kafka or Python runtime — use `tox` environment or `mockall` for `Py<PyAny>`.
+**`src/coordinator/commit_task.rs`**
+- `OffsetCommitter::new(runner, tracker, ...)`
+- `spawn()` -- launches background Tokio task
+- Uses `watch` channel for commit signals
 
-### Phase 3: WorkerPool (Depends on Phase 2)
+**`src/coordinator/mod.rs`**
+- Exports `OffsetTracker`, `OffsetCommitter`, `OffsetCoordinator` trait
 
-**`src/python/worker_pool.rs`**
-- Owns `Arc<PythonHandler>` + `Arc<dyn Executor>`
-- `run()` spawns N Tokio tasks
-- `select!` on receiver for graceful shutdown
-- Implements backpressure-aware shutdown (stops accepting when signal received)
+**Testing:** Needs mock `ConsumerRunner` -- use `mockall` for trait mocking.
 
-### Phase 4: Integration with ConsumerDispatcher
+### Phase 3: ConsumerRunner store_offset (No dependencies)
 
-**`src/pyconsumer.rs` changes:**
-- Replace direct `ConsumerRunner::stream()` polling with `ConsumerDispatcher`
-- `add_handler(topic, callback)` → `ConsumerDispatcher::register_handler(topic, capacity, None)` + store `Py<PyAny>` in `PythonHandler`
-- Wire `WorkerPool` to the returned receiver
-- `start()` becomes: build config → create `ConsumerRunner` → wrap in `ConsumerDispatcher` → register handlers → run `WorkerPool`
+**`src/consumer/runner.rs`**
+- Add `store_offset(topic, partition, offset)` method
+- Delegates to `rdkafka::consumer::Consumer::store_offsets()`
 
-### Phase 5: PyO3 Bridge (Depends on Phase 4)
+**Testing:** Integration test with real Kafka or testcontainers.
 
-**`src/python/mod.rs` exports + `src/lib.rs` updates:**
-- Export `ExecutionResult`, `Executor`, `DefaultExecutor` to Python (if needed)
-- Add `#[pyclass]` variants if Python needs to inspect execution state
-- Update module initialization
+### Phase 4: Executor OffsetCoordinator Trait (No dependencies)
+
+**`src/python/executor.rs`**
+- Add `OffsetCoordinator` trait: `record_ack(topic, partition, offset)`
+- `OffsetTracker` implements `OffsetCoordinator`
+- Add `Arc<dyn OffsetCoordinator>` field to WorkerPool constructor
+
+**Testing:** Unit test with mock OffsetCoordinator.
+
+### Phase 5: WorkerPool Integration (Depends on Phase 1-4)
+
+**`src/worker_pool/mod.rs`**
+- `WorkerPool::new()` takes optional `Arc<dyn OffsetCoordinator>`
+- `worker_loop()` calls `offset_coordinator.record_ack()` on `ExecutionResult::Ok`
+- Existing `queue_manager.ack()` call remains unchanged
+
+**Testing:** Integration test with mock Python callback + mock OffsetCoordinator.
+
+### Phase 6: PyO3 Bridge (Depends on Phase 5)
+
+**`src/pyconsumer.rs`**
+- Create `OffsetTracker` and `OffsetCommitter` instances
+- Wire `OffsetCommitter` background task
+- Pass `Arc<dyn OffsetCoordinator>` to `WorkerPool::new()`
+
+**Testing:** End-to-end test with real Kafka + Python callback.
+
+## Commit/Store Coordination Flow
+
+```
+WorkerPool worker (tokio task, holds GIL briefly via spawn_blocking)
+    │
+    ├── ExecutionResult::Ok
+    │
+    └── offset_coordinator.record_ack(topic, partition, offset)
+            │
+            ▼
+OffsetTracker::ack()
+    │
+    ├── Updates pending_offsets (BTreeSet)
+    │
+    ├── Computes highest_contiguous
+    │
+    └── If committed_offset advances:
+            commit_tx.send((topic, partition, new_highest))
+                    │
+                    ▼
+OffsetCommitter task (background Tokio task, NOT holding GIL)
+    │
+    ├── Receives commit signal
+    │
+    ├── Checks min_commit_interval throttle
+    │
+    ├── runner.store_offset(topic, partition, offset)  // rdkafka store
+    │
+    └── runner.commit()                               // rdkafka async commit
+```
+
+**Why separate the commit task:**
+1. `store_offset` and `commit` are rdkafka operations -- they should not be on the worker hot path
+2. `spawn_blocking` (Python GIL) must be brief -- rdkafka network I/O should not compete
+3. The commit interval throttle prevents commit storms when many offsets become contiguous at once
+4. The watch channel is single-producer (tracker) single-consumer (committer) -- perfect fit
 
 ## Anti-Patterns to Avoid
 
-### 1. Calling Python on the Tokio Async Thread
+### 1. Committing Per-Message on the Worker Path
 
-**What people do:** Use `pyo3::Python::with()` directly inside an async task without `spawn_blocking`.
+**What people do:** Call `commit()` immediately after `ExecutionResult::Ok` on the worker task.
 
-**Why it's wrong:** Python's GIL is not thread-safe with async task scheduling. Holding the GIL across an `.await` point blocks the entire Tokio runtime from making progress on other tasks.
+**Why it's wrong:** rdkafka commits involve network I/O. Doing this on the worker hot path adds latency and can cause duplicate commits when offsets are acknowledged out-of-order.
 
-**Do this instead:** Always use `spawn_blocking` to cross from async Tokio context to Python GIL context.
+**Do this instead:** Decouple via `OffsetTracker` + `OffsetCommitter` task. Workers call `record_ack()` which is a pure in-memory update. Commit is a separate background task.
 
-### 2. Storing `Py<PyAny>` in a Mutex in the Async Context
+### 2. Storing Offset State in QueueManager
 
-**What people do:** Store callbacks in `Mutex<HashMap<String, Py<PyAny>>>` and lock on every message.
+**What people do:** Add offset tracking to `QueueManager` alongside queue depth/inflight.
 
-**Why it's wrong:** `Mutex` introduces serial contention across workers and creates a bottleneck at the hottest path.
+**Why it's wrong:** `QueueManager` already has one responsibility (queue metadata tracking). Adding offset semantics violates single responsibility and creates a circular dependency (QueueManager would need to know about ConsumerRunner for commits).
 
-**Do this instead:** Use `Arc<PythonHandler>` per handler — each handler owns its receiver and callback. Workers clone the `Arc` (cheap) and process independently.
+**Do this instead:** `OffsetTracker` is a separate component with its own module. `QueueManager` remains unchanged.
 
-### 3. Unbounded Receiver Loop Without Backpressure Awareness
+### 3. Blocking on Commit in Worker Loop
 
-**What people do:** `while let Some(msg) = receiver.recv().await { ... }` without checking queue depth.
+**What people do:** `runner.commit().await` on the worker task.
 
-**Why it's wrong:** If Python callbacks are slow (I/O bound, network), the queue fills up, causing `Dispatcher::send()` to return `Backpressure`, triggering `pause_partition()` on rdkafka. This creates a deadlock: consumer is paused, workers are still processing old messages slowly.
+**Why it's wrong:** `commit_consumer_state(Async)` returns immediately but internally queues the commit request. However, the worker task becomes coupled to the consumer's commit machinery. More importantly, if multiple workers all call commit simultaneously, you get redundant commits.
 
-**Do this instead:** WorkerPool should track in-flight count and pause polling when inflight exceeds a threshold (e.g., `capacity * 0.8`). Use `HandlerMetadata::get_inflight()` to inspect.
+**Do this instead:** Single `OffsetCommitter` task owns the commit path. All workers send signals via the tracker.
 
-### 4. Mapping PyErr to String Without Preserving Type Information
+### 4. Not Storing Offsets Before Committing
 
-**What people do:** `e.stringify(py).unwrap_or("unknown".to_string())` loses the Python exception class name.
+**What people do:** Calling `commit()` without `store_offset()` first.
 
-**Why it's wrong:** `"TypeError"` and `"ValueError"` are both just "exception occurred" — harder to debug in production.
+**Why it's wrong:** rdkafka requires explicit offset storage via `store_offsets()` before `commit_consumer_state()` for manual offset management. Without it, the commit uses the consumer's internal auto-commit state.
 
-**Do this instead:** Extract exception type and message separately:
-
-```rust
-Err(e) => {
-    let exc_type = e.get_type().name().to_string();
-    let exc_msg = e.stringify(py).unwrap_or_else(|_| "unknown".to_string());
-    ExecutionResult::Error {
-        exception: format!("{}: {}", exc_type, exc_msg),
-        traceback: String::new(),
-    }
-}
-```
+**Do this instead:** Always call `store_offset()` before `commit()` in the `OffsetCommitter` task.
 
 ## Integration Points
 
-### With ConsumerDispatcher
+### With WorkerPool
 
-**Registration:**
-```rust
-// In PyConsumer::add_handler()
-let receiver = consumer_dispatcher.register_handler(topic.clone(), capacity, max_concurrency);
-let handler = Arc::new(PythonHandler::new(receiver, callback));
-let worker_pool = WorkerPool::new(num_workers, handler, Arc::new(DefaultExecutor));
-```
+| Boundary | Communication | Notes |
+|----------|---------------|-------|
+| WorkerPool → OffsetCoordinator | `record_ack(topic, partition, offset)` | Called on each `ExecutionResult::Ok` |
+| OffsetCoordinator → OffsetTracker | Internal `Arc<RwLock<...>>` | Tracker is the state backend |
+| OffsetTracker → OffsetCommitter | `watch::Sender<Option<(String,i32,i64)>>` | Signal on contiguous advance |
 
-**Shutdown:** When `stop()` is called on `PyConsumer`, signal `WorkerPool` to stop polling gracefully. The `mpsc::Receiver` being dropped causes workers to exit their loops cleanly.
+### With ConsumerRunner
 
-### With KafkaMessage (PyO3 Boundary)
+| Method | Purpose | Notes |
+|--------|---------|-------|
+| `store_offset(topic, partition, offset)` | Persist offset to rdkafka | Must be called before `commit()` |
+| `commit()` | Async commit of stored offsets | Already exists, wraps `commit_consumer_state(Async)` |
 
-`OwnedMessage` → `KafkaMessage` conversion happens inside `PythonHandler::invoke()` via `KafkaMessage::from(msg)`. This copy is necessary because:
-1. `KafkaMessage` is a `#[pyclass]` — Python owns the reference
-2. `OwnedMessage` is Rust-owned and must not contain Python references (Send+Sync requirement)
-3. The conversion is a single `From` implementation already in `kafka_message.rs`
+### With Executor (unchanged)
 
-### With Existing PyConsumer
-
-The current `pyconsumer.rs` directly uses `ConsumerRunner::stream()`. After v1.2, it should use `ConsumerDispatcher` which internally uses the same stream but adds dispatcher routing. The change is additive — the dispatcher wraps the runner:
-
-```rust
-// Before
-let mut stream = runner.stream();
-while let Some(result) = stream.next().await { /* direct dispatch */ }
-
-// After
-let dispatcher = ConsumerDispatcher::new(runner);
-let receiver = dispatcher.register_handler(topic, capacity, concurrency);
-let pool = WorkerPool::new(workers, handler, executor);
-pool.run().await;
-```
+`Executor::execute()` is still called on each execution result. The offset ack path goes through `OffsetCoordinator` trait, not through `Executor`. This keeps the two concerns separate.
 
 ## Scaling Considerations
 
 | Scale | Concern | Approach |
 |-------|---------|----------|
-| 1-10 workers | GIL contention | Keep workers ≤ 4; Python GIL serializes callbacks |
-| 10-100 workers | Handler queue depth | Increase capacity; monitor queue_depth via `HandlerMetadata` |
-| 100+ workers | Partition distribution | Each topic-partition has own queue — no cross-partition contention |
+| 1-10 partitions | Memory for pending_offsets | BTreeSet per partition is efficient up to ~100K pending offsets |
+| 10-100 partitions | RwLock contention on tracker | Partition state is per-(topic, partition) -- fine-grained locking |
+| 100+ partitions | Commit thrashing | `min_commit_interval` throttle (e.g., 100ms default) |
+| High throughput | Many offsets per second | `OffsetTracker::ack` is O(log N) where N = pending offsets per partition |
 
-**GIL is the hard limit.** Multiple workers only help when Python callbacks release the GIL (e.g., I/O operations via `aiofiles`, external API calls). For CPU-bound Python callbacks, a single worker is optimal.
-
-**Concurrency configuration:**
-```rust
-// Per-handler semaphore limits concurrent Python executions
-let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
-let receiver = dispatcher.register_handler_with_semaphore(topic, capacity, Some(semaphore));
-```
-
-This is already wired through `ConsumerDispatcher::register_handler()` — the Python layer just needs to propagate the `max_concurrent` parameter.
+**Memory estimate:** For a partition with 1M message lag and 1s commit interval, worst-case pending_offsets BTreeSet holds ~1000 offsets (1s of processing at 1K msg/s). Each i64 is 8 bytes + BTreeSet overhead. Negligible.
 
 ## Sources
 
-- PyO3 GIL management: `pyo3-async-runtimes` + `spawn_blocking` (observed in `src/pyconsumer.rs`)
-- Tokio mpsc channel: `tokio::sync::mpsc` (used in `src/dispatcher/mod.rs`)
-- Executor pattern: service layer idiom from `common/patterns.md` (Rust adaptation)
-- OwnedMessage: `src/consumer/message.rs` (already Send+Sync)
+- rdkafka `Consumer::store_offsets` and `commit_consumer_state` API (confirmed via existing `ConsumerRunner::commit()` implementation)
+- Tokio `watch` channel for single-producer single-consumer signalling (standard pattern)
+- Existing `Executor` trait and `OffsetAck` placeholder stub in `src/python/executor.rs`
+- `WorkerPool::worker_loop` ack pattern in `src/worker_pool/mod.rs`
 
 ---
-*Architecture research for: Python execution lane*
+*Architecture research for: offset commit coordinator*
 *Researched: 2026-04-16*

@@ -1,359 +1,348 @@
-# Stack Research: Python Execution Lane
+# Stack Research: Offset Commit Coordinator
 
-**Domain:** PyO3 Rust Kafka client - Python execution lane
+**Domain:** PyO3 Rust Kafka client — per-topic-partition highest-contiguous-offset commit coordination
 **Researched:** 2026-04-16
-**Confidence:** HIGH (based on PyO3 0.27.2 API analysis and existing codebase patterns)
+**Confidence:** MEDIUM (rdkafka 0.38 API verified via Context7, but offset-store async patterns lack published code examples)
 
 ## Executive Summary
 
-The Python execution lane requires bridging Tokio async workers with Python callable invocation while minimizing GIL hold time. The existing stack (PyO3 0.27.2, pyo3-async-runtimes 0.27.0, Tokio 1.40, parking_lot 0.12) is sufficient. No new crate dependencies are needed. The key addition is architectural: a WorkerPool that pulls from mpsc channels and invokes Python via `spawn_blocking`.
+The v1.3 offset commit coordinator requires a new `OffsetTracker` data structure that tracks per-topic-partition acknowledged offsets and computes the highest contiguous offset for commit. The key rdkafka APIs are `store_offset()` (per-message, async-safe) and `commit_consumer_state()` (batch commit). The existing `ConsumerRunner::commit()` method already wraps the latter — the new component integrates between `ExecutionResult::Ok` (from WorkerPool) and rdkafka's offset storage layer.
+
+No new crate dependencies are needed. The existing stack (rdkafka 0.38, Tokio, parking_lot) is sufficient.
 
 ## Recommended Stack
 
 ### Core Technologies (Already Present)
 
-| Technology | Version | Status | Purpose |
-|------------|---------|--------|---------|
-| pyo3 | 0.27.2 | Existing | Python-Rust FFI, Py<PyAny> for GIL-independent storage |
-| pyo3-async-runtimes | 0.27.0 | Existing | `future_into_py` for Python async boundary |
-| tokio | 1.40 | Existing | Async runtime, `spawn_blocking` for GIL release |
-| parking_lot | 0.12 | Existing | Fast mutex for handler map access |
+| Technology | Version | Purpose | Why |
+|------------|---------|---------|-----|
+| rdkafka | 0.38 | Kafka protocol, `store_offset`, `commit` | Current version, verified via Context7 |
+| tokio | 1.40 | Async runtime, channels | Existing stack |
+| parking_lot | 0.12 | Fast mutex for tracker map | Existing stack, no poison semantics |
+| thiserror | 2.0 | Error types | Existing stack |
 
-### Architecture Components (No New Crates)
+### New Module: OffsetTracker
 
-| Component | Implementation | Purpose |
-|-----------|---------------|---------|
-| Python storage | `Py<PyAny>` (existing) | GIL-independent callback storage |
-| GIL release | `tokio::task::spawn_blocking` | Minimal GIL hold window |
-| Worker pool | `tokio::task::JoinSet` | Manage concurrent workers |
-| Work distribution | Tokio `mpsc::Receiver` (existing) | Pull from dispatcher queues |
-| Executor trait | Custom trait in Rust | Retry/commit/async/batch policies |
+```
+src/offset/
+  mod.rs
+  tracker.rs       # OffsetTracker struct + TopicPartition tracking
+  commit.rs        # CommitCoordinator (store_offset + commit coordination)
+```
 
-## Py<PyAny> Storage Pattern
+## rdkafka Offset API Deep Dive
 
-**Current state:** `pyconsumer.rs` uses `Arc<Mutex<HashMap<String, Py<PyAny>>>>` for callback storage.
+### Two-Phase Offset Model
 
-**Correct pattern for GIL-independent storage:**
+rdkafka uses a two-phase model for manual offset management:
+
+1. **Store phase** — `consumer.store_offset()` records the offset you have processed in memory. This is fast, local, non-blocking.
+2. **Commit phase** — `consumer.commit_consumer_state()` flushes stored offsets to the broker. This is a network call.
+
+```
+Message received (offset N)
+    → worker.process()
+    → ExecutionResult::Ok
+    → offset_tracker.ack(topic, partition, N)   # store phase (in-memory)
+    → offset_tracker.commit_ready()              # check highest contiguous
+    → consumer.store_offset(topic, partition, N) # persist to librdkafka
+    → consumer.commit_consumer_state()          # flush to broker
+```
+
+### store_offset() vs commit_message()
+
+| API | Behavior | Use Case |
+|-----|---------|----------|
+| `consumer.store_offset(topic, partition, offset)` | Stores offset in librdkafka's internal map. Does NOT send to broker. Returns `()`, async-safe. | Called on every processed message before ack is returned |
+| `consumer.commit_consumer_state()` | Sends all stored offsets to broker in one request. | Periodic batch commit (e.g., every N offsets or T timeout) |
+| `consumer.commit_message(msg, CommitMode)` | Stores AND commits a single message's offset immediately. | Synchronous per-message commit (higher latency) |
+
+**Key insight for v1.3:**
+- Use `store_offset()` after each `ExecutionResult::Ok` to record processed position
+- Use `commit_consumer_state()` periodically (batch) rather than per-message
+- This gives at-least-once delivery: if process crashes after store_offset but before commit_consumer_state, librdkafka re-delivers from the stored position on restart
+
+### Configuration Required
 
 ```rust
-// Storage: Py<PyAny> is Send + Sync when cloned correctly
-handlers: Arc<parking_lot::Mutex<HashMap<String, Py<PyAny>>>>
-
-// Cloning for cross-thread use:
-let handler = handler.clone();  // Py<PyAny> is Arc-based, cheap clone
-let py_msg = py_msg.clone();
-
-// Access pattern:
-// 1. Lock the map (parking_lot::Mutex, not std::sync::Mutex)
-// 2. Get &Py<PyAny>
-// 3. Drop lock BEFORE calling Python
-// 4. Use spawn_blocking for Python invocation
+// ConsumerConfig builder must set:
+.enable.auto.commit(false)           // Disable automatic commit
+.set("enable.auto.offset.store", "false")  // Disable auto-store (we do it manually)
+// Note: rdkafka default is enable.auto.offset.store=true (auto-store on consume)
+// We need false so our store_offset() is the authoritative trigger
 ```
 
-**Why parking_lot over std::sync::Mutex:**
-- No poison semantics (easier error handling)
-- Faster uncontended lock acquisition
-- Already in Cargo.toml
+**Why disable auto-store:**
+- rdkafka's default `enable.auto.offset.store=true` auto-stores offset on every `recv()`
+- This means librdkafka already tracks consumed offsets internally
+- With manual mode, we control exactly when `store_offset()` is called (after successful processing)
+- This allows out-of-order processing: we ack offset 10 before offset 9, but only commit 9 once 8 is also acked
 
-## Python Invocation: spawn_blocking
+### Async Safety
 
-**Why spawn_blocking:**
+`store_offset()` is async-safe — it only writes to an in-memory HashMap inside librdkafka. No network I/O, no blocking. Safe to call from any Tokio task.
 
-| Approach | GIL Hold | Throughput | Complexity |
-|----------|----------|------------|------------|
-| Direct call in async context | Full duration | Low | Low |
-| `Python::spawn` (pyo3 0.20+) | Full duration | Medium | Medium |
-| `spawn_blocking` | Only during actual Python call | High | Medium |
+`commit_consumer_state()` is also async-safe (wraps `rd_kafka_commit` which has an async variant in librdkafka). The existing `ConsumerRunner::commit()` already wraps this.
 
-**Recommended pattern:**
+## OffsetTracker Data Structure
+
+### Design: Per-Topic-Partition Tracking with Highest-Contiguous-Offset Logic
 
 ```rust
-// Minimal GIL hold window
-let handler = handler.clone();
-let py_msg = py_msg.clone();
+use std::collections::HashMap;
+use parking_lot::Mutex;
+use std::sync::Arc;
 
-tokio::task::spawn_blocking(move || {
-    Python::with_gil(|py| {
-        let py_msg = py_msg.as_ref(py);
-        handler.call1(py, (py_msg,)).map_err(|e| e.to_string())
-    })
-})
-.await
-.map_err(|e| PyErr::from(e))?;
-```
-
-**Key principles:**
-1. Clone `Py<PyAny>` before entering async block (cheap, Arc-based)
-2. Call `Python::with_gil` inside `spawn_blocking`
-3. Minimize work inside `with_gil` closure
-4. Convert errors OUTSIDE the GIL if possible
-
-**Python::with_gil vs Python::spawn:**
-
-- `Python::with_gil(|py| { ... })` - acquire GIL, run closure, release GIL
-- `Python::spawn(|py| { ... })` - spawn a thread with GIL (pyo3 0.20+)
-- For `spawn_blocking`, use `with_gil` since Tokio manages the thread
-
-## WorkerPool Architecture
-
-**Design:** Rust owns orchestration; Python callbacks are invoked in worker tasks.
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  ConsumerRunner (Tokio task)                           │
-│  - Produces OwnedMessage via stream                    │
-└─────────────────────┬───────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────┐
-│  ConsumerDispatcher                                     │
-│  - Routes to per-topic bounded mpsc channels           │
-└─────────────────────┬───────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────┐
-│  mpsc::Receiver<OwnedMessage> (per topic)               │
-│  - Bounded queue with configurable capacity            │
-└─────────────────────┬───────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────┐
-│  WorkerPool                                            │
-│  - JoinSet manages N worker tasks                     │
-│  - Each worker: recv() -> spawn_blocking -> invoke     │
-│  - Executor trait for retry/commit/async/batch         │
-└─────────────────────────────────────────────────────────┘
-```
-
-**WorkerPool implementation sketch:**
-
-```rust
-pub struct WorkerPool {
-    workers: tokio::task::JoinSet<WorkerResult>,
-    receiver: mpsc::Receiver<OwnedMessage>,
-    executor: Arc<dyn Executor>,
+/// Tracks acknowledged offsets for a single topic-partition.
+/// Computes highest contiguous offset — the position to commit.
+pub struct TopicPartitionOffset {
+    /// All acknowledged offsets (may have gaps due to out-of-order ack).
+    /// Using i64 offset as key for O(1) lookup.
+    acked: std::collections::HashSet<i64>,
+    /// Highest contiguous offset that can be committed.
+    /// This equals the lowest offset in a contiguous sequence from 0.
+    /// Recalculated on every ack.
+    highest_contiguous: i64,
+    /// Last committed offset (to avoid duplicate commits).
+    last_committed: i64,
 }
 
-impl WorkerPool {
-    pub fn new(
-        receiver: mpsc::Receiver<OwnedMessage>,
-        executor: Arc<dyn Executor>,
-        num_workers: usize,
-    ) -> Self {
-        let mut pool = Self {
-            workers: JoinSet::new(),
-            receiver,
-            executor,
-        };
-        for _ in 0..num_workers {
-            pool.spawn_worker();
+impl TopicPartitionOffset {
+    /// Record an ack for `offset`. Recalculates highest_contiguous.
+    pub fn ack(&mut self, offset: i64) {
+        self.acked.insert(offset);
+        self.recalculate_highest_contiguous();
+    }
+
+    /// Returns the highest contiguous offset to commit, or None if no advance.
+    pub fn commit_ready(&self) -> Option<i64> {
+        let candidate = self.highest_contiguous;
+        if candidate > self.last_committed {
+            Some(candidate)
+        } else {
+            None
         }
-        pool
     }
 
-    fn spawn_worker(&mut self) {
-        let executor = Arc::clone(&self.executor);
-        self.workers.spawn(async move {
-            // Worker loop - recv from channel, invoke via spawn_blocking
-            loop {
-                // This recv() is cancellation-safe
-                if let Some(msg) = receiver.recv().await {
-                    let result = executor.execute(msg).await;
-                    if result.is_err() {
-                        // Log error, decide whether to continue
-                    }
-                } else {
-                    break; // Sender dropped
-                }
-            }
-        });
+    /// Mark `offset` as committed to avoid duplicate commits.
+    pub fn committed(&mut self, offset: i64) {
+        self.last_committed = offset;
+        // Also clean up acked set below committed offset to prevent unbounded growth
+        self.acked.retain(|&o| o > offset);
+        self.highest_contiguous = offset + 1;
     }
 
-    pub async fn join(self) {
-        self.workers.join_all().await;
-    }
-}
-```
-
-## Executor Trait for Future Policies
-
-**Design pattern:** Strategy/trait-based for retry, commit, async, batch policies.
-
-```rust
-/// Outcome of executing a message handler.
-pub enum ExecutionResult {
-    /// Handler succeeded.
-    Success,
-    /// Handler failed, optionally retryable.
-    Failed { error: String, retryable: bool },
-}
-
-/// Executor trait - implemented for different policies.
-pub trait Executor: Send + Sync {
-    /// Execute handler for a single message.
-    /// Called from worker task; MUST be async to support future policies.
-    fn execute(&self, msg: OwnedMessage) -> impl Future<Output = ExecutionResult> + Send;
-}
-
-/// Retry executor - retries with exponential backoff.
-pub struct RetryExecutor {
-    max_retries: u32,
-    base_delay: Duration,
-    inner: Arc<dyn Executor>,
-}
-
-impl RetryExecutor {
-    pub fn new(max_retries: u32, base_delay: Duration, inner: Arc<dyn Executor>) -> Self {
-        Self { max_retries, base_delay, inner }
-    }
-}
-
-impl Executor for RetryExecutor {
-    async fn execute(&self, msg: OwnedMessage) -> ExecutionResult {
-        let mut delay = self.base_delay;
-        for attempt in 0..=self.max_retries {
-            match self.inner.execute(msg.clone()).await {
-                ExecutionResult::Success => return ExecutionResult::Success,
-                ExecutionResult::Failed { error, retryable } if retryable && attempt < self.max_retries => {
-                    tokio::time::sleep(delay).await;
-                    delay *= 2; // Exponential backoff
-                }
-                ExecutionResult::Failed { error, .. } => {
-                    return ExecutionResult::Failed { error, retryable: false };
-                }
-            }
+    fn recalculate_highest_contiguous(&mut self) {
+        // Find the lowest offset that has a gap (missing offset)
+        // Start from last_committed + 1 and scan forward
+        let mut candidate = self.last_committed + 1;
+        while self.acked.contains(&candidate) {
+            candidate += 1;
         }
-        ExecutionResult::Failed { error: "max retries exceeded".into(), retryable: false }
+        self.highest_contiguous = candidate;
     }
-}
-
-/// Batch executor - accumulates messages, invokes in batch.
-pub struct BatchExecutor {
-    batch_size: usize,
-    timeout: Duration,
-    inner: Arc<dyn Executor>,
 }
 ```
 
-## spawn_blocking vs Thread-Per-Worker
+**Why HashSet for acked:**
+- O(1) insert and lookup
+- Memory is bounded (only uncommitted offsets are stored)
+- Cleanup on commit (`retain` only offsets > committed) prevents unbounded growth
 
-**Decision criteria:**
+**Why recalculate on every ack:**
+- Out-of-order completion means offset 10 can be acked before offset 9
+- `highest_contiguous` finds the first gap in the sequence starting from `last_committed + 1`
+- If acked = {5, 6, 8, 9, 10} and last_committed = 4, then highest_contiguous = 7 (gap at 7)
 
-| Factor | spawn_blocking | Dedicated Thread Pool |
-|--------|----------------|----------------------|
-| Callback duration | Short (<10ms) | Long-running |
-| Throughput needs | Medium | High |
-| CPU-bound Python | Poor | Good |
-| IO-bound Python | Good | Good |
-| Code complexity | Low | High |
-| GIL contention | Low | Manageable |
-
-**Recommendation:** Start with `spawn_blocking` only.
-
-**Rationale:**
-1. Tokio maintains an internal thread pool for blocking tasks (size: `tokio::runtime::Builder::max_blocking_threads`)
-2. For Kafka message processing, callbacks are typically IO-bound (database writes, HTTP calls)
-3. Avoids complexity of managing a separate thread pool
-4. Can upgrade to dedicated threads later if profiling shows blocking issues
-
-**When to add dedicated threads:**
-- Python callbacks are CPU-intensive (image processing, ML inference)
-- Latency requirements are microsecond-level
-- Profiling shows Tokio blocking pool saturation
-
-**Implementation if needed:**
+### OffsetTracker: Multi-Topic-Partition Manager
 
 ```rust
-// Instead of spawn_blocking, use a dedicated thread pool
-use std::thread;
-
-pub struct DedicatedThreadPool {
-    workers: Vec<thread::JoinHandle<()>>,
-    sender: mpsc::Sender<OwnedMessage>,
+pub struct OffsetTracker {
+    partitions: parking_lot::Mutex<HashMap<TopicPartitionKey, TopicPartitionOffset>>,
 }
 
-impl DedicatedThreadPool {
-    pub fn new(num_threads: usize) -> Self {
-        let (tx, rx) = mpsc::channel(1000);
-        let workers = (0..num_threads)
-            .map(|_| {
-                let rx = rx.clone();
-                thread::spawn(move || {
-                    Python::with_gil(|py| {
-                        worker_loop(py, rx);
-                    })
-                })
-            })
-            .collect();
-        Self { workers, sender: tx }
+#[derive(Clone, Hash, Eq, PartialEq)]
+struct TopicPartitionKey {
+    topic: String,
+    partition: i32,
+}
+
+impl OffsetTracker {
+    /// Record ack for (topic, partition, offset).
+    pub fn ack(&self, topic: &str, partition: i32, offset: i64) {
+        let mut guard = self.partitions.lock();
+        let tp = guard.entry(TopicPartitionKey::new(topic, partition))
+            .or_insert_with(|| TopicPartitionOffset::new());
+        tp.ack(offset);
+    }
+
+    /// Returns offsets ready to commit: Map<TopicPartitionKey, i64>
+    /// Call this before store_offset + commit_consumer_state.
+    pub fn commit_ready(&self) -> HashMap<TopicPartitionKey, i64> {
+        let guard = self.partitions.lock();
+        guard.iter()
+            .filter_map(|(k, v)| v.commit_ready().map(|offset| (k.clone(), offset)))
+            .collect()
+    }
+
+    /// Mark offsets as committed. Call this after successful commit_consumer_state.
+    pub fn committed(&self, topic: &str, partition: i32, offset: i64) {
+        let mut guard = self.partitions.lock();
+        if let Some(tp) = guard.get_mut(&TopicPartitionKey::new(topic, partition)) {
+            tp.committed(offset);
+        }
     }
 }
 ```
 
-## No New Crate Dependencies Required
+### Integration with Existing ConsumerRunner
 
-**Cargo.toml already contains:**
+The `OffsetTracker` is owned by a new `CommitCoordinator` that sits between `ExecutionResult::Ok` events and `ConsumerRunner::commit()`:
 
-| Dependency | Purpose | Used For |
-|------------|---------|----------|
-| pyo3 0.27.2 | Python bindings | Py<PyAny>, GIL management |
-| pyo3-async-runtimes 0.27.0 | Async bridging | future_into_py |
-| tokio 1.40 | Async runtime | spawn_blocking, JoinSet |
-| parking_lot 0.12 | Mutex | Handler map storage |
-| async-trait 0.1 | Async traits | Executor trait |
-| thiserror 2.0 | Errors | ExecutionResult errors |
+```rust
+pub struct CommitCoordinator {
+    tracker: Arc<OffsetTracker>,
+    consumer: Arc<StreamConsumer>,  // from ConsumerRunner
+    // Config: commit batch size and interval
+    commit_batch_size: usize,
+    commit_interval: Duration,
+}
 
-**No additions needed for v1.2 scope.**
+impl CommitCoordinator {
+    /// Called from WorkerPool on ExecutionResult::Ok.
+    pub fn on_message_acked(&self, topic: &str, partition: i32, offset: i64) {
+        // 1. Ack in tracker
+        self.tracker.ack(topic, partition, offset);
+
+        // 2. Check if we should store_offset
+        if let Some(commit_offset) = self.tracker.commit_ready(topic, partition) {
+            // 3. Store in rdkafka (fast, async-safe)
+            self.consumer.store_offset(topic, partition, commit_offset);
+        }
+    }
+
+    /// Called periodically (timer or batch count).
+    /// Returns offsets that were committed.
+    pub fn flush_commit(&self) -> Result<Vec<(String, i32, i64)>, ConsumerError> {
+        let ready = self.tracker.commit_ready_all();
+        if ready.is_empty() {
+            return Ok(vec![]);
+        }
+        // store_offset for all ready (already done in on_message_acked for incremental)
+        // Commit all to broker
+        self.consumer.commit_consumer_state(rdkafka::consumer::CommitMode::Async)?;
+        // Mark as committed
+        for (topic, partition, offset) in &ready {
+            self.tracker.committed(topic, partition, *offset);
+        }
+        Ok(ready)
+    }
+}
+```
+
+## Integration with Existing Modules
+
+### Integration Point 1: WorkerPool worker_loop
+
+In `worker_loop` (currently in `src/worker_pool/mod.rs`), replace:
+
+```rust
+// Current:
+ExecutionResult::Ok => {
+    queue_manager.ack(&msg.topic, 1);
+}
+```
+
+With:
+
+```rust
+// New:
+ExecutionResult::Ok => {
+    queue_manager.ack(&msg.topic, 1);
+    // Wire execution completion to offset tracker
+    if let Some(coordinator) = self.commit_coordinator.as_ref() {
+        coordinator.on_message_acked(&msg.topic, msg.partition, msg.offset);
+    }
+}
+```
+
+### Integration Point 2: ConsumerRunner
+
+`ConsumerRunner::commit()` already exists. The new `CommitCoordinator` wraps the same consumer and calls `commit_consumer_state()` on a timer/batch schedule.
+
+### Integration Point 3: ConsumerConfig
+
+Add `enable_auto_commit(false)` and `enable_auto_offset_store(false)` to `ConsumerConfig::build_rdkafka_config()`.
+
+## Async-Safe Patterns
+
+### store_offset: Always Safe
+
+`StreamConsumer::store_offset()` in rdkafka writes to an internal `HashMap<TopicPartition, i64>` protected by librdkafka's own mutex. This is thread-safe and async-safe.
+
+**No additional synchronization needed** between WorkerPool workers calling `store_offset()` concurrently — librdkafka handles it internally.
+
+### commit_consumer_state: Async-Safe
+
+`commit_consumer_state(CommitMode::Async)` is also async-safe. It spawns a background task in librdkafka's internal thread pool.
+
+### Race Condition Prevention
+
+**Scenario:** Worker A acks offset 10, Worker B acks offset 11, both call `store_offset()` concurrently.
+
+**Prevents double-commit via `last_committed` guard:**
+```rust
+pub fn commit_ready(&self) -> Option<i64> {
+    let candidate = self.highest_contiguous;
+    if candidate > self.last_committed {  // Only advance if new
+        Some(candidate)
+    } else {
+        None
+    }
+}
+```
+
+**Scenario:** `flush_commit()` calls `commit_consumer_state()` while WorkerPool is calling `store_offset()`.
+
+**No race:** `store_offset()` only updates the in-memory map. `commit_consumer_state()` reads from the same map and sends to broker. librdkafka's internal map is the source of truth and is protected by its own locking.
 
 ## Alternatives Considered
 
 | Approach | Why Not | When Better |
-|----------|--------|-------------|
-| `async-std` instead of Tokio | Existing stack uses Tokio | N/A (committed to Tokio) |
-| `rayon` for parallelism | Rayon is for data parallelism, not Python callbacks | CPU-heavy batch processing |
-| `flume` channel | Tokio mpsc is sufficient | Very high throughput (>1M msg/s) |
-| `crossbeam-channel` | Tokio mpsc is sufficient | Multi-runtime communication |
-| Dedicated thread pool | Adds complexity without benefit for IO-bound callbacks | CPU-intensive Python work |
+|----------|---------|-------------|
+| Per-message `commit_message()` | Synchronous, higher latency, blocks worker | When strict ordering required and latency tolerance is low |
+| rdkafka's built-in `enable.auto.commit=true` | No control over highest-contiguous, commits all acked | When at-least-once is acceptable and simplicity preferred |
+| Async commit via `commit_consumer_state(Async)` vs `Sync` | Already using Async in `ConsumerRunner::commit()` | N/A — already chosen |
+| Use `parking_lot::RwLock` for tracker | Unnecessary — all operations are fast, no read-heavy/read-write distinction | When reader contention becomes an issue at high throughput |
 
 ## What NOT to Use
 
 | Pattern | Avoid Because |
 |---------|----------------|
-| `Python::attach()` in async context | Blocks async executor, defeats purpose of async |
-| `std::sync::Mutex` over `parking_lot::Mutex` | Poison semantics complicate error handling, slower |
-| Unbounded channels in hot path | Memory unboundedness can OOM |
-| Calling Python without `spawn_blocking` | Holds GIL for entire async task duration |
+| `enable.auto.commit=true` | Commits automatically on consume, bypassing our ack tracking — defeats highest-contiguous logic |
+| `enable.auto.offset.store=true` | rdkafka auto-stores on every `recv()`, bypassing our store_offset control |
+| Per-message `commit_message` | Synchronous, network round-trip per message, high latency |
+| `CommitMode::Sync` for batch commit | Blocks Tokio thread — use `Async` always |
+| `std::sync::Mutex` over `parking_lot::Mutex` | Poison semantics complicate error handling, slower uncontended acquisition |
 
-## Implementation Order
+## Version Compatibility
 
-**Phase 1: WorkerPool skeleton**
-- Create `WorkerPool` struct with `JoinSet`
-- Basic message receive loop
-- Single `spawn_blocking` invocation
-
-**Phase 2: Executor trait**
-- Define `Executor` trait
-- Implement `DefaultExecutor` (direct invocation)
-- Implement `RetryExecutor`
-
-**Phase 3: Error handling + ack integration**
-- Map Python errors to `ExecutionResult`
-- Integrate with `QueueManager::ack()` for inflight tracking
-
-**Phase 4: Concurrency tuning**
-- Add `num_workers` configuration
-- Benchmark with realistic workloads
-- Add dedicated threads only if profiling demands
+| Package | Version | Compatible With | Notes |
+|---------|---------|-----------------|-------|
+| rdkafka | 0.38 | Tokio 1.40, pyo3 0.27.2 | Current version, verified via `cargo search` |
+| rdkafka-sys | (bundled) | librdkafka 2.6.x | Bundled with rdkafka 0.38 |
+| parking_lot | 0.12 | rdkafka 0.38 | No conflicts |
 
 ## Sources
 
-- PyO3 0.27.2 source code (features: "extension-module", "generate-import-lib")
-- pyo3-async-runtimes 0.27.0 documentation
-- Tokio 1.40 `spawn_blocking` and `JoinSet` API
-- Existing `pyconsumer.rs` patterns (line 24: `handlers: Arc<Mutex<HashMap<String, Py<PyAny>>>>`)
-- Existing `queue_manager.rs` patterns (line 139: `parking_lot::Mutex`)
+- Context7: `/fede1024/rust-rdkafka` — `store_offset` and `commit_consumer_state` API verified
+- Context7: `/fede1024/rust-rdkafka` — `StreamConsumer` API verified (already in use in `src/consumer/runner.rs`)
+- `src/consumer/runner.rs:116-121` — existing `commit()` implementation using `CommitMode::Async`
+- `src/consumer/config.rs:227` — existing `enable_auto_commit` config
+- `Cargo.toml:29` — `rdkafka = { version = "0.38" }` confirmed as current version
+- `src/worker_pool/mod.rs:64` — `queue_manager.ack()` integration pattern
+- `src/python/executor.rs:72` — `OffsetAck` placeholder trait marker
 
 ---
-
-*Stack research for: Python Execution Lane v1.2*
+*Stack research for: Offset Commit Coordinator v1.3*
 *Researched: 2026-04-16*
