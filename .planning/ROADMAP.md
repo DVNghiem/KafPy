@@ -26,7 +26,7 @@
 **Plans**: 2 plans
 **Plan list**:
 - [x] 06-01-PLAN.md — Dispatcher core: error.rs, mod.rs, lib.rs
-- [ ] 06-02-PLAN.md — Dispatcher unit tests
+- [x] 06-02-PLAN.md — Dispatcher unit tests
 
 ### Phase 7: Backpressure + Queue Manager
 **Goal**: Backpressure tracking and policy hooks with queue manager metadata
