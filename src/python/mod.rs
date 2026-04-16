@@ -14,11 +14,13 @@
 //! - Phase 10: WorkerPool [Phase 10]
 
 pub mod context;
-pub mod executor;
 pub mod execution_result;
+pub mod executor;
 pub mod handler;
 
 pub use context::ExecutionContext;
-pub use executor::{AsyncHandler, DefaultExecutor, Executor, ExecutorOutcome, OffsetAck, RetryExecutor};
 pub use execution_result::ExecutionResult;
+pub use executor::{
+    AsyncHandler, DefaultExecutor, Executor, ExecutorOutcome, OffsetAck, RetryExecutor,
+};
 pub use handler::PythonHandler;

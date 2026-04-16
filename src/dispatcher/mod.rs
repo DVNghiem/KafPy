@@ -27,8 +27,8 @@ pub mod error;
 pub mod queue_manager;
 
 pub use crate::consumer::{MessageTimestamp, OwnedMessage};
-pub use backpressure::{BackpressureAction, DefaultBackpressurePolicy, PauseOnFullPolicy};
 pub(crate) use backpressure::BackpressurePolicy;
+pub use backpressure::{BackpressureAction, DefaultBackpressurePolicy, PauseOnFullPolicy};
 pub use error::DispatchError;
 use queue_manager::QueueManager;
 use std::sync::atomic::Ordering;
@@ -177,7 +177,10 @@ impl Dispatcher {
         &self,
         message: OwnedMessage,
         policy: &dyn BackpressurePolicy,
-    ) -> (Result<DispatchOutcome, DispatchError>, Option<BackpressureAction>) {
+    ) -> (
+        Result<DispatchOutcome, DispatchError>,
+        Option<BackpressureAction>,
+    ) {
         let topic = message.topic.clone();
         let partition = message.partition;
         let offset = message.offset;
@@ -198,7 +201,15 @@ impl Dispatcher {
             Ok(()) => {
                 entry.metadata.queue_depth.fetch_add(1, Ordering::Relaxed);
                 let depth = entry.metadata.queue_depth.load(Ordering::Relaxed);
-                (Ok(DispatchOutcome { topic, partition, offset, queue_depth: depth }), None)
+                (
+                    Ok(DispatchOutcome {
+                        topic,
+                        partition,
+                        offset,
+                        queue_depth: depth,
+                    }),
+                    None,
+                )
             }
             Err(TrySendError::Full(_)) => {
                 entry.metadata.inflight.fetch_sub(1, Ordering::Relaxed);
@@ -207,9 +218,10 @@ impl Dispatcher {
                     BackpressureAction::Drop | BackpressureAction::Wait => {
                         (Err(DispatchError::Backpressure(topic.clone())), None)
                     }
-                    BackpressureAction::FuturePausePartition(t) => {
-                        (Err(DispatchError::Backpressure(topic.clone())), Some(BackpressureAction::FuturePausePartition(t)))
-                    }
+                    BackpressureAction::FuturePausePartition(t) => (
+                        Err(DispatchError::Backpressure(topic.clone())),
+                        Some(BackpressureAction::FuturePausePartition(t)),
+                    ),
                 }
             }
             Err(TrySendError::Closed(_)) => {
@@ -238,7 +250,8 @@ pub struct ConsumerDispatcher {
     runner: Arc<ConsumerRunner>,
     dispatcher: Dispatcher,
     /// Topic-partition lists for each subscribed topic (populated on assignment).
-    partition_handles: parking_lot::Mutex<std::collections::HashMap<String, rdkafka::TopicPartitionList>>,
+    partition_handles:
+        parking_lot::Mutex<std::collections::HashMap<String, rdkafka::TopicPartitionList>>,
     /// Topics currently paused (tracked for resume logic).
     paused_topics: parking_lot::Mutex<HashSet<String>>,
     /// Backpressure threshold ratio for resume (0.0 to 1.0).
@@ -279,20 +292,30 @@ impl ConsumerDispatcher {
             match result {
                 Ok(msg) => {
                     let topic = msg.topic.clone();
-                    let (outcome, pause_signal) = self.dispatcher.send_with_policy_and_signal(msg, policy);
+                    let (outcome, pause_signal) =
+                        self.dispatcher.send_with_policy_and_signal(msg, policy);
                     match outcome {
                         Ok(outcome) => {
                             self.check_resume(&topic, outcome.queue_depth);
                         }
                         Err(DispatchError::Backpressure(_)) => {
-                            if let Some(BackpressureAction::FuturePausePartition(pause_topic)) = pause_signal {
+                            if let Some(BackpressureAction::FuturePausePartition(pause_topic)) =
+                                pause_signal
+                            {
                                 match self.pause_partition(&pause_topic) {
                                     Ok(()) => {
-                                        tracing::warn!("paused topic '{}' due to backpressure", pause_topic);
+                                        tracing::warn!(
+                                            "paused topic '{}' due to backpressure",
+                                            pause_topic
+                                        );
                                         self.paused_topics.lock().insert(pause_topic.clone());
                                     }
                                     Err(e) => {
-                                        tracing::error!("failed to pause topic '{}': {}", pause_topic, e);
+                                        tracing::error!(
+                                            "failed to pause topic '{}': {}",
+                                            pause_topic,
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -340,10 +363,12 @@ impl ConsumerDispatcher {
         if let Some(tpl) = handles.get(topic) {
             self.runner.pause(tpl)
         } else {
-            Err(crate::consumer::error::ConsumerError::Subscription(format!(
-                "no partition handle for topic '{}' - call populate_partitions() first",
-                topic
-            )))
+            Err(crate::consumer::error::ConsumerError::Subscription(
+                format!(
+                    "no partition handle for topic '{}' - call populate_partitions() first",
+                    topic
+                ),
+            ))
         }
     }
 
@@ -353,10 +378,9 @@ impl ConsumerDispatcher {
         if let Some(tpl) = handles.get(topic) {
             self.runner.resume(tpl)
         } else {
-            Err(crate::consumer::error::ConsumerError::Subscription(format!(
-                "no partition handle for topic '{}'",
-                topic
-            )))
+            Err(crate::consumer::error::ConsumerError::Subscription(
+                format!("no partition handle for topic '{}'", topic),
+            ))
         }
     }
 
@@ -453,7 +477,8 @@ mod tests {
 
         for i in 0..50 {
             let msg = OwnedMessage::fake("test-topic", i % 3, i as i64);
-            let (result, _) = dispatcher.send_with_policy_and_signal(msg, &DefaultBackpressurePolicy);
+            let (result, _) =
+                dispatcher.send_with_policy_and_signal(msg, &DefaultBackpressurePolicy);
             assert!(result.is_ok(), "dispatch {} should succeed", i);
         }
     }

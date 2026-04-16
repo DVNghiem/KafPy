@@ -121,6 +121,30 @@ impl ConsumerRunner {
         Ok(())
     }
 
+    /// Stores the current offset for a topic-partition in rdkafka's internal state.
+    ///
+    /// This is the first phase of two-phase manual offset management:
+    /// 1. `store_offset` — fast, in-memory (this method)
+    /// 2. `commit` — network round-trip to Kafka
+    ///
+    /// Requires `enable_auto_offset_store=false` in the config.
+    pub async fn store_offset(
+        &self,
+        topic: &str,
+        partition: i32,
+        offset: i64,
+    ) -> Result<(), ConsumerError> {
+        let consumer = Arc::clone(&self.consumer);
+        let topic = topic.to_string();
+        tokio::task::spawn_blocking(move || {
+            consumer
+                .store_offset(&topic, partition, offset)
+                .map_err(ConsumerError::from)
+        })
+        .await
+        .map_err(|e| ConsumerError::Receive(format!("store_offset task failed: {e}")))?
+    }
+
     /// Returns the current partition assignment.
     pub fn assignment(&self) -> Result<rdkafka::TopicPartitionList, ConsumerError> {
         self.consumer.assignment().map_err(ConsumerError::Kafka)

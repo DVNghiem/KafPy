@@ -21,6 +21,7 @@ pub struct ConsumerConfig {
     pub topics: Vec<String>,
     pub auto_offset_reset: AutoOffsetReset,
     pub enable_auto_commit: bool,
+    pub enable_auto_offset_store: bool,
     pub session_timeout_ms: u32,
     pub heartbeat_interval_ms: u32,
     pub max_poll_interval_ms: u32,
@@ -75,6 +76,7 @@ pub struct ConsumerConfigBuilder {
     topics: Vec<String>,
     auto_offset_reset: AutoOffsetReset,
     enable_auto_commit: bool,
+    enable_auto_offset_store: bool,
     session_timeout_ms: u32,
     heartbeat_interval_ms: u32,
     max_poll_interval_ms: u32,
@@ -94,6 +96,7 @@ impl ConsumerConfigBuilder {
             topics: Vec::new(),
             auto_offset_reset: Default::default(),
             enable_auto_commit: false,
+            enable_auto_offset_store: false,
             session_timeout_ms: 45000,
             heartbeat_interval_ms: 3000,
             max_poll_interval_ms: 300000,
@@ -132,6 +135,11 @@ impl ConsumerConfigBuilder {
 
     pub fn enable_auto_commit(mut self, enabled: bool) -> Self {
         self.enable_auto_commit = enabled;
+        self
+    }
+
+    pub fn enable_auto_offset_store(mut self, enabled: bool) -> Self {
+        self.enable_auto_offset_store = enabled;
         self
     }
 
@@ -201,6 +209,7 @@ impl ConsumerConfigBuilder {
             topics: self.topics,
             auto_offset_reset: self.auto_offset_reset,
             enable_auto_commit: self.enable_auto_commit,
+            enable_auto_offset_store: self.enable_auto_offset_store,
             session_timeout_ms: self.session_timeout_ms,
             heartbeat_interval_ms: self.heartbeat_interval_ms,
             max_poll_interval_ms: self.max_poll_interval_ms,
@@ -225,6 +234,10 @@ impl ConsumerConfig {
             .set("group.id", &self.group_id)
             .set("auto.offset.reset", self.auto_offset_reset.as_str())
             .set("enable.auto.commit", self.enable_auto_commit.to_string())
+            .set(
+                "enable.auto.offset.store",
+                self.enable_auto_offset_store.to_string(),
+            )
             .set("session.timeout.ms", self.session_timeout_ms.to_string())
             .set(
                 "heartbeat.interval.ms",

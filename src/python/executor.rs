@@ -27,7 +27,12 @@ pub trait Executor: Send + Sync {
 pub struct DefaultExecutor;
 
 impl Executor for DefaultExecutor {
-    fn execute(&self, ctx: &ExecutionContext, _message: &OwnedMessage, result: &ExecutionResult) -> ExecutorOutcome {
+    fn execute(
+        &self,
+        ctx: &ExecutionContext,
+        _message: &OwnedMessage,
+        result: &ExecutionResult,
+    ) -> ExecutorOutcome {
         match result {
             ExecutionResult::Ok => {
                 tracing::trace!(

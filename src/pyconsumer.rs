@@ -10,11 +10,11 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::ConsumerConfig;
 use crate::consumer::{ConsumerConfigBuilder, ConsumerRunner};
-use crate::kafka_message::KafkaMessage;
-use crate::worker_pool::WorkerPool;
-use crate::python::{DefaultExecutor, Executor};
-use crate::python::handler::PythonHandler;
 use crate::dispatcher::ConsumerDispatcher;
+use crate::kafka_message::KafkaMessage;
+use crate::python::handler::PythonHandler;
+use crate::python::{DefaultExecutor, Executor};
+use crate::worker_pool::WorkerPool;
 
 use tokio_stream::StreamExt;
 
@@ -124,7 +124,9 @@ impl Consumer {
 
             // Run dispatcher and pool concurrently
             let dispatcher_handle = tokio::spawn(async move {
-                dispatcher.run(&crate::dispatcher::DefaultBackpressurePolicy).await;
+                dispatcher
+                    .run(&crate::dispatcher::DefaultBackpressurePolicy)
+                    .await;
             });
 
             pool.run().await;

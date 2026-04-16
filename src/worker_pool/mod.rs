@@ -11,11 +11,11 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::dispatcher::OwnedMessage;
 use crate::dispatcher::queue_manager::QueueManager;
+use crate::dispatcher::OwnedMessage;
 use crate::python::context::ExecutionContext;
-use crate::python::executor::{DefaultExecutor, Executor};
 use crate::python::execution_result::ExecutionResult;
+use crate::python::executor::{DefaultExecutor, Executor};
 use crate::python::handler::PythonHandler;
 
 /// Worker loop — polls messages and invokes the Python handler.
@@ -43,12 +43,8 @@ async fn worker_loop(
     loop {
         // If there's an active message, process it without polling
         if let Some(msg) = active_message.take() {
-            let ctx = ExecutionContext::new(
-                msg.topic.clone(),
-                msg.partition,
-                msg.offset,
-                worker_id,
-            );
+            let ctx =
+                ExecutionContext::new(msg.topic.clone(), msg.partition, msg.offset, worker_id);
             let result = handler.invoke(&ctx, msg.clone()).await;
             let _outcome = executor.execute(&ctx, &msg, &result);
 
@@ -86,7 +82,10 @@ async fn worker_loop(
             }
 
             if shutdown_token.is_cancelled() {
-                tracing::info!(worker_id = worker_id, "worker stopped (cancelled after message)");
+                tracing::info!(
+                    worker_id = worker_id,
+                    "worker stopped (cancelled after message)"
+                );
                 break;
             }
             continue;
@@ -148,12 +147,20 @@ impl WorkerPool {
             let token = shutdown_token.clone();
 
             join_set.spawn(worker_loop(
-                rx, handler, executor, queue_manager, worker_id, token,
+                rx,
+                handler,
+                executor,
+                queue_manager,
+                worker_id,
+                token,
             ));
         }
 
         tracing::info!(n_workers = n_workers, "WorkerPool created");
-        Self { join_set, shutdown_token }
+        Self {
+            join_set,
+            shutdown_token,
+        }
     }
 
     /// Run the worker pool — awaits all workers until shutdown.
@@ -175,8 +182,8 @@ impl WorkerPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dispatcher::OwnedMessage;
     use crate::dispatcher::queue_manager::QueueManager;
+    use crate::dispatcher::OwnedMessage;
     use crate::python::context::ExecutionContext;
     use crate::python::execution_result::ExecutionResult;
     use pyo3::prelude::*;
@@ -218,7 +225,7 @@ mod tests {
     fn dummy_handler() -> Arc<PythonHandler> {
         Python::with_gil(|py| {
             let py_none = py.None();
-            Arc::new(PythonHandler::new(py_none))
+            Arc::new(PythonHandler::new(py_none.into()))
         })
     }
 
@@ -252,7 +259,8 @@ mod tests {
                 0,
                 token,
             ),
-        ).await;
+        )
+        .await;
         assert!(result.is_ok(), "worker_loop should complete within timeout");
         let _ = tx;
     }
@@ -262,7 +270,10 @@ mod tests {
         let executor: Arc<dyn Executor> = Arc::new(DefaultExecutor);
         let ctx = ExecutionContext::new("test".to_string(), 0, 0, 0);
         let outcome = executor.execute(&ctx, &make_test_msg(), &ExecutionResult::Ok);
-        assert!(matches!(outcome, crate::python::executor::ExecutorOutcome::Ack));
+        assert!(matches!(
+            outcome,
+            crate::python::executor::ExecutorOutcome::Ack
+        ));
     }
 
     #[tokio::test]
@@ -277,7 +288,10 @@ mod tests {
                 traceback: "test".to_string(),
             },
         );
-        assert!(matches!(outcome, crate::python::executor::ExecutorOutcome::Ack));
+        assert!(matches!(
+            outcome,
+            crate::python::executor::ExecutorOutcome::Ack
+        ));
     }
 
     #[tokio::test]
@@ -298,6 +312,9 @@ mod tests {
         token.cancel();
 
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
-        assert!(result.is_ok(), "worker should finish after processing message");
+        assert!(
+            result.is_ok(),
+            "worker should finish after processing message"
+        );
     }
 }

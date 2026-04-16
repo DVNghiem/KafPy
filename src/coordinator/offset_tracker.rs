@@ -10,9 +10,9 @@
 //! 4. `should_commit()` returns `pending_offsets.contains(committed_offset + 1)`
 //! 5. `mark_failed()` removes offset from `pending_offsets` if present, inserts into `failed_offsets`
 
+use parking_lot::Mutex;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
-use parking_lot::Mutex;
 
 /// Key type for topic-partition lookup.
 /// Using a tuple struct for type safety over raw (String, i32) pairs.

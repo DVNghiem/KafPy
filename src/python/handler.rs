@@ -20,11 +20,7 @@ impl PythonHandler {
     ///
     /// Uses `spawn_blocking` to release the Tokio thread. GIL acquired only
     /// inside `Python::with_gil`.
-    pub async fn invoke(
-        &self,
-        ctx: &ExecutionContext,
-        message: OwnedMessage,
-    ) -> ExecutionResult {
+    pub async fn invoke(&self, ctx: &ExecutionContext, message: OwnedMessage) -> ExecutionResult {
         let callback = Arc::clone(&self.callback);
         let topic = ctx.topic.clone();
         let partition = ctx.partition;
@@ -54,9 +50,16 @@ impl PythonHandler {
                 match callback.call1(py, (py_msg,)) {
                     Ok(_) => ExecutionResult::Ok,
                     Err(py_err) => {
-                        let exception = py_err.get_type(py).name().map(|s| s.to_string()).unwrap_or_else(|_| "Unknown".to_string());
+                        let exception = py_err
+                            .get_type(py)
+                            .name()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|_| "Unknown".to_string());
                         let traceback = py_err.to_string();
-                        ExecutionResult::Error { exception, traceback }
+                        ExecutionResult::Error {
+                            exception,
+                            traceback,
+                        }
                     }
                 }
             })
@@ -73,6 +76,6 @@ impl PythonHandler {
     }
 }
 
+use crate::consumer::MessageTimestamp;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use crate::consumer::MessageTimestamp;

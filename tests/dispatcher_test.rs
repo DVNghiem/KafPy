@@ -5,9 +5,9 @@
 //! DISP-05 (DispatchOutcome return), DISP-19 (4 error variants),
 //! DISP-20 (thiserror derive).
 
-use _kafpy::dispatcher::{Dispatcher, DispatchOutcome, DispatchError};
-use _kafpy::consumer::OwnedMessage;
 use _kafpy::consumer::MessageTimestamp;
+use _kafpy::consumer::OwnedMessage;
+use _kafpy::dispatcher::{DispatchError, DispatchOutcome, Dispatcher};
 
 fn make_message(topic: &str, partition: i32, offset: i64) -> OwnedMessage {
     OwnedMessage {

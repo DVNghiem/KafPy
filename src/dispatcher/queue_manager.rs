@@ -8,8 +8,8 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
+use tokio::sync::Semaphore;
 
 pub use crate::consumer::OwnedMessage;
 use crate::dispatcher::error::DispatchError;
@@ -68,7 +68,8 @@ impl HandlerMetadata {
             let current = self.outstanding_permits.load(Ordering::Relaxed);
             let to_release = count.min(current);
             if to_release > 0 {
-                self.outstanding_permits.fetch_sub(to_release, Ordering::Relaxed);
+                self.outstanding_permits
+                    .fetch_sub(to_release, Ordering::Relaxed);
                 if let Some(sem) = &self.semaphore {
                     sem.add_permits(to_release);
                 }
@@ -137,14 +138,17 @@ pub(crate) struct HandlerEntry {
 /// Owns all handler queues and their atomic metadata counters.
 #[derive(Clone)]
 pub(crate) struct QueueManager {
-    pub(crate) handlers: std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<String, HandlerEntry>>>,
+    pub(crate) handlers:
+        std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<String, HandlerEntry>>>,
 }
 
 impl QueueManager {
     /// Creates a new empty QueueManager.
     pub fn new() -> Self {
         Self {
-            handlers: std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+            handlers: std::sync::Arc::new(
+                parking_lot::Mutex::new(std::collections::HashMap::new()),
+            ),
         }
     }
 
@@ -168,9 +172,15 @@ impl QueueManager {
         semaphore: Option<Arc<Semaphore>>,
     ) -> mpsc::Receiver<OwnedMessage> {
         let (tx, rx) = mpsc::channel(capacity);
-        let limit = semaphore.as_ref().map(|s| s.available_permits()).unwrap_or(0);
+        let limit = semaphore
+            .as_ref()
+            .map(|s| s.available_permits())
+            .unwrap_or(0);
         let metadata = HandlerMetadata::new(capacity, semaphore, limit);
-        let entry = HandlerEntry { sender: tx, metadata };
+        let entry = HandlerEntry {
+            sender: tx,
+            metadata,
+        };
         self.handlers.lock().insert(topic.into(), entry);
         rx
     }
