@@ -7,7 +7,7 @@ description = "High-performance Rust Kafka consumer"
 
 [lib]
 name = "_kafpy"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 
