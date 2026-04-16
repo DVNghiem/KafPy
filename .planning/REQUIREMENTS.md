@@ -59,31 +59,31 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| OFFSET-01 | Phase 1 | — |
-| OFFSET-02 | Phase 1 | — |
-| OFFSET-03 | Phase 1 | — |
-| OFFSET-04 | Phase 1 | — |
-| OFFSET-05 | Phase 1 | — |
-| OFFSET-06 | Phase 1 | — |
-| OFFSET-07 | Phase 1 | — |
-| COMMIT-01 | Phase 3 | — |
-| COMMIT-02 | Phase 2 | — |
-| COMMIT-03 | Phase 2 | — |
-| COMMIT-04 | Phase 2 | — |
-| COMMIT-05 | Phase 2 | — |
-| WORKER-01 | Phase 4 | — |
-| WORKER-02 | Phase 4 | — |
-| WORKER-03 | Phase 5 | — |
-| WORKER-04 | Phase 5 | — |
-| WORKER-05 | Phase 5 | — |
-| WORKER-06 | Phase 5 | — |
-| CONFIG-01 | Phase 3 | — |
-| CONFIG-02 | Phase 3 | — |
-| CONFIG-03 | Phase 2 | — |
-| CONFIG-04 | Phase 2 | — |
-| BRIDGE-01 | Phase 6 | — |
-| BRIDGE-02 | Phase 6 | — |
-| BRIDGE-03 | Phase 6 | — |
+| OFFSET-01 | Phase 11 | — |
+| OFFSET-02 | Phase 11 | — |
+| OFFSET-03 | Phase 11 | — |
+| OFFSET-04 | Phase 11 | — |
+| OFFSET-05 | Phase 11 | — |
+| OFFSET-06 | Phase 11 | — |
+| OFFSET-07 | Phase 11 | — |
+| COMMIT-01 | Phase 13 | — |
+| COMMIT-02 | Phase 13 | — |
+| COMMIT-03 | Phase 12 | — |
+| COMMIT-04 | Phase 12 | — |
+| COMMIT-05 | Phase 12 | — |
+| WORKER-01 | Phase 14 | — |
+| WORKER-02 | Phase 14 | — |
+| WORKER-03 | Phase 14 | — |
+| WORKER-04 | Phase 15 | — |
+| WORKER-05 | Phase 15 | — |
+| WORKER-06 | Phase 15 | — |
+| CONFIG-01 | Phase 13 | — |
+| CONFIG-02 | Phase 13 | — |
+| CONFIG-03 | Phase 12 | — |
+| CONFIG-04 | Phase 12 | — |
+| BRIDGE-01 | Phase 16 | — |
+| BRIDGE-02 | Phase 16 | — |
+| BRIDGE-03 | Phase 16 | — |
 
 ---
 
