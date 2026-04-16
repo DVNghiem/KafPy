@@ -23,7 +23,10 @@
   3. Each handler gets its own bounded Tokio mpsc channel (no unbounded in hot path)
   4. send() to handler queue returns Result<DispatchOutcome, DispatchError>
   5. DispatchError enum variants: QueueFull, UnknownTopic, HandlerNotRegistered, QueueClosed — all with thiserror Display/Debug
-**Plans**: TBD
+**Plans**: 2 plans
+**Plan list**:
+- [ ] 06-01-PLAN.md — Dispatcher core: error.rs, mod.rs, lib.rs
+- [ ] 06-02-PLAN.md — Dispatcher unit tests
 
 ### Phase 7: Backpressure + Queue Manager
 **Goal**: Backpressure tracking and policy hooks with queue manager metadata
@@ -85,4 +88,4 @@ All 20 v1.1 requirements mapped.
 
 ---
 
-*Last updated: 2026-04-15*
+*Last updated: 2026-04-16*
