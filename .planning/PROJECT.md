@@ -10,8 +10,9 @@
 
 KafPy is a Python-facing Kafka framework where Rust provides the runtime/core engine and Python holds the business logic. PyO3 bridges the two. The pure-Rust consumer core handles Kafka protocol, while Python registers handlers/callbacks via bindings.
 
-Current status (after Milestone 1 refactor):
-- `src/consumer/` — pure-Rust consumer core (no PyO3 deps): `ConsumerConfigBuilder`, `OwnedMessage`, `ConsumerRunner`, `ConsumerStream`, `ConsumerTask`
+Current status (after Milestone v1.1):
+- `src/consumer/` — pure-Rust consumer core: `ConsumerConfigBuilder`, `OwnedMessage`, `ConsumerRunner`, `ConsumerStream`, `ConsumerTask`
+- `src/dispatcher/` — message dispatcher with per-topic bounded queues: `Dispatcher`, `QueueManager`, `BackpressurePolicy`, `BackpressureAction`, `ConsumerDispatcher`
 - `src/pyconsumer.rs` — PyO3 bridge: `Consumer` pyclass wrapping `ConsumerRunner`
 - `src/config.rs` — Python-facing `ConsumerConfig` / `ProducerConfig` (PyO3)
 - `src/kafka_message.rs` — PyO3 `KafkaMessage` wrapping `OwnedMessage`
@@ -27,26 +28,28 @@ Current status (after Milestone 1 refactor):
 | Tokio for async runtime | Native rdkafka compat, mpsc channels | Active |
 | StreamConsumer + mpsc channel | Owned message flow, no borrowed lifetimes | Active |
 | PyO3-free consumer core | Clean separation, testable without Python | Active |
+| Per-topic bounded queue dispatch | Isolated backpressure per topic | Active |
+| BackpressurePolicy trait | Extensible backpressure handling (Drop/Wait/FuturePausePartition) | Active |
+| ConsumerDispatcher composition | Owns both ConsumerRunner + Dispatcher, wires stream→dispatch | Active |
 
 ## Context
 
 **Last milestone (v1.0):** Refactored duplicate consumer/message code into `src/consumer/` with clean separation between pure-Rust core and PyO3 bridge.
 
-## Current Milestone: v1.1 Dispatcher Layer
+**Current milestone (v1.1):** Built dispatcher layer — `Dispatcher` routes `OwnedMessage` to per-topic bounded Tokio mpsc channels, with `QueueManager` tracking queue depth/inflight, `BackpressurePolicy` trait for extensible backpressure, and `ConsumerDispatcher` integrating with `ConsumerRunner`. All 20 DISP requirements shipped.
 
-**Goal:** Build a dispatcher layer in Rust that receives owned messages from the consumer layer and routes them into per-handler bounded queues.
+## Validated Requirements
 
-**Target features:**
-- Topic-based routing only (no Python execution yet)
-- Bounded Tokio `mpsc` queue per handler
-- Backpressure via bounded queues only (no unbounded channels in hot path)
-- Queue depth and inflight count tracking
-- Backpressure strategy hook for future partition pause/resume with rdkafka
-- Tokio Semaphore for per-handler concurrency limits (optional, don't overcomplicate)
+- ✓ Per-topic bounded Tokio mpsc channel dispatch — v1.1
+- ✓ Non-blocking send() with DispatchOutcome/DispatchError — v1.1
+- ✓ Queue depth and inflight tracking per handler — v1.1
+- ✓ BackpressurePolicy trait with BackpressureAction (Drop/Wait/FuturePausePartition) — v1.1
+- ✓ ConsumerDispatcher integrating ConsumerRunner + Dispatcher — v1.1
+- ✓ Tokio Semaphore per handler concurrency limiting — v1.1
 
 ## Active Requirements
 
-(None yet — ship to validate)
+(None yet — define next milestone)
 
 ## Out of Scope
 
@@ -57,4 +60,4 @@ Current status (after Milestone 1 refactor):
 
 ---
 
-*Last updated: 2026-04-15 after Milestone 1 refactor*
+*Last updated: 2026-04-16 after v1.1 milestone*
