@@ -42,7 +42,9 @@ Current status (after Milestone v1.2):
 
 **Last milestone (v1.1):** Built dispatcher layer — `Dispatcher` routes `OwnedMessage` to per-topic bounded Tokio mpsc channels, with `QueueManager` tracking queue depth/inflight, `BackpressurePolicy` trait for extensible backpressure, and `ConsumerDispatcher` integrating with `ConsumerRunner`.
 
-**Current milestone (v1.2):** Built Python execution lane — `PythonHandler` stores `Py<PyAny>` callbacks, `WorkerPool` pulls from handler queues and invokes via `spawn_blocking`, `Executor` trait for future policy extensibility.
+**Last milestone (v1.2):** Built Python execution lane — `PythonHandler` stores `Py<PyAny>` callbacks, `WorkerPool` pulls from handler queues and invokes via `spawn_blocking`, `Executor` trait for future policy extensibility.
+
+**Current milestone (v1.3):** Offset commit coordinator — per-topic-partition ack tracking, highest-contiguous-offset commit logic, out-of-order completion handling for at-least-once delivery.
 
 ## Validated Requirements
 
@@ -59,13 +61,18 @@ Current status (after Milestone v1.2):
 
 ## Active Requirements
 
-(None yet — define next milestone)
+- Per-topic-partition `OffsetTracker` with ack tracking — v1.3
+- Execution completion events wired from `ExecutionResult` — v1.3
+- Out-of-order completion handling with buffering — v1.3
+- Highest contiguous acknowledged offset calculation — v1.3
+- `store_offset()` + `commit()` coordination for at-least-once delivery — v1.3
+- No duplicate commits when offset hasn't advanced — v1.3
 
 ## Out of Scope
 
-- Full retry manager / offset manager / DLQ — deferred
-- Advanced rebalance logic — interfaces only
-- Schema registry / Avro support
+- Full retry manager / DLQ — deferred to v1.4
+- Advanced rebalance logic — interfaces only, deferred
+- Schema registry / Avro support — deferred
 - Java/Node.js bindings — Python only
 
 ---
@@ -89,4 +96,4 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-*Last updated: 2026-04-16 after v1.2 milestone*
+*Last updated: 2026-04-16 after v1.3 milestone*
