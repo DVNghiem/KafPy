@@ -1,53 +1,57 @@
-# Requirements — Milestone v1.2
+# Requirements — Milestone v1.3
 
-**Goal:** Build the Python execution layer that pulls messages from handler queues and invokes registered Python callbacks through PyO3-compatible boundaries.
-
----
-
-## v1.2 Requirements
-
-### Execution Foundation
-
-- [ ] **EXEC-01**: `ExecutionResult` enum: `Ok`, `Error { exception, traceback }`, `Rejected { reason }` — normalized Rust result type
-- [ ] **EXEC-02**: `ExecutionContext` — message metadata (topic, partition, offset, worker_id, timestamp)
-- [ ] **EXEC-03**: `Executor` trait: `execute(ctx, message, handler) -> ExecutionResult` — pluggable execution policy
-- [ ] **EXEC-04**: `ExecutorOutcome` enum: `Ack`, `Retry`, `Rejected` — outcome of execution policy decision
-- [ ] **EXEC-05**: `DefaultExecutor` — fire-and-forget; logs outcome and returns `Ack`; future retry/async/batch plug in via trait
-- [ ] **EXEC-06**: `PythonHandler` — wraps `Py<PyAny>` callback; `invoke(message) -> ExecutionResult` via `spawn_blocking`
-- [ ] **EXEC-07**: GIL acquired via `spawn_blocking` — Tokio threads released during Python call; GIL held only inside closure
-
-### Worker Pool
-
-- [ ] **EXEC-08**: `WorkerPool` — configurable N workers managed via Tokio `JoinSet`
-- [ ] **EXEC-09**: Each worker polls its assigned `mpsc::Receiver<OwnedMessage>` independently
-- [ ] **EXEC-10**: `spawn_blocking` per-message — Tokio threads released during Python call
-- [ ] **EXEC-11**: Structured logging: worker start/stop, message pickup, handler success/failure (via `tracing`)
-- [ ] **EXEC-12**: Graceful shutdown: complete in-flight messages before worker exit; `CancellationToken` propagated to workers
-- [ ] **EXEC-13**: `QueueManager::ack()` called on `ExecutionResult::Ok` — closes inflight counter
-
-### PyO3 Integration
-
-- [ ] **EXEC-14**: `PyHandler` type in `src/python/` wrapping `PythonHandler`; `add_handler(topic, callback)` in PyO3 bridge
-- [ ] **EXEC-15**: `Py<PyAny>` storage — GIL-independent, Send+Sync; NOT `&PyAny` or `Bound<'_, PyAny>`
-- [ ] **EXEC-16**: `callback.unbind()` at PyO3 boundary — converts to owned `Py<PyAny>` before storing
-- [ ] **EXEC-17**: Python callable receives `KafkaMessage` — `topic: str`, `partition: i32`, `offset: i64`, `key: Option<bytes>`, `payload: Option<bytes>`, `timestamp: int`
-
-### Extensibility Interfaces (Placeholders)
-
-- [ ] **EXEC-18**: `RetryExecutor` — trait placeholder for future retry policy (backoff, max attempts); not implemented
-- [ ] **EXEC-19**: `OffsetAck` — interface placeholder for future offset tracking; not implemented
-- [ ] **EXEC-20**: Async Python handler — trait placeholder for `async def` callbacks via `pyo3-async-runtimes`; not implemented
+**Goal:** Implement per-topic-partition offset tracking with highest-contiguous-offset commit logic for at-least-once delivery guarantees.
 
 ---
 
-## Out of Scope
+## v1.3 Requirements
 
-- Full retry manager / exponential backoff — deferred to v1.x
-- Offset manager / commit batching — deferred to v1.x
-- DLQ (Dead Letter Queue) — deferred to v2
-- `AsyncExecutor` implementation — interface only (EXEC-20)
-- Schema registry / Avro support
-- Java/Node.js bindings — Python only
+### Offset Tracking
+
+- [ ] **OFFSET-01**: `PartitionState` struct — `committed_offset: i64`, `pending_offsets: BTreeSet<i64>`, `failed_offsets: BTreeSet<i64>`
+- [ ] **OFFSET-02**: `OffsetTracker` — `HashMap<TopicPartition, PartitionState>` with `parking_lot::Mutex`
+- [ ] **OFFSET-03**: `OffsetTracker::ack(topic, partition, offset)` — insert offset into `pending_offsets`, advance contiguous cursor
+- [ ] **OFFSET-04**: `OffsetTracker::highest_contiguous(topic, partition) -> Option<i64>` — compute highest consecutive offset starting from `committed_offset + 1`
+- [ ] **OFFSET-05**: `OffsetTracker::should_commit(topic, partition) -> bool` — true when `pending_offsets` contains `committed_offset + 1`
+- [ ] **OFFSET-06**: `OffsetTracker::mark_failed(topic, partition, offset)` — move offset from `pending_offsets` to `failed_offsets`; does NOT advance `committed_offset`
+- [ ] **OFFSET-07**: `OffsetTracker::committed_offset(topic, partition) -> i64` — return last committed offset for topic-partition
+
+### Commit Coordination
+
+- [ ] **COMMIT-01**: `ConsumerRunner::store_offset(topic, partition, offset)` — rdkafka `store_offset()` for two-phase manual offset management
+- [ ] **COMMIT-02**: `store_offset` + `commit()` two-phase guard — only call `commit()` when `highest_contiguous > committed_offset`
+- [ ] **COMMIT-03**: `OffsetCommitter` — background Tokio task; `watch` channel receives commit signals; throttles via `min_commit_interval`
+- [ ] **COMMIT-04**: `OffsetCommitter` calls `runner.store_offset(highest_contiguous)` then `runner.commit()` per topic-partition
+- [ ] **COMMIT-05**: No duplicate commit — `stored_offset` checked before `store_offset()` call
+
+### WorkerPool Integration
+
+- [ ] **WORKER-01**: `OffsetCoordinator` trait — `record_ack(topic, partition, offset)`, `mark_failed(topic, partition, offset)`, `graceful_shutdown()`
+- [ ] **WORKER-02**: `OffsetTracker` implements `OffsetCoordinator` trait
+- [ ] **WORKER-03**: `WorkerPool` holds `Arc<dyn OffsetCoordinator>` — injected at construction
+- [ ] **WORKER-04**: `WorkerPool::worker_loop()` calls `offset_coordinator.record_ack()` on `ExecutionResult::Ok`
+- [ ] **WORKER-05**: `WorkerPool::graceful_shutdown()` commits highest contiguous per topic-partition before worker exit
+- [ ] **WORKER-06**: Failed messages (`ExecutionResult::Error` / `Rejected`) call `offset_coordinator.mark_failed()`
+
+### Configuration
+
+- [ ] **CONFIG-01**: `ConsumerConfig` sets `enable.auto.commit=false` (manual commit)
+- [ ] **CONFIG-02**: `ConsumerConfig` sets `enable.auto.offset.store=false` (manual store)
+- [ ] **CONFIG-03**: `commit_interval_ms` config option (default: 100ms)
+- [ ] **CONFIG-04**: `commit_max_messages` config option (default: 100)
+
+### PyO3 Bridge
+
+- [ ] **BRIDGE-01**: `PyConsumer` wires `OffsetTracker` + `OffsetCommitter` into consumer runtime
+- [ ] **BRIDGE-02**: `OffsetCommitter` spawned as Tokio task via `ConsumerRunner::run()`
+- [ ] **BRIDGE-03**: `ConsumerDispatcher` updated to pass `Arc<dyn OffsetCoordinator>` to `WorkerPool`
+
+### Out of Scope
+
+- RetryExecutor integration with offset tracking — deferred to v1.4
+- DLQ routing — deferred to v2
+- Schema registry / Avro support — deferred
+- `enable.auto.commit` toggle for at-most-once mode — deferred
 
 ---
 
@@ -55,26 +59,31 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| EXEC-01 | Phase 9 | — |
-| EXEC-02 | Phase 9 | — |
-| EXEC-03 | Phase 9 | — |
-| EXEC-04 | Phase 9 | — |
-| EXEC-05 | Phase 9 | — |
-| EXEC-06 | Phase 9 | — |
-| EXEC-07 | Phase 9 | — |
-| EXEC-08 | Phase 10 | — |
-| EXEC-09 | Phase 10 | — |
-| EXEC-10 | Phase 10 | — |
-| EXEC-11 | Phase 10 | — |
-| EXEC-12 | Phase 10 | — |
-| EXEC-13 | Phase 10 | — |
-| EXEC-14 | Phase 9 | — |
-| EXEC-15 | Phase 9 | — |
-| EXEC-16 | Phase 9 | — |
-| EXEC-17 | Phase 9 | — |
-| EXEC-18 | Phase 9 | — |
-| EXEC-19 | Phase 9 | — |
-| EXEC-20 | Phase 9 | — |
+| OFFSET-01 | Phase 1 | — |
+| OFFSET-02 | Phase 1 | — |
+| OFFSET-03 | Phase 1 | — |
+| OFFSET-04 | Phase 1 | — |
+| OFFSET-05 | Phase 1 | — |
+| OFFSET-06 | Phase 1 | — |
+| OFFSET-07 | Phase 1 | — |
+| COMMIT-01 | Phase 3 | — |
+| COMMIT-02 | Phase 2 | — |
+| COMMIT-03 | Phase 2 | — |
+| COMMIT-04 | Phase 2 | — |
+| COMMIT-05 | Phase 2 | — |
+| WORKER-01 | Phase 4 | — |
+| WORKER-02 | Phase 4 | — |
+| WORKER-03 | Phase 5 | — |
+| WORKER-04 | Phase 5 | — |
+| WORKER-05 | Phase 5 | — |
+| WORKER-06 | Phase 5 | — |
+| CONFIG-01 | Phase 3 | — |
+| CONFIG-02 | Phase 3 | — |
+| CONFIG-03 | Phase 2 | — |
+| CONFIG-04 | Phase 2 | — |
+| BRIDGE-01 | Phase 6 | — |
+| BRIDGE-02 | Phase 6 | — |
+| BRIDGE-03 | Phase 6 | — |
 
 ---
 
