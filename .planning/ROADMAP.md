@@ -49,25 +49,28 @@
   2. Dispatcher API uses only owned types (no borrowed lifetimes) — Python integration boundary clean
   3. Architecture supports future pause_resume(topic) via rdkafka partition pause/resume
   4. Optional Tokio Semaphore per handler for concurrency limits (if implemented, must not overcomplicate)
-**Plans**: TBD
+**Plans**: 2 plans
+**Plan list**:
+- [ ] 08-01-PLAN.md — ConsumerDispatcher struct + Semaphore foundation
+- [ ] 08-02-PLAN.md — Pause/resume wiring + unit tests
 
 ## Progress
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 6. Dispatcher Core | 1/2 | In Progress|  |
+| 6. Dispatcher Core | 2/2 | Done | 2026-04-15 |
 | 7. Backpressure + Queue Manager | 0/N | Not started | - |
-| 8. ConsumerRunner Integration | 0/N | Not started | - |
+| 8. ConsumerRunner Integration | 0/2 | Not started | - |
 
 ## Coverage
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DISP-01 | Phase 6 | Pending |
-| DISP-02 | Phase 6 | Pending |
-| DISP-03 | Phase 6 | Pending |
-| DISP-04 | Phase 6 | Pending |
-| DISP-05 | Phase 6 | Pending |
+| DISP-01 | Phase 6 | Done |
+| DISP-02 | Phase 6 | Done |
+| DISP-03 | Phase 6 | Done |
+| DISP-04 | Phase 6 | Done |
+| DISP-05 | Phase 6 | Done |
 | DISP-06 | Phase 7 | Pending |
 | DISP-07 | Phase 7 | Pending |
 | DISP-08 | Phase 7 | Pending |
@@ -81,8 +84,8 @@
 | DISP-16 | Phase 8 | Pending |
 | DISP-17 | Phase 8 | Pending |
 | DISP-18 | Phase 8 | Pending |
-| DISP-19 | Phase 6 | Pending |
-| DISP-20 | Phase 6 | Pending |
+| DISP-19 | Phase 6 | Done |
+| DISP-20 | Phase 6 | Done |
 
 All 20 v1.1 requirements mapped.
 
