@@ -135,15 +135,16 @@ pub(crate) struct HandlerEntry {
 }
 
 /// Owns all handler queues and their atomic metadata counters.
+#[derive(Clone)]
 pub(crate) struct QueueManager {
-    pub(crate) handlers: parking_lot::Mutex<std::collections::HashMap<String, HandlerEntry>>,
+    pub(crate) handlers: std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<String, HandlerEntry>>>,
 }
 
 impl QueueManager {
     /// Creates a new empty QueueManager.
     pub fn new() -> Self {
         Self {
-            handlers: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            handlers: std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
         }
     }
 

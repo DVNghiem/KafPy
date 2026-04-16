@@ -11,6 +11,10 @@ use std::sync::{Arc, Mutex};
 use crate::config::ConsumerConfig;
 use crate::consumer::{ConsumerConfigBuilder, ConsumerRunner};
 use crate::kafka_message::KafkaMessage;
+use crate::worker_pool::WorkerPool;
+use crate::python::{DefaultExecutor, Executor};
+use crate::python::handler::PythonHandler;
+use crate::dispatcher::ConsumerDispatcher;
 
 use tokio_stream::StreamExt;
 
@@ -21,7 +25,10 @@ pub struct Consumer {
     /// Effective config for the Rust core (built from the pyclass fields).
     runner: Option<ConsumerRunner>,
     config: ConsumerConfig,
-    handlers: Arc<Mutex<HashMap<String, Py<PyAny>>>>,
+    /// Stores Arc<Py<PyAny>> so handlers can be cloned for PythonHandler::new.
+    handlers: Arc<Mutex<HashMap<String, Arc<Py<PyAny>>>>>,
+    /// Shared shutdown token — stop() cancels this to signal workers to exit.
+    shutdown_token: tokio_util::sync::CancellationToken,
 }
 
 #[pymethods]
@@ -32,27 +39,26 @@ impl Consumer {
             runner: None,
             config,
             handlers: Arc::new(Mutex::new(HashMap::new())),
+            shutdown_token: tokio_util::sync::CancellationToken::new(),
         }
     }
 
     /// Registers a Python callback to handle messages from `topic`.
     /// The callback receives exactly one argument: a `KafkaMessage`.
+    /// Note: add_handler ONLY stores the callback. All dispatcher/WorkerPool wiring
+    /// happens in start().
     pub fn add_handler(&mut self, topic: String, callback: Bound<'_, PyAny>) {
         if let Ok(mut handlers) = self.handlers.lock() {
-            handlers.insert(topic, callback.unbind());
+            handlers.insert(topic, Arc::new(callback.unbind()));
         }
     }
 
     /// Starts the consumer and runs indefinitely, dispatching messages to
-    /// registered Python handlers. Blocks the current thread.
+    /// registered Python handlers via WorkerPool.
     pub fn start(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let config = self.config.clone();
         let handlers = Arc::clone(&self.handlers);
-
-        // Default handler if none registered
-        let default_handler: Py<PyAny> = py
-            .eval(c"lambda msg: print(f'received: {msg}')", None, None)?
-            .unbind();
+        let shutdown_token = self.shutdown_token.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             // Build pure-Rust config from the PyO3 config fields
@@ -80,37 +86,51 @@ impl Consumer {
             let runner = ConsumerRunner::new(rust_config)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
-            let mut stream = runner.stream();
+            // Create ConsumerDispatcher (owned, not stored in Consumer struct)
+            let dispatcher = ConsumerDispatcher::new(runner);
 
-            while let Some(result) = stream.next().await {
-                match result {
-                    Ok(msg) => {
-                        let py_msg = KafkaMessage::from(msg);
-                        let topic = py_msg.topic.clone();
-                        // Get handler pointer from map (we need GIL to clone_ref)
-                        let handler_ptr: *mut pyo3::ffi::PyObject = {
-                            let guard = match handlers.lock() {
-                                Ok(g) => g,
-                                Err(poisoned) => poisoned.into_inner(),
-                            };
-                            guard
-                                .get(&topic)
-                                .map(|h| h.as_ptr())
-                                .unwrap_or_else(|| default_handler.as_ptr())
-                        };
-                        let py_msg_clone = py_msg.clone();
-                        pyo3::Python::attach(|py| {
-                            // SAFETY: handler_ptr is a valid Py<PyAny> from our HashMap
-                            let handler: Py<PyAny> = unsafe { Py::from_owned_ptr(py, handler_ptr) };
-                            let _ = handler.call1(py, (py_msg_clone,));
-                        });
-                    }
-                    Err(e) => {
-                        tracing::error!("Consumer error: {}", e);
-                        break;
-                    }
-                }
-            }
+            // Collect receivers from all registered handlers
+            let receivers: Vec<_> = {
+                let handlers_guard = handlers.lock().unwrap();
+                handlers_guard
+                    .keys()
+                    .map(|topic| dispatcher.register_handler(topic.clone(), 100, None))
+                    .collect()
+            };
+
+            // Build PythonHandler from the registered callbacks
+            let handler_arc: Arc<PythonHandler> = {
+                let handlers_guard = handlers.lock().unwrap();
+                let first_handler = handlers_guard
+                    .values()
+                    .next()
+                    .expect("at least one handler must be registered");
+                Arc::new(PythonHandler::new(first_handler.clone()))
+            };
+
+            let executor_arc: Arc<dyn Executor> = Arc::new(DefaultExecutor::default());
+            let queue_manager_arc = dispatcher.queue_manager();
+
+            let n_workers = 4; // EXEC-08: configurable
+
+            let pool = WorkerPool::new(
+                n_workers,
+                receivers,
+                handler_arc,
+                executor_arc,
+                queue_manager_arc.clone(),
+                shutdown_token,
+            );
+
+            // Run dispatcher and pool concurrently
+            let dispatcher_handle = tokio::spawn(async move {
+                dispatcher.run(&crate::dispatcher::DefaultBackpressurePolicy).await;
+            });
+
+            pool.run().await;
+
+            // Keep dispatcher alive until we're done
+            let _ = dispatcher_handle;
 
             Ok(())
         })
@@ -118,6 +138,6 @@ impl Consumer {
     }
 
     pub fn stop(&self) {
-        // TODO: signal runner shutdown
+        self.shutdown_token.cancel();
     }
 }

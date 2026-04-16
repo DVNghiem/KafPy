@@ -13,6 +13,12 @@ pub mod consumer;
 // Pure Rust Kafka dispatcher — routes OwnedMessage to per-handler bounded channels
 pub mod dispatcher;
 
+// Python execution lane — PythonHandler, Executor trait, ExecutionResult
+pub mod python;
+
+// Worker pool — N Tokio workers polling handler queues, invoking Python callbacks
+pub mod worker_pool;
+
 use kafka_message::KafkaMessage;
 use logging::Logger;
 use produce::PyProducer;

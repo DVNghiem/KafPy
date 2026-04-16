@@ -385,6 +385,11 @@ impl ConsumerDispatcher {
     pub fn dispatcher(&self) -> &Dispatcher {
         &self.dispatcher
     }
+
+    /// Returns an `Arc<QueueManager>` for WorkerPool ack integration (EXEC-13).
+    pub fn queue_manager(&self) -> Arc<QueueManager> {
+        Arc::new(self.dispatcher.queue_manager.clone())
+    }
 }
 
 #[cfg(test)]
