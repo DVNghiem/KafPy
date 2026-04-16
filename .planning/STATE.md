@@ -1,34 +1,34 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.1
-milestone_name: milestone
-status: verifying
-stopped_at: Completed 07-02 plan
-last_updated: "2026-04-16T05:38:07.918Z"
+milestone: v1.2
+milestone_name: Python Execution Lane
+status: planning
+stopped_at: Starting milestone v1.2
+last_updated: "2026-04-16"
 last_activity: 2026-04-16
 progress:
-  total_phases: 3
-  completed_phases: 3
-  total_plans: 6
-  completed_plans: 6
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-15)
+See: .planning/PROJECT.md (updated 2026-04-16)
 
 **Core value:** High-performance Rust Kafka client with idiomatic Python API
-**Current focus:** Phase 08 — ConsumerRunner Integration
+**Current focus:** Defining requirements for v1.2 Python Execution Lane
 
 ## Current Position
 
-Phase: 08
-Plan: Not started
-Status: Phase complete — ready for verification
-Last activity: 2026-04-16
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-16 — Milestone v1.2 started
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -36,7 +36,7 @@ Progress: [░░░░░░░░░░] 0%
 
 **Velocity:**
 
-- Total plans completed: 6
+- Total plans completed: 0 (new milestone)
 - Average duration: —
 - Total execution time: 0.0 hours
 
@@ -44,34 +44,30 @@ Progress: [░░░░░░░░░░] 0%
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 06 | 2 | - | - |
-| 07 | 2 | - | - |
-| 08 | 2 | - | - |
+| — | — | — | — |
 
 **Recent Trend:**
 
-- Last 5 plans: No plans completed yet
-- Trend: N/A
+- Last 5 plans: N/A (new milestone)
 
 *Updated after each plan completion*
-| Phase 07 P01 | 8 | 2 tasks | 3 files |
-| Phase 08 P01 | 600 | 3 tasks | 2 files |
 
 ## Accumulated Context
 
 ### Decisions
 
-- **Phase 6**: DispatchError (DISP-19/DISP-20) belongs in foundation phase since DISP-05 requires `Result<DispatchOutcome, DispatchError>`
-- **Phase 7**: Backpressure and QueueManager grouped together — both depend on bounded queue infrastructure from Phase 6
-- **Phase 8**: Integration with ConsumerRunner — clean separation from Python boundary preserved
+- **v1.2**: Py<PyAny> for GIL-independent Python callback storage
+- **v1.2**: spawn_blocking for minimal GIL hold window during Python invocation
+- **v1.2**: Executor trait for future retry/commit/async/batch policies
+- **v1.2**: WorkerPool pulls from handler queues; Rust owns orchestration
 
 ### Pending Todos
 
-None yet.
+None.
 
 ### Blockers/Concerns
 
-None yet.
+None.
 
 ## Deferred Items
 
@@ -80,5 +76,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-04-16T04:06:44.102Z
-Stopped at: Completed 07-02 plan
+Stopped at: Completed v1.1 milestone
 Resume file: None

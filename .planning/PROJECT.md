@@ -10,9 +10,10 @@
 
 KafPy is a Python-facing Kafka framework where Rust provides the runtime/core engine and Python holds the business logic. PyO3 bridges the two. The pure-Rust consumer core handles Kafka protocol, while Python registers handlers/callbacks via bindings.
 
-Current status (after Milestone v1.1):
+Current status (after Milestone v1.2):
 - `src/consumer/` — pure-Rust consumer core: `ConsumerConfigBuilder`, `OwnedMessage`, `ConsumerRunner`, `ConsumerStream`, `ConsumerTask`
-- `src/dispatcher/` — message dispatcher with per-topic bounded queues: `Dispatcher`, `QueueManager`, `BackpressurePolicy`, `BackpressureAction`, `ConsumerDispatcher`
+- `src/dispatcher/` — message dispatcher: `Dispatcher`, `QueueManager`, `BackpressurePolicy`, `BackpressureAction`, `ConsumerDispatcher`
+- `src/python/` — Python execution lane: `PythonHandler`, `WorkerPool`, `ExecutionContext`, `ExecutionResult`, `Executor` trait
 - `src/pyconsumer.rs` — PyO3 bridge: `Consumer` pyclass wrapping `ConsumerRunner`
 - `src/config.rs` — Python-facing `ConsumerConfig` / `ProducerConfig` (PyO3)
 - `src/kafka_message.rs` — PyO3 `KafkaMessage` wrapping `OwnedMessage`
@@ -31,21 +32,30 @@ Current status (after Milestone v1.1):
 | Per-topic bounded queue dispatch | Isolated backpressure per topic | Active |
 | BackpressurePolicy trait | Extensible backpressure handling (Drop/Wait/FuturePausePartition) | Active |
 | ConsumerDispatcher composition | Owns both ConsumerRunner + Dispatcher, wires stream→dispatch | Active |
+| Py<PyAny> for callback storage | GIL-independent, sendable across threads | Active |
+| spawn_blocking for GIL | Minimal GIL hold window during Python execution | Active |
+| Executor trait | Future retry/commit/async/batch policies plug in here | Active |
 
 ## Context
 
 **Last milestone (v1.0):** Refactored duplicate consumer/message code into `src/consumer/` with clean separation between pure-Rust core and PyO3 bridge.
 
-**Current milestone (v1.1):** Built dispatcher layer — `Dispatcher` routes `OwnedMessage` to per-topic bounded Tokio mpsc channels, with `QueueManager` tracking queue depth/inflight, `BackpressurePolicy` trait for extensible backpressure, and `ConsumerDispatcher` integrating with `ConsumerRunner`. All 20 DISP requirements shipped.
+**Last milestone (v1.1):** Built dispatcher layer — `Dispatcher` routes `OwnedMessage` to per-topic bounded Tokio mpsc channels, with `QueueManager` tracking queue depth/inflight, `BackpressurePolicy` trait for extensible backpressure, and `ConsumerDispatcher` integrating with `ConsumerRunner`.
+
+**Current milestone (v1.2):** Built Python execution lane — `PythonHandler` stores `Py<PyAny>` callbacks, `WorkerPool` pulls from handler queues and invokes via `spawn_blocking`, `Executor` trait for future policy extensibility.
 
 ## Validated Requirements
 
 - ✓ Per-topic bounded Tokio mpsc channel dispatch — v1.1
 - ✓ Non-blocking send() with DispatchOutcome/DispatchError — v1.1
 - ✓ Queue depth and inflight tracking per handler — v1.1
-- ✓ BackpressurePolicy trait with BackpressureAction (Drop/Wait/FuturePausePartition) — v1.1
+- ✓ BackpressurePolicy trait with BackpressureAction — v1.1
 - ✓ ConsumerDispatcher integrating ConsumerRunner + Dispatcher — v1.1
 - ✓ Tokio Semaphore per handler concurrency limiting — v1.1
+- ✓ Py<PyAny> callback storage (GIL-independent) — v1.2
+- ✓ WorkerPool with configurable N workers — v1.2
+- ✓ ExecutionResult normalized to Rust — v1.2
+- ✓ Executor trait for future policies — v1.2
 
 ## Active Requirements
 
@@ -53,11 +63,30 @@ Current status (after Milestone v1.1):
 
 ## Out of Scope
 
-- Python handler execution — deferred to future milestone
+- Full retry manager / offset manager / DLQ — deferred
+- Advanced rebalance logic — interfaces only
 - Schema registry / Avro support
 - Java/Node.js bindings — Python only
-- Borrowed lifetimes in dispatcher APIs — all owned message flow
 
 ---
 
-*Last updated: 2026-04-16 after v1.1 milestone*
+## Evolution
+
+This document evolves at phase transitions and milestone boundaries.
+
+**After each phase transition** (via `/gsd-transition`):
+1. Requirements invalidated? → Move to Out of Scope with reason
+2. Requirements validated? → Move to Validated with phase reference
+3. New requirements emerged? → Add to Active
+4. Decisions to log? → Add to Key Decisions
+5. "What This Is" still accurate? → Update if drifted
+
+**After each milestone** (via `/gsd-complete-milestone`):
+1. Full review of all sections
+2. Core Value check — still the right priority?
+3. Audit Out of Scope — reasons still valid?
+4. Update Context with current state
+
+---
+
+*Last updated: 2026-04-16 after v1.2 milestone*
