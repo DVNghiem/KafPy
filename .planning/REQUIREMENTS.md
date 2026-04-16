@@ -8,13 +8,13 @@
 
 ### Offset Tracking
 
-- [ ] **OFFSET-01**: `PartitionState` struct — `committed_offset: i64`, `pending_offsets: BTreeSet<i64>`, `failed_offsets: BTreeSet<i64>`
-- [ ] **OFFSET-02**: `OffsetTracker` — `HashMap<TopicPartition, PartitionState>` with `parking_lot::Mutex`
-- [ ] **OFFSET-03**: `OffsetTracker::ack(topic, partition, offset)` — insert offset into `pending_offsets`, advance contiguous cursor
-- [ ] **OFFSET-04**: `OffsetTracker::highest_contiguous(topic, partition) -> Option<i64>` — compute highest consecutive offset starting from `committed_offset + 1`
-- [ ] **OFFSET-05**: `OffsetTracker::should_commit(topic, partition) -> bool` — true when `pending_offsets` contains `committed_offset + 1`
-- [ ] **OFFSET-06**: `OffsetTracker::mark_failed(topic, partition, offset)` — move offset from `pending_offsets` to `failed_offsets`; does NOT advance `committed_offset`
-- [ ] **OFFSET-07**: `OffsetTracker::committed_offset(topic, partition) -> i64` — return last committed offset for topic-partition
+- [x] **OFFSET-01**: `PartitionState` struct — `committed_offset: i64`, `pending_offsets: BTreeSet<i64>`, `failed_offsets: BTreeSet<i64>`
+- [x] **OFFSET-02**: `OffsetTracker` — `HashMap<TopicPartition, PartitionState>` with `parking_lot::Mutex`
+- [x] **OFFSET-03**: `OffsetTracker::ack(topic, partition, offset)` — insert offset into `pending_offsets`, advance contiguous cursor
+- [x] **OFFSET-04**: `OffsetTracker::highest_contiguous(topic, partition) -> Option<i64>` — compute highest consecutive offset starting from `committed_offset + 1`
+- [x] **OFFSET-05**: `OffsetTracker::should_commit(topic, partition) -> bool` — true when `pending_offsets` contains `committed_offset + 1`
+- [x] **OFFSET-06**: `OffsetTracker::mark_failed(topic, partition, offset)` — move offset from `pending_offsets` to `failed_offsets`; does NOT advance `committed_offset`
+- [x] **OFFSET-07**: `OffsetTracker::committed_offset(topic, partition) -> i64` — return last committed offset for topic-partition
 
 ### Commit Coordination
 
