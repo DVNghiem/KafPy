@@ -1,16 +1,16 @@
 use crate::consumer::config::ConsumerConfig;
 use crate::consumer::error::ConsumerError;
 use crate::consumer::message::OwnedMessage;
-use tokio_stream::{Stream, StreamExt};
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::error::KafkaError;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
-use tokio::sync::mpsc;
 use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::{Stream, StreamExt};
 use tracing::{debug, error, info};
 
 /// The consumer runner owns the consumer and drives the async message loop.
@@ -125,6 +125,16 @@ impl ConsumerRunner {
     pub fn assignment(&self) -> Result<rdkafka::TopicPartitionList, ConsumerError> {
         self.consumer.assignment().map_err(ConsumerError::Kafka)
     }
+
+    /// Pauses consumption for the given topic-partition list.
+    pub fn pause(&self, tpl: &rdkafka::TopicPartitionList) -> Result<(), ConsumerError> {
+        self.consumer.pause(tpl).map_err(ConsumerError::Kafka)
+    }
+
+    /// Resumes consumption for the given topic-partition list.
+    pub fn resume(&self, tpl: &rdkafka::TopicPartitionList) -> Result<(), ConsumerError> {
+        self.consumer.resume(tpl).map_err(ConsumerError::Kafka)
+    }
 }
 
 /// A message stream backed by a `ReceiverStream`.
@@ -169,10 +179,7 @@ impl ConsumerTask {
     ///
     /// The `process` async function is called for each `OwnedMessage`.
     /// It should return `Ok(())` on success or an error to halt consumption.
-    pub fn spawn<F, Fut>(
-        runner: ConsumerRunner,
-        mut process: F,
-    ) -> Result<Self, ConsumerError>
+    pub fn spawn<F, Fut>(runner: ConsumerRunner, mut process: F) -> Result<Self, ConsumerError>
     where
         F: FnMut(OwnedMessage) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), ConsumerError>> + Send,

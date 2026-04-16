@@ -22,27 +22,57 @@ pub(crate) struct HandlerMetadata {
     pub(crate) queue_depth: AtomicUsize,
     /// Messages dispatched but not yet acknowledged.
     pub(crate) inflight: AtomicUsize,
-    /// Optional semaphore for concurrency limiting (acquired before dispatch).
+    /// Optional semaphore for concurrency limiting.
     pub(crate) semaphore: Option<Arc<Semaphore>>,
+    /// How many permits are currently "checked out" (dispatched but not ack'd).
+    /// This is our own counter - we don't hold the actual semaphore permit
+    /// across the async boundary because the Permit is dropped immediately.
+    /// The counter lets us enforce the limit at dispatch time.
+    outstanding_permits: AtomicUsize,
+    /// The maximum number of concurrent dispatches allowed (matches semaphore permits).
+    semaphore_limit: usize,
 }
 
 impl HandlerMetadata {
     /// Creates a new metadata entry with zero counters and optional semaphore.
-    pub fn new(capacity: usize, semaphore: Option<Arc<Semaphore>>) -> Self {
+    pub fn new(capacity: usize, semaphore: Option<Arc<Semaphore>>, limit: usize) -> Self {
         Self {
             capacity,
             queue_depth: AtomicUsize::new(0),
             inflight: AtomicUsize::new(0),
             semaphore,
+            outstanding_permits: AtomicUsize::new(0),
+            semaphore_limit: limit,
         }
     }
 
-    /// Tries to acquire a semaphore permit before dispatch.
-    /// Returns `true` if permit acquired (or no semaphore), `false` if no permit available.
+    /// Tries to acquire a permit before dispatch (non-blocking).
+    /// Returns `true` if we have capacity below the limit, `false` if at limit.
+    /// When `true` is returned, caller MUST eventually call `release_permits(count)`.
     pub fn try_acquire_semaphore(&self) -> bool {
-        match &self.semaphore {
-            Some(sem) => sem.try_acquire().is_ok(),
-            None => true,
+        if self.semaphore.is_none() {
+            return true;
+        }
+        let current = self.outstanding_permits.load(Ordering::Relaxed);
+        if current >= self.semaphore_limit {
+            return false;
+        }
+        self.outstanding_permits.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Releases `count` permits back to our tracking counter (and semaphore).
+    /// Called when Python/PyO3 layer acknowledges `count` messages.
+    pub fn release_permits(&self, count: usize) {
+        if self.semaphore.is_some() {
+            let current = self.outstanding_permits.load(Ordering::Relaxed);
+            let to_release = count.min(current);
+            if to_release > 0 {
+                self.outstanding_permits.fetch_sub(to_release, Ordering::Relaxed);
+                if let Some(sem) = &self.semaphore {
+                    sem.add_permits(to_release);
+                }
+            }
         }
     }
 
@@ -68,6 +98,7 @@ impl HandlerMetadata {
 
     /// Decrements both queue_depth and inflight by `count`.
     /// Uses saturating semantics so the counter never underflows below 0.
+    /// Also releases the corresponding permits back to the semaphore.
     fn ack(&self, count: usize) {
         // Saturating subtract: loop until we successfully subtract without underflow.
         loop {
@@ -92,6 +123,8 @@ impl HandlerMetadata {
                 break;
             }
         }
+        // Release permits back to semaphore
+        self.release_permits(count);
     }
 }
 
@@ -134,7 +167,8 @@ impl QueueManager {
         semaphore: Option<Arc<Semaphore>>,
     ) -> mpsc::Receiver<OwnedMessage> {
         let (tx, rx) = mpsc::channel(capacity);
-        let metadata = HandlerMetadata::new(capacity, semaphore);
+        let limit = semaphore.as_ref().map(|s| s.available_permits()).unwrap_or(0);
+        let metadata = HandlerMetadata::new(capacity, semaphore, limit);
         let entry = HandlerEntry { sender: tx, metadata };
         self.handlers.lock().insert(topic.into(), entry);
         rx

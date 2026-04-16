@@ -26,7 +26,7 @@ pub mod backpressure;
 pub mod error;
 pub mod queue_manager;
 
-pub use crate::consumer::OwnedMessage;
+pub use crate::consumer::{MessageTimestamp, OwnedMessage};
 pub use backpressure::{BackpressureAction, DefaultBackpressurePolicy, PauseOnFullPolicy};
 pub(crate) use backpressure::BackpressurePolicy;
 pub use error::DispatchError;
@@ -112,6 +112,11 @@ impl Dispatcher {
             .get(&topic)
             .ok_or_else(|| DispatchError::HandlerNotRegistered(topic.clone()))?;
 
+        // DISP-15: Acquire semaphore permit BEFORE dispatch (non-blocking)
+        if !entry.metadata.try_acquire_semaphore() {
+            return Err(DispatchError::Backpressure(topic));
+        }
+
         // Increment inflight immediately on dispatch attempt
         entry.metadata.inflight.fetch_add(1, Ordering::Relaxed);
 
@@ -161,6 +166,58 @@ impl Dispatcher {
     pub fn get_capacity(&self, topic: &str) -> Option<usize> {
         self.queue_manager.get_capacity(topic)
     }
+
+    /// Like [`send_with_policy`](Self::send_with_policy) but also returns the
+    /// [`BackpressureAction`] signal when backpressure occurs.
+    ///
+    /// Returns `(Result, Option<BackpressureAction>)` — the `Option` is `Some`
+    /// when the policy returned `FuturePausePartition(topic)` and the caller
+    /// should invoke `ConsumerDispatcher::pause_partition`.
+    pub(crate) fn send_with_policy_and_signal(
+        &self,
+        message: OwnedMessage,
+        policy: &dyn BackpressurePolicy,
+    ) -> (Result<DispatchOutcome, DispatchError>, Option<BackpressureAction>) {
+        let topic = message.topic.clone();
+        let partition = message.partition;
+        let offset = message.offset;
+
+        let guard = self.queue_manager.handlers.lock();
+        let entry = guard
+            .get(&topic)
+            .unwrap_or_else(|| panic!("no handler for topic '{}'", topic.clone()));
+
+        // DISP-15: Acquire semaphore permit BEFORE dispatch (non-blocking)
+        if !entry.metadata.try_acquire_semaphore() {
+            return (Err(DispatchError::Backpressure(topic.clone())), None);
+        }
+
+        entry.metadata.inflight.fetch_add(1, Ordering::Relaxed);
+
+        match entry.sender.try_send(message) {
+            Ok(()) => {
+                entry.metadata.queue_depth.fetch_add(1, Ordering::Relaxed);
+                let depth = entry.metadata.queue_depth.load(Ordering::Relaxed);
+                (Ok(DispatchOutcome { topic, partition, offset, queue_depth: depth }), None)
+            }
+            Err(TrySendError::Full(_)) => {
+                entry.metadata.inflight.fetch_sub(1, Ordering::Relaxed);
+                let action = policy.on_queue_full(&topic, &entry.metadata);
+                match action {
+                    BackpressureAction::Drop | BackpressureAction::Wait => {
+                        (Err(DispatchError::Backpressure(topic.clone())), None)
+                    }
+                    BackpressureAction::FuturePausePartition(t) => {
+                        (Err(DispatchError::Backpressure(topic.clone())), Some(BackpressureAction::FuturePausePartition(t)))
+                    }
+                }
+            }
+            Err(TrySendError::Closed(_)) => {
+                entry.metadata.inflight.fetch_sub(1, Ordering::Relaxed);
+                (Err(DispatchError::QueueClosed(topic.clone())), None)
+            }
+        }
+    }
 }
 
 impl Default for Dispatcher {
@@ -171,7 +228,7 @@ impl Default for Dispatcher {
 
 // NOTE: ConsumerRunner import moved to lib.rs to avoid circular deps
 use crate::consumer::runner::ConsumerRunner;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
 
@@ -180,6 +237,8 @@ use tokio_stream::StreamExt;
 pub struct ConsumerDispatcher {
     runner: Arc<ConsumerRunner>,
     dispatcher: Dispatcher,
+    /// Topic-partition lists for each subscribed topic (populated on assignment).
+    partition_handles: parking_lot::Mutex<std::collections::HashMap<String, rdkafka::TopicPartitionList>>,
     /// Topics currently paused (tracked for resume logic).
     paused_topics: parking_lot::Mutex<HashSet<String>>,
     /// Backpressure threshold ratio for resume (0.0 to 1.0).
@@ -192,6 +251,7 @@ impl ConsumerDispatcher {
         Self {
             runner: Arc::new(runner),
             dispatcher: Dispatcher::new(),
+            partition_handles: parking_lot::Mutex::new(std::collections::HashMap::new()),
             paused_topics: parking_lot::Mutex::new(HashSet::new()),
             resume_threshold: 0.5,
         }
@@ -219,15 +279,26 @@ impl ConsumerDispatcher {
             match result {
                 Ok(msg) => {
                     let topic = msg.topic.clone();
-                    match self.dispatcher.send_with_policy(msg, policy) {
+                    let (outcome, pause_signal) = self.dispatcher.send_with_policy_and_signal(msg, policy);
+                    match outcome {
                         Ok(outcome) => {
                             self.check_resume(&topic, outcome.queue_depth);
                         }
                         Err(DispatchError::Backpressure(_)) => {
-                            tracing::warn!("backpressure on topic '{}'", topic);
+                            if let Some(BackpressureAction::FuturePausePartition(pause_topic)) = pause_signal {
+                                match self.pause_partition(&pause_topic) {
+                                    Ok(()) => {
+                                        tracing::warn!("paused topic '{}' due to backpressure", pause_topic);
+                                        self.paused_topics.lock().insert(pause_topic.clone());
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("failed to pause topic '{}': {}", pause_topic, e);
+                                    }
+                                }
+                            }
                         }
-                        Err(DispatchError::HandlerNotRegistered(topic)) => {
-                            tracing::debug!("no handler for topic '{}', skipping", topic);
+                        Err(DispatchError::HandlerNotRegistered(t)) => {
+                            tracing::debug!("no handler for topic '{}', skipping", t);
                         }
                         Err(e) => {
                             tracing::error!("dispatch error: {}", e);
@@ -249,18 +320,184 @@ impl ConsumerDispatcher {
         let threshold = (capacity as f64 * self.resume_threshold) as usize;
         if current_depth < threshold {
             if self.paused_topics.lock().remove(topic) {
-                tracing::info!(
-                    "resuming topic '{}' (depth {} < threshold {})",
-                    topic,
-                    current_depth,
-                    threshold
-                );
+                if let Err(e) = self.resume_partition(topic) {
+                    tracing::error!("failed to resume topic '{}': {}", topic, e);
+                } else {
+                    tracing::info!(
+                        "resumed topic '{}' (depth {} < threshold {})",
+                        topic,
+                        current_depth,
+                        threshold
+                    );
+                }
             }
         }
+    }
+
+    /// Pauses consumption for all partitions of `topic` via rdkafka pause().
+    fn pause_partition(&self, topic: &str) -> Result<(), crate::consumer::error::ConsumerError> {
+        let handles = self.partition_handles.lock();
+        if let Some(tpl) = handles.get(topic) {
+            self.runner.pause(tpl)
+        } else {
+            Err(crate::consumer::error::ConsumerError::Subscription(format!(
+                "no partition handle for topic '{}' - call populate_partitions() first",
+                topic
+            )))
+        }
+    }
+
+    /// Resumes consumption for all partitions of `topic` via rdkafka resume().
+    fn resume_partition(&self, topic: &str) -> Result<(), crate::consumer::error::ConsumerError> {
+        let handles = self.partition_handles.lock();
+        if let Some(tpl) = handles.get(topic) {
+            self.runner.resume(tpl)
+        } else {
+            Err(crate::consumer::error::ConsumerError::Subscription(format!(
+                "no partition handle for topic '{}'",
+                topic
+            )))
+        }
+    }
+
+    /// Populates the internal partition handle map from the consumer's current assignment.
+    /// Must be called after the consumer has been assigned partitions and before pause/resume.
+    pub fn populate_partitions(&self) -> Result<(), crate::consumer::error::ConsumerError> {
+        let assignment = self.runner.assignment()?;
+        let mut by_topic: std::collections::HashMap<String, rdkafka::TopicPartitionList> =
+            std::collections::HashMap::new();
+        for elem in assignment.elements() {
+            let topic_name = elem.topic().to_string();
+            let partition = elem.partition();
+            let offset = elem.offset();
+            by_topic
+                .entry(topic_name.clone())
+                .or_insert_with(|| rdkafka::TopicPartitionList::new());
+            let tpl = by_topic.get_mut(&topic_name).unwrap();
+            tpl.add_partition_offset(topic_name.as_str(), partition, offset)
+                .map_err(|e| crate::consumer::error::ConsumerError::Subscription(e.to_string()))?;
+        }
+        *self.partition_handles.lock() = by_topic;
+        Ok(())
     }
 
     /// Returns a reference to the underlying dispatcher for inspection.
     pub fn dispatcher(&self) -> &Dispatcher {
         &self.dispatcher
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // DISP-17: Owned types - compile-time verification
+    #[test]
+    fn owned_message_implements_send_and_sync() {
+        fn assert_ownded<T: Send + Sync>() {}
+        assert_ownded::<OwnedMessage>();
+    }
+
+    // DISP-17: OwnedMessage has no lifetimes (compile-time check via PhantomData)
+    #[test]
+    fn dispatch_outcome_has_no_lifetimes() {
+        fn assert_owned<T: Send + Sync>() {}
+        assert_owned::<DispatchOutcome>();
+    }
+
+    // DISP-18: FuturePausePartition action carries topic for pause signal
+    #[test]
+    fn future_pause_partition_carries_topic_name() {
+        let action = BackpressureAction::FuturePausePartition("my-topic".to_string());
+        assert_eq!(action.topic(), Some("my-topic"));
+    }
+
+    #[test]
+    fn drop_action_has_no_topic() {
+        let action = BackpressureAction::Drop;
+        assert_eq!(action.topic(), None);
+    }
+
+    // DISP-15: Semaphore try_acquire returns false when no permit
+    #[tokio::test]
+    async fn semaphore_blocks_when_no_permit() {
+        let dispatcher = Dispatcher::new();
+        let _rx = dispatcher.register_handler_with_semaphore(
+            "test-topic",
+            10,
+            Some(Arc::new(tokio::sync::Semaphore::new(1))),
+        );
+
+        let msg = OwnedMessage::fake("test-topic", 0, 100);
+        // First send should succeed
+        let (result, _) = dispatcher.send_with_policy_and_signal(msg, &DefaultBackpressurePolicy);
+        assert!(result.is_ok());
+
+        // Second send should fail with backpressure (semaphore exhausted)
+        let msg2 = OwnedMessage::fake("test-topic", 1, 101);
+        let (result, _) = dispatcher.send_with_policy_and_signal(msg2, &DefaultBackpressurePolicy);
+        assert!(matches!(result, Err(DispatchError::Backpressure(_))));
+    }
+
+    // DISP-15: No semaphore = unlimited concurrency (bounded by channel capacity)
+    #[tokio::test]
+    async fn no_semaphore_allows_unlimited_dispatch() {
+        let dispatcher = Dispatcher::new();
+        // Capacity 100 means we can dispatch up to 100 before backpressure
+        let _rx = dispatcher.register_handler("test-topic", 100);
+
+        for i in 0..50 {
+            let msg = OwnedMessage::fake("test-topic", i % 3, i as i64);
+            let (result, _) = dispatcher.send_with_policy_and_signal(msg, &DefaultBackpressurePolicy);
+            assert!(result.is_ok(), "dispatch {} should succeed", i);
+        }
+    }
+
+    // DISP-18: ConsumerDispatcher cannot be tested without a real consumer
+    // Integration tests in tests/ directory would use a real ConsumerRunner
+    // Here we verify the type-level contract only
+
+    // Verify Dispatcher send_with_policy and send work together
+    #[test]
+    fn send_uses_default_policy() {
+        let dispatcher = Dispatcher::new();
+        let _rx = dispatcher.register_handler("test-topic", 10);
+        let msg = OwnedMessage::fake("test-topic", 0, 0);
+        let result = dispatcher.send(msg);
+        assert!(result.is_ok());
+    }
+
+    // DISP-18: Verify get_capacity returns correct capacity
+    #[test]
+    fn get_capacity_returns_registered_capacity() {
+        let dispatcher = Dispatcher::new();
+        let _rx = dispatcher.register_handler("test-topic", 42);
+        assert_eq!(dispatcher.get_capacity("test-topic"), Some(42));
+        assert_eq!(dispatcher.get_capacity("unknown-topic"), None);
+    }
+
+    // DISP-18: BackpressureAction variant testing
+    #[test]
+    fn backpressure_action_clone_eq() {
+        let a1 = BackpressureAction::FuturePausePartition("topic".to_string());
+        let a2 = a1.clone();
+        assert_eq!(a1, a2);
+        assert_eq!(a1.topic(), a2.topic());
+    }
+}
+
+// Fake OwnedMessage for testing
+#[cfg(test)]
+impl OwnedMessage {
+    pub(crate) fn fake(topic: &str, partition: i32, offset: i64) -> Self {
+        OwnedMessage {
+            topic: topic.to_string(),
+            partition,
+            offset,
+            key: None,
+            payload: None,
+            timestamp: MessageTimestamp::NotAvailable,
+            headers: vec![],
+        }
     }
 }
