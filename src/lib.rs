@@ -10,6 +10,9 @@ pub mod pyconsumer;
 // Pure Rust Kafka consumer core — no PyO3 dependencies
 pub mod consumer;
 
+// Pure Rust Kafka dispatcher — routes OwnedMessage to per-handler bounded channels
+pub mod dispatcher;
+
 use kafka_message::KafkaMessage;
 use logging::Logger;
 use produce::PyProducer;
