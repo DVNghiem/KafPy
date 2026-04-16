@@ -7,7 +7,8 @@
 //! - `inflight`: messages dispatched to the handler but not yet acknowledged via `ack()`.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
 
 pub use crate::consumer::OwnedMessage;
@@ -21,15 +22,27 @@ pub(crate) struct HandlerMetadata {
     pub(crate) queue_depth: AtomicUsize,
     /// Messages dispatched but not yet acknowledged.
     pub(crate) inflight: AtomicUsize,
+    /// Optional semaphore for concurrency limiting (acquired before dispatch).
+    pub(crate) semaphore: Option<Arc<Semaphore>>,
 }
 
 impl HandlerMetadata {
-    /// Creates a new metadata entry with zero counters.
-    pub fn new(capacity: usize) -> Self {
+    /// Creates a new metadata entry with zero counters and optional semaphore.
+    pub fn new(capacity: usize, semaphore: Option<Arc<Semaphore>>) -> Self {
         Self {
             capacity,
             queue_depth: AtomicUsize::new(0),
             inflight: AtomicUsize::new(0),
+            semaphore,
+        }
+    }
+
+    /// Tries to acquire a semaphore permit before dispatch.
+    /// Returns `true` if permit acquired (or no semaphore), `false` if no permit available.
+    pub fn try_acquire_semaphore(&self) -> bool {
+        match &self.semaphore {
+            Some(sem) => sem.try_acquire().is_ok(),
+            None => true,
         }
     }
 
@@ -110,11 +123,29 @@ impl QueueManager {
         topic: impl Into<String>,
         capacity: usize,
     ) -> mpsc::Receiver<OwnedMessage> {
+        self.register_handler_with_semaphore(topic, capacity, None)
+    }
+
+    /// Registers a handler with optional semaphore for concurrency limiting.
+    pub(crate) fn register_handler_with_semaphore(
+        &self,
+        topic: impl Into<String>,
+        capacity: usize,
+        semaphore: Option<Arc<Semaphore>>,
+    ) -> mpsc::Receiver<OwnedMessage> {
         let (tx, rx) = mpsc::channel(capacity);
-        let metadata = HandlerMetadata::new(capacity);
+        let metadata = HandlerMetadata::new(capacity, semaphore);
         let entry = HandlerEntry { sender: tx, metadata };
         self.handlers.lock().insert(topic.into(), entry);
         rx
+    }
+
+    /// Returns the capacity for `topic`, or `None` if not registered.
+    pub fn get_capacity(&self, topic: &str) -> Option<usize> {
+        self.handlers
+            .lock()
+            .get(topic)
+            .map(|entry| entry.metadata.capacity)
     }
 
     /// Returns the current queue depth for `topic`, or `None` if not registered.

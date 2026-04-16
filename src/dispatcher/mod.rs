@@ -75,7 +75,19 @@ impl Dispatcher {
         topic: impl Into<String>,
         capacity: usize,
     ) -> mpsc::Receiver<OwnedMessage> {
-        self.queue_manager.register_handler(topic, capacity)
+        self.queue_manager
+            .register_handler_with_semaphore(topic, capacity, None)
+    }
+
+    /// Registers a handler with optional semaphore for concurrency limiting.
+    pub(crate) fn register_handler_with_semaphore(
+        &self,
+        topic: impl Into<String>,
+        capacity: usize,
+        semaphore: Option<Arc<tokio::sync::Semaphore>>,
+    ) -> mpsc::Receiver<OwnedMessage> {
+        self.queue_manager
+            .register_handler_with_semaphore(topic, capacity, semaphore)
     }
 
     /// Sends `message` to the handler registered for `message.topic`,
@@ -144,10 +156,111 @@ impl Dispatcher {
     pub fn send(&self, message: OwnedMessage) -> Result<DispatchOutcome, DispatchError> {
         self.send_with_policy(message, &DefaultBackpressurePolicy)
     }
+
+    /// Returns the capacity for `topic`, or `None` if not registered.
+    pub fn get_capacity(&self, topic: &str) -> Option<usize> {
+        self.queue_manager.get_capacity(topic)
+    }
 }
 
 impl Default for Dispatcher {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// NOTE: ConsumerRunner import moved to lib.rs to avoid circular deps
+use crate::consumer::runner::ConsumerRunner;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use tokio_stream::StreamExt;
+
+/// Owns ConsumerRunner + Dispatcher and orchestrates the async message loop.
+/// Wires consumer stream output to dispatcher input.
+pub struct ConsumerDispatcher {
+    runner: Arc<ConsumerRunner>,
+    dispatcher: Dispatcher,
+    /// Topics currently paused (tracked for resume logic).
+    paused_topics: parking_lot::Mutex<HashSet<String>>,
+    /// Backpressure threshold ratio for resume (0.0 to 1.0).
+    resume_threshold: f64,
+}
+
+impl ConsumerDispatcher {
+    /// Creates a new dispatcher wired to the given runner.
+    pub fn new(runner: ConsumerRunner) -> Self {
+        Self {
+            runner: Arc::new(runner),
+            dispatcher: Dispatcher::new(),
+            paused_topics: parking_lot::Mutex::new(HashSet::new()),
+            resume_threshold: 0.5,
+        }
+    }
+
+    /// Registers a handler for `topic` with bounded queue of `capacity`.
+    /// Optionally limits concurrency with `max_concurrency` semaphore permits.
+    pub fn register_handler(
+        &self,
+        topic: impl Into<String>,
+        capacity: usize,
+        max_concurrency: Option<usize>,
+    ) -> mpsc::Receiver<OwnedMessage> {
+        let semaphore = max_concurrency.map(|n| Arc::new(tokio::sync::Semaphore::new(n)));
+        self.dispatcher
+            .register_handler_with_semaphore(topic, capacity, semaphore)
+    }
+
+    /// Runs the dispatch loop, polling the consumer stream and
+    /// dispatching each message through the dispatcher.
+    /// Uses the provided backpressure policy.
+    pub async fn run(&self, policy: &dyn BackpressurePolicy) {
+        let mut stream = self.runner.stream();
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(msg) => {
+                    let topic = msg.topic.clone();
+                    match self.dispatcher.send_with_policy(msg, policy) {
+                        Ok(outcome) => {
+                            self.check_resume(&topic, outcome.queue_depth);
+                        }
+                        Err(DispatchError::Backpressure(_)) => {
+                            tracing::warn!("backpressure on topic '{}'", topic);
+                        }
+                        Err(DispatchError::HandlerNotRegistered(topic)) => {
+                            tracing::debug!("no handler for topic '{}', skipping", topic);
+                        }
+                        Err(e) => {
+                            tracing::error!("dispatch error: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("consumer error: {}", e);
+                }
+            }
+        }
+    }
+
+    /// Checks if a paused topic should be resumed based on current queue depth.
+    fn check_resume(&self, topic: &str, current_depth: usize) {
+        let Some(capacity) = self.dispatcher.get_capacity(topic) else {
+            return;
+        };
+        let threshold = (capacity as f64 * self.resume_threshold) as usize;
+        if current_depth < threshold {
+            if self.paused_topics.lock().remove(topic) {
+                tracing::info!(
+                    "resuming topic '{}' (depth {} < threshold {})",
+                    topic,
+                    current_depth,
+                    threshold
+                );
+            }
+        }
+    }
+
+    /// Returns a reference to the underlying dispatcher for inspection.
+    pub fn dispatcher(&self) -> &Dispatcher {
+        &self.dispatcher
     }
 }
