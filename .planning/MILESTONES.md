@@ -1,5 +1,18 @@
 # Milestones
 
+## v1.2 Python Execution Lane (Shipped: 2026-04-16)
+
+**Phases completed:** 2 phases, 4 plans, 0 tasks
+
+**Key accomplishments:**
+
+- Completed:
+- Completed:
+- Completed:
+- Completed:
+
+---
+
 ## v1.1 — Dispatcher Layer (Shipped: 2026-04-16)
 
 **Phases completed:** 3 phases, 6 plans
