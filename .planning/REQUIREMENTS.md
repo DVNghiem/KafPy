@@ -16,18 +16,18 @@
 
 ### Backpressure
 
-- [ ] **DISP-06**: Track queue depth per handler (available via inspection API)
-- [ ] **DISP-07**: Track inflight count per handler
+- [x] **DISP-06**: Track queue depth per handler (available via inspection API)
+- [x] **DISP-07**: Track inflight count per handler
 - [ ] **DISP-08**: When queue is full, `send()` returns `DispatchError::Backpressure` (not blocking)
 - [ ] **DISP-09**: Backpressure strategy trait — `BackpressurePolicy::on_queue_full(topic, handler)` hook
 - [ ] **DISP-10**: Strategy returns `BackpressureAction` (Drop, Wait, or FuturePausePartition)
 
 ### Queue Manager
 
-- [ ] **DISP-11**: `QueueManager` owns all handler queues and metadata
-- [ ] **DISP-12**: Queue capacity configurable per-handler at registration
-- [ ] **DISP-13**: `QueueManager::get_queue_depth(topic)` returns `Option<usize>`
-- [ ] **DISP-14**: `QueueManager::get_inflight(topic)` returns `Option<usize>`
+- [x] **DISP-11**: `QueueManager` owns all handler queues and metadata
+- [x] **DISP-12**: Queue capacity configurable per-handler at registration
+- [x] **DISP-13**: `QueueManager::get_queue_depth(topic)` returns `Option<usize>`
+- [x] **DISP-14**: `QueueManager::get_inflight(topic)` returns `Option<usize>`
 
 ### Concurrency (Optional)
 
