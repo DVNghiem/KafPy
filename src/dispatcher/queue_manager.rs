@@ -7,7 +7,6 @@
 //! - `inflight`: messages dispatched to the handler but not yet acknowledged via `ack()`.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
@@ -55,11 +54,31 @@ impl HandlerMetadata {
     }
 
     /// Decrements both queue_depth and inflight by `count`.
-    /// Uses `saturating_sub` so count cannot go below 0.
+    /// Uses saturating semantics so the counter never underflows below 0.
     fn ack(&self, count: usize) {
-        // Use saturating_sub to prevent underflow if count exceeds current value.
-        self.queue_depth.fetch_saturating_sub(count, Ordering::Relaxed);
-        self.inflight.fetch_saturating_sub(count, Ordering::Relaxed);
+        // Saturating subtract: loop until we successfully subtract without underflow.
+        loop {
+            let current = self.queue_depth.load(Ordering::Relaxed);
+            let new = current.saturating_sub(count);
+            if self
+                .queue_depth
+                .compare_exchange(current, new, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
+        loop {
+            let current = self.inflight.load(Ordering::Relaxed);
+            let new = current.saturating_sub(count);
+            if self
+                .inflight
+                .compare_exchange(current, new, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
     }
 }
 
