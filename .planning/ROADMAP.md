@@ -20,7 +20,9 @@
   5. PyHandler in pyconsumer.rs wraps PythonHandler
   6. ExecutorOutcome enum exists (Ack/Retry/Rejected)
   7. RetryExecutor, OffsetAck, AsyncHandler are trait placeholders
-**Plans**: TBD
+**Plans**: 2 plans
+- [ ] 10-01-PLAN.md — WorkerPool + worker_loop with JoinSet, CancellationToken, structured logging
+- [ ] 10-02-PLAN.md — Wire WorkerPool into pyconsumer.rs, stop() graceful shutdown
 
 ### Phase 10: Worker Pool
 **Goal:** WorkerPool with N workers pulling from handler queues, graceful shutdown, ack integration
@@ -33,7 +35,9 @@
   4. Structured logging: worker start/stop, message pickup, success/failure
   5. Graceful shutdown completes in-flight before exit
   6. QueueManager::ack() called on ExecutionResult::Ok
-**Plans**: TBD
+**Plans**: 2 plans
+- [ ] 10-01-PLAN.md — WorkerPool + worker_loop with JoinSet, CancellationToken, structured logging
+- [ ] 10-02-PLAN.md — Wire WorkerPool into pyconsumer.rs, stop() graceful shutdown
 
 ## Progress
 
