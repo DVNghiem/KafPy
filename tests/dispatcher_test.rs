@@ -82,11 +82,12 @@ fn send_returns_queue_full_when_channel_full() {
     dispatcher.send(msg1).expect("first send should succeed");
 
     // Now the queue is full - try to send another
+    // DISP-08: send() returns Backpressure (not QueueFull) when queue is full
     let msg2 = make_message("test-topic", 0, 2);
     let result = dispatcher.send(msg2);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(matches!(err, DispatchError::QueueFull(_)));
+    assert!(matches!(err, DispatchError::Backpressure(_)));
 
     drop(rx);
 }

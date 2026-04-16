@@ -226,8 +226,14 @@ impl ConsumerConfig {
             .set("auto.offset.reset", self.auto_offset_reset.as_str())
             .set("enable.auto.commit", self.enable_auto_commit.to_string())
             .set("session.timeout.ms", self.session_timeout_ms.to_string())
-            .set("heartbeat.interval.ms", self.heartbeat_interval_ms.to_string())
-            .set("max.poll.interval.ms", self.max_poll_interval_ms.to_string())
+            .set(
+                "heartbeat.interval.ms",
+                self.heartbeat_interval_ms.to_string(),
+            )
+            .set(
+                "max.poll.interval.ms",
+                self.max_poll_interval_ms.to_string(),
+            )
             .set("fetch.min.bytes", self.fetch_min_bytes.to_string())
             .set("enable.partition.eof", "false")
             .set(

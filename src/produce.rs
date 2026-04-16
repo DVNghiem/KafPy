@@ -62,13 +62,11 @@ impl PyProducer {
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let lock = producer_lock.read().await;
-            let producer = lock
-                .as_ref()
-                .ok_or_else(|| {
-                    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                        "Producer not initialized. Call init() first.",
-                    )
-                })?;
+            let producer = lock.as_ref().ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "Producer not initialized. Call init() first.",
+                )
+            })?;
 
             let mut record = FutureRecord::to(&topic);
 
@@ -242,22 +240,33 @@ impl PyProducer {
 }
 
 impl PyProducer {
-    fn create_producer(config: &ProducerConfig) -> Result<FutureProducer, rdkafka::error::KafkaError> {
+    fn create_producer(
+        config: &ProducerConfig,
+    ) -> Result<FutureProducer, rdkafka::error::KafkaError> {
         let mut client_config = ClientConfig::new();
 
         // Basic configuration
         client_config
             .set("bootstrap.servers", &config.brokers)
             .set("message.timeout.ms", config.message_timeout_ms.to_string())
-            .set("queue.buffering.max.messages", config.queue_buffering_max_messages.to_string())
-            .set("queue.buffering.max.kbytes", config.queue_buffering_max_kbytes.to_string())
+            .set(
+                "queue.buffering.max.messages",
+                config.queue_buffering_max_messages.to_string(),
+            )
+            .set(
+                "queue.buffering.max.kbytes",
+                config.queue_buffering_max_kbytes.to_string(),
+            )
             .set("batch.num.messages", config.batch_num_messages.to_string())
             .set("compression.type", &config.compression_type)
             .set("linger.ms", config.linger_ms.to_string())
             .set("request.timeout.ms", config.request_timeout_ms.to_string())
             .set("retry.backoff.ms", config.retry_backoff_ms.to_string())
             .set("retries", config.retries.to_string())
-            .set("max.in.flight.requests.per.connection", config.max_in_flight.to_string())
+            .set(
+                "max.in.flight.requests.per.connection",
+                config.max_in_flight.to_string(),
+            )
             .set("enable.idempotence", config.enable_idempotence.to_string())
             .set("acks", &config.acks);
 

@@ -344,22 +344,19 @@ pub use channel::{Dispatcher, DispatchOutcome};
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **DashMap vs Mutex-wrapped HashMap for topic map**
-   - What we know: Both approaches are valid; DashMap is lock-free concurrent, Mutex is simpler
-   - What's unclear: Whether the project prefers adding dependencies or using std Mutex
-   - Recommendation: Use `parking_lot::Mutex<HashMap>` as middle ground (already async-friendly, no DashMap dependency needed)
+1. **DashMap vs Mutex-wrapped HashMap for topic map** — RESOLVED
+   - Decision: Use `parking_lot::Mutex<HashMap<String, mpsc::Sender<OwnedMessage>>>`
+   - Rationale: Simpler than DashMap, no new dependency needed, async-friendly
 
-2. **DispatchOutcome.queue_depth calculation**
-   - What we know: DISP-05 requires `Result<DispatchOutcome, DispatchError>` - some success info must be returned
-   - What's unclear: Whether queue depth at dispatch time is needed in Phase 6 or Phase 7 (backpressure tracking)
-   - Recommendation: Include field but mark as placeholder (0) in Phase 6; Phase 7 can calculate via `mpsc::Sender::max_capacity() - current_len()`
+2. **DispatchOutcome.queue_depth calculation** — RESOLVED
+   - Decision: Include field but set to 0 (placeholder) in Phase 6
+   - Rationale: Phase 7 backpressure tracking will calculate actual queue depth via sender capacity APIs
 
-3. **Handler receiver type exposed to Python**
-   - What we know: Python needs to receive messages from the handler channel
-   - What's unclear: Whether PyO3 can directly use `mpsc::Receiver<OwnedMessage>` or needs wrapping
-   - Recommendation: Phase 8 (ConsumerRunner Integration) should address PyO3 boundary; Phase 6 should focus on Dispatcher API
+3. **Handler receiver type exposed to Python** — DEFERRED to Phase 8
+   - Decision: Phase 8 (ConsumerRunner Integration) addresses PyO3 boundary
+   - Rationale: Phase 6 focuses on pure Rust Dispatcher API with no PyO3 dependencies
 
 ---
 

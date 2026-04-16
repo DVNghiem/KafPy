@@ -93,7 +93,10 @@ impl Consumer {
                                 Ok(g) => g,
                                 Err(poisoned) => poisoned.into_inner(),
                             };
-                            guard.get(&topic).map(|h| h.as_ptr()).unwrap_or_else(|| default_handler.as_ptr())
+                            guard
+                                .get(&topic)
+                                .map(|h| h.as_ptr())
+                                .unwrap_or_else(|| default_handler.as_ptr())
                         };
                         let py_msg_clone = py_msg.clone();
                         pyo3::Python::attach(|py| {

@@ -48,7 +48,8 @@ impl MessageTimestamp {
 
     /// Returns a `SystemTime` if the timestamp is available.
     pub fn as_system_time(&self) -> Option<SystemTime> {
-        self.as_millis().map(|ms| UNIX_EPOCH + std::time::Duration::from_millis(ms as u64))
+        self.as_millis()
+            .map(|ms| UNIX_EPOCH + std::time::Duration::from_millis(ms as u64))
     }
 }
 
@@ -65,10 +66,7 @@ impl OwnedMessage {
                 let mut result = Vec::with_capacity(h.count());
                 for i in 0..h.count() {
                     if let Some(header) = h.try_get(i) {
-                        result.push((
-                            header.key.to_string(),
-                            header.value.map(|v| v.to_vec()),
-                        ));
+                        result.push((header.key.to_string(), header.value.map(|v| v.to_vec())));
                     }
                 }
                 result
@@ -95,7 +93,9 @@ impl OwnedMessage {
 
     /// Returns the key as a UTF-8 string, if valid.
     pub fn key_str(&self) -> Option<&str> {
-        self.key.as_deref().and_then(|k| std::str::from_utf8(k).ok())
+        self.key
+            .as_deref()
+            .and_then(|k| std::str::from_utf8(k).ok())
     }
 
     /// Returns the message size in bytes (payload + key), for metrics.

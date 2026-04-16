@@ -18,9 +18,9 @@
 
 - [x] **DISP-06**: Track queue depth per handler (available via inspection API)
 - [x] **DISP-07**: Track inflight count per handler
-- [ ] **DISP-08**: When queue is full, `send()` returns `DispatchError::Backpressure` (not blocking)
-- [ ] **DISP-09**: Backpressure strategy trait — `BackpressurePolicy::on_queue_full(topic, handler)` hook
-- [ ] **DISP-10**: Strategy returns `BackpressureAction` (Drop, Wait, or FuturePausePartition)
+- [x] **DISP-08**: When queue is full, `send()` returns `DispatchError::Backpressure` (not blocking)
+- [x] **DISP-09**: Backpressure strategy trait — `BackpressurePolicy::on_queue_full(topic, handler)` hook
+- [x] **DISP-10**: Strategy returns `BackpressureAction` (Drop, Wait, or FuturePausePartition)
 
 ### Queue Manager
 
@@ -31,13 +31,13 @@
 
 ### Concurrency (Optional)
 
-- [ ] **DISP-15**: Optional Tokio `Semaphore` per handler for concurrency limit (don't overcomplicate)
+- [x] **DISP-15**: Optional Tokio `Semaphore` per handler for concurrency limit (don't overcomplicate)
 
 ### Integration
 
-- [ ] **DISP-16**: Dispatcher integrates with `ConsumerRunner` — dispatcher receives messages from consumer stream
-- [ ] **DISP-17**: Python integration boundary preserved — dispatcher API uses only owned types, no borrowed lifetimes
-- [ ] **DISP-18**: Designed for future `pause_resume(topic)` method using rdkafka partition pause/resume
+- [x] **DISP-16**: Dispatcher integrates with `ConsumerRunner` — dispatcher receives messages from consumer stream
+- [x] **DISP-17**: Python integration boundary preserved — dispatcher API uses only owned types, no borrowed lifetimes
+- [x] **DISP-18**: Designed for future `pause_resume(topic)` method using rdkafka partition pause/resume
 
 ### Error Handling
 
