@@ -89,6 +89,10 @@ impl Consumer {
             // Create ConsumerDispatcher (owned, not stored in Consumer struct)
             let dispatcher = ConsumerDispatcher::new(runner);
 
+            // Create offset coordinator (used by WorkerPool for offset tracking)
+            let offset_tracker: std::sync::Arc<dyn crate::coordinator::OffsetCoordinator> =
+                std::sync::Arc::new(crate::coordinator::OffsetTracker::new());
+
             // Collect receivers from all registered handlers
             let receivers: Vec<_> = {
                 let handlers_guard = handlers.lock().unwrap();
@@ -119,6 +123,7 @@ impl Consumer {
                 handler_arc,
                 executor_arc,
                 queue_manager_arc.clone(),
+                offset_tracker.clone(),
                 shutdown_token,
             );
 

@@ -171,9 +171,25 @@ impl OffsetTracker {
     }
 }
 
+use super::OffsetCoordinator;
+
 impl Default for OffsetTracker {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl OffsetCoordinator for OffsetTracker {
+    fn record_ack(&self, topic: &str, partition: i32, offset: i64) {
+        self.ack(topic, partition, offset);
+    }
+
+    fn mark_failed(&self, topic: &str, partition: i32, offset: i64) {
+        OffsetTracker::mark_failed(self, topic, partition, offset);
+    }
+
+    fn graceful_shutdown(&self) {
+        // Phase 15: commit highest contiguous per topic-partition
     }
 }
 

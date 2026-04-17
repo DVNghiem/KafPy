@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+use crate::coordinator::OffsetCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::python::context::ExecutionContext;
@@ -33,6 +34,7 @@ async fn worker_loop(
     handler: Arc<PythonHandler>,
     executor: Arc<dyn Executor>,
     queue_manager: Arc<QueueManager>,
+    offset_coordinator: Arc<dyn OffsetCoordinator>,
     worker_id: usize,
     shutdown_token: CancellationToken,
 ) {
@@ -120,6 +122,7 @@ pub struct WorkerPool {
     join_set: JoinSet<()>,
     /// Exposed publicly so Consumer::stop() can cancel via Arc<WorkerPool>.
     pub(crate) shutdown_token: CancellationToken,
+    offset_coordinator: Arc<dyn OffsetCoordinator>,
 }
 
 impl WorkerPool {
@@ -135,6 +138,7 @@ impl WorkerPool {
         handler: Arc<PythonHandler>,
         executor: Arc<dyn Executor>,
         queue_manager: Arc<QueueManager>,
+        offset_coordinator: Arc<dyn OffsetCoordinator>,
         shutdown_token: CancellationToken,
     ) -> Self {
         let mut join_set = JoinSet::new();
@@ -145,12 +149,14 @@ impl WorkerPool {
             let executor = Arc::clone(&executor);
             let queue_manager = Arc::clone(&queue_manager);
             let token = shutdown_token.clone();
+            let offset_coordinator = offset_coordinator.clone();
 
             join_set.spawn(worker_loop(
                 rx,
                 handler,
                 executor,
                 queue_manager,
+                offset_coordinator,
                 worker_id,
                 token,
             ));
@@ -160,6 +166,7 @@ impl WorkerPool {
         Self {
             join_set,
             shutdown_token,
+            offset_coordinator,
         }
     }
 
@@ -238,6 +245,7 @@ mod tests {
             dummy_handler(),
             Arc::new(DefaultExecutor),
             Arc::new(QueueManager::new()),
+            Arc::new(crate::coordinator::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,
             CancellationToken::new(),
         );
         let _ = tx;
@@ -256,6 +264,7 @@ mod tests {
                 dummy_handler(),
                 Arc::new(DefaultExecutor) as Arc<dyn Executor>,
                 Arc::new(QueueManager::new()),
+                Arc::new(crate::coordinator::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,
                 0,
                 token,
             ),
@@ -304,6 +313,7 @@ mod tests {
             dummy_handler(),
             Arc::new(DefaultExecutor) as Arc<dyn Executor>,
             Arc::new(QueueManager::new()),
+            Arc::new(crate::coordinator::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,
             0,
             token.clone(),
         ));
