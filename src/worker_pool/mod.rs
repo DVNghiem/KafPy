@@ -338,7 +338,9 @@ impl WorkerPool {
     pub async fn shutdown(&mut self) {
         tracing::info!("initiating worker pool shutdown");
         self.shutdown_token.cancel();
-        // Commit all ready offsets before workers exit (D-03)
+        // D-02: Flush all failed (retryable + terminal) to DLQ before final commit
+        self.offset_coordinator
+            .flush_failed_to_dlq(&self.dlq_router, &self.dlq_producer);
         self.offset_coordinator.graceful_shutdown();
         self.join_set.shutdown().await;
         tracing::info!("worker pool shutdown complete");
