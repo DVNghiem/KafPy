@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: milestone
 status: executing
-stopped_at: Phase 20 context gathered
-last_updated: "2026-04-17T15:00:02.509Z"
+stopped_at: Completed 20-01-PLAN.md
+last_updated: "2026-04-17T15:20:17.586Z"
 last_activity: 2026-04-17
 progress:
   total_phases: 4
   completed_phases: 3
-  total_plans: 6
-  completed_plans: 6
-  percent: 100
+  total_plans: 8
+  completed_plans: 7
+  percent: 88
 ---
 
 # Project State
@@ -71,6 +71,9 @@ Last activity: 2026-04-17
 - **v1.3**: No duplicate commits — check `stored_offset` before committing
 - **v1.3**: `OffsetCoordinator` trait separates offset tracking from `Executor` policy
 - **v1.3 Phase 13**: `store_offset` async via `spawn_blocking`, two-phase guard in `OffsetCommitter::commit_partition`, `enable_auto_offset_store` added to `ConsumerConfig`
+- [Phase 20]: has_terminal set once never cleared per partition (D-03)
+- [Phase 20]: should_commit gates per-partition when has_terminal=true (D-01)
+- [Phase 20]: mark_failed sets has_terminal when FailureCategory::Terminal (D-05)
 
 ### Pending Todos
 
@@ -91,6 +94,6 @@ Last activity: 2026-04-17
 
 ## Session Continuity
 
-Last session: 2026-04-17T15:00:02.507Z
-Stopped at: Phase 20 context gathered
-Resume file: .planning/phases/20-terminal-handling-commit-gating/20-CONTEXT.md
+Last session: 2026-04-17T15:20:00.692Z
+Stopped at: Completed 20-01-PLAN.md
+Resume file: None
