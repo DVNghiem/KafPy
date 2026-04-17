@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::coordinator::OffsetCoordinator;
 use crate::coordinator::retry_coordinator::RetryCoordinator;
+use crate::dlq::{DefaultDlqRouter, DlqMetadata, DlqRouter, SharedDlqProducer};
 use crate::failure::{FailureReason, FailureCategory};
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
@@ -38,6 +39,8 @@ async fn worker_loop(
     queue_manager: Arc<QueueManager>,
     offset_coordinator: Arc<dyn OffsetCoordinator>,
     retry_coordinator: Arc<RetryCoordinator>,
+    dlq_producer: Arc<SharedDlqProducer>,
+    dlq_router: Arc<dyn DlqRouter>,
     worker_id: usize,
     shutdown_token: CancellationToken,
 ) {
@@ -77,7 +80,7 @@ async fn worker_loop(
                     );
                     crate::failure::logging::log_failure(&ctx, reason, exception, false);
 
-                    // Check if we should retry
+                    // Check if we should retry — now returns 3-tuple (should_retry, should_dlq, delay)
                     let (should_retry, should_dlq, delay) = retry_coordinator.record_failure(
                         &ctx.topic, ctx.partition, ctx.offset, reason,
                     );
@@ -97,23 +100,51 @@ async fn worker_loop(
                                 "scheduling retry"
                             );
                             tokio::time::sleep(d).await;
-                            // Re-queue for retry (stay in active_message slot)
                             active_message = Some(msg);
                             continue;
                         }
                     }
 
-                    // Max attempts exceeded or non-retryable → route to DLQ
-                    tracing::error!(
-                        worker_id = worker_id,
-                        topic = %ctx.topic,
-                        partition = ctx.partition,
-                        offset = ctx.offset,
-                        reason = %reason,
-                        "max attempts exceeded — DLQ routing not implemented in this phase"
-                    );
-                    // DLQ routing happens in Phase 19 — for now just log
-                    queue_manager.ack(&msg.topic, 1);
+                    if should_dlq {
+                        // Route to DLQ — construct metadata and produce fire-and-forget
+                        let metadata = DlqMetadata::new(
+                            ctx.topic.clone(),
+                            ctx.partition,
+                            ctx.offset,
+                            reason.to_string(),
+                            retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset) as u32,
+                            chrono::Utc::now(),
+                            chrono::Utc::now(),
+                        );
+
+                        let tp = dlq_router.route(&metadata);
+                        tracing::error!(
+                            worker_id = worker_id,
+                            topic = %ctx.topic,
+                            partition = ctx.partition,
+                            offset = ctx.offset,
+                            dlq_topic = %tp.topic,
+                            dlq_partition = tp.partition,
+                            reason = %reason,
+                            attempt_count = metadata.attempt_count,
+                            "routing message to DLQ"
+                        );
+
+                        // Fire-and-forget — don't await
+                        dlq_producer.produce_async(
+                            tp.topic.clone(),
+                            tp.partition,
+                            msg.payload.clone().unwrap_or_default(),
+                            msg.key.clone(),
+                            &metadata,
+                        );
+
+                        // Ack the original message — it's now in DLQ
+                        queue_manager.ack(&msg.topic, 1);
+                    } else {
+                        // Not retrying, not DLQ — count as processed
+                        queue_manager.ack(&msg.topic, 1);
+                    }
                 }
                 ExecutionResult::Rejected { ref reason, .. } => {
                     tracing::warn!(
@@ -148,23 +179,51 @@ async fn worker_loop(
                                 "scheduling retry"
                             );
                             tokio::time::sleep(d).await;
-                            // Re-queue for retry (stay in active_message slot)
                             active_message = Some(msg);
                             continue;
                         }
                     }
 
-                    // Max attempts exceeded or non-retryable → route to DLQ
-                    tracing::error!(
-                        worker_id = worker_id,
-                        topic = %ctx.topic,
-                        partition = ctx.partition,
-                        offset = ctx.offset,
-                        reason = %reason,
-                        "max attempts exceeded — DLQ routing not implemented in this phase"
-                    );
-                    // DLQ routing happens in Phase 19 — for now just log
-                    queue_manager.ack(&msg.topic, 1);
+                    if should_dlq {
+                        // Route to DLQ — construct metadata and produce fire-and-forget
+                        let metadata = DlqMetadata::new(
+                            ctx.topic.clone(),
+                            ctx.partition,
+                            ctx.offset,
+                            reason.to_string(),
+                            retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset) as u32,
+                            chrono::Utc::now(),
+                            chrono::Utc::now(),
+                        );
+
+                        let tp = dlq_router.route(&metadata);
+                        tracing::error!(
+                            worker_id = worker_id,
+                            topic = %ctx.topic,
+                            partition = ctx.partition,
+                            offset = ctx.offset,
+                            dlq_topic = %tp.topic,
+                            dlq_partition = tp.partition,
+                            reason = %reason,
+                            attempt_count = metadata.attempt_count,
+                            "routing message to DLQ"
+                        );
+
+                        // Fire-and-forget — don't await
+                        dlq_producer.produce_async(
+                            tp.topic.clone(),
+                            tp.partition,
+                            msg.payload.clone().unwrap_or_default(),
+                            msg.key.clone(),
+                            &metadata,
+                        );
+
+                        // Ack the original message — it's now in DLQ
+                        queue_manager.ack(&msg.topic, 1);
+                    } else {
+                        // Not retrying, not DLQ — count as processed
+                        queue_manager.ack(&msg.topic, 1);
+                    }
                 }
             }
 
@@ -209,6 +268,8 @@ pub struct WorkerPool {
     pub(crate) shutdown_token: CancellationToken,
     offset_coordinator: Arc<dyn OffsetCoordinator>,
     retry_coordinator: Arc<RetryCoordinator>,
+    dlq_producer: Arc<SharedDlqProducer>,
+    dlq_router: Arc<dyn DlqRouter>,
 }
 
 impl WorkerPool {
@@ -226,6 +287,8 @@ impl WorkerPool {
         queue_manager: Arc<QueueManager>,
         offset_coordinator: Arc<dyn OffsetCoordinator>,
         retry_coordinator: Arc<RetryCoordinator>,
+        dlq_producer: Arc<SharedDlqProducer>,
+        dlq_router: Arc<dyn DlqRouter>,
         shutdown_token: CancellationToken,
     ) -> Self {
         let mut join_set = JoinSet::new();
@@ -238,6 +301,8 @@ impl WorkerPool {
             let token = shutdown_token.clone();
             let offset_coordinator = offset_coordinator.clone();
             let retry_coordinator = retry_coordinator.clone();
+            let dlq_producer = dlq_producer.clone();
+            let dlq_router = dlq_router.clone();
 
             join_set.spawn(worker_loop(
                 rx,
@@ -246,6 +311,8 @@ impl WorkerPool {
                 queue_manager,
                 offset_coordinator,
                 retry_coordinator,
+                dlq_producer,
+                dlq_router,
                 worker_id,
                 token,
             ));
@@ -257,6 +324,8 @@ impl WorkerPool {
             shutdown_token,
             offset_coordinator,
             retry_coordinator,
+            dlq_producer,
+            dlq_router,
         }
     }
 
@@ -328,6 +397,23 @@ mod tests {
         })
     }
 
+    fn test_config() -> crate::consumer::ConsumerConfig {
+        crate::consumer::ConsumerConfigBuilder::new()
+            .brokers("localhost:9092")
+            .group_id("test-group")
+            .topics(["test"])
+            .build()
+            .unwrap()
+    }
+
+    fn dummy_dlq_producer() -> Arc<SharedDlqProducer> {
+        Arc::new(SharedDlqProducer::new(&test_config()).unwrap())
+    }
+
+    fn dummy_dlq_router() -> Arc<dyn DlqRouter> {
+        Arc::new(DefaultDlqRouter::with_default_prefix())
+    }
+
     #[tokio::test]
     async fn worker_pool_spawns_n_workers() {
         let (tx, rx) = mpsc::channel(1);
@@ -341,6 +427,8 @@ mod tests {
             Arc::new(crate::coordinator::RetryCoordinator::with_policy(
                 crate::retry::RetryPolicy::default(),
             )),
+            dummy_dlq_producer(),
+            dummy_dlq_router(),
             CancellationToken::new(),
         );
         let _ = tx;
@@ -363,6 +451,8 @@ mod tests {
                 Arc::new(crate::coordinator::RetryCoordinator::with_policy(
                     crate::retry::RetryPolicy::default(),
                 )),
+                dummy_dlq_producer(),
+                dummy_dlq_router(),
                 0,
                 token,
             ),
@@ -416,6 +506,8 @@ mod tests {
             Arc::new(crate::coordinator::RetryCoordinator::with_policy(
                 crate::retry::RetryPolicy::default(),
             )),
+            dummy_dlq_producer(),
+            dummy_dlq_router(),
             0,
             token.clone(),
         ));

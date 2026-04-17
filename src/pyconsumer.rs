@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use crate::config::ConsumerConfig;
 use crate::consumer::{ConsumerConfigBuilder, ConsumerRunner};
 use crate::dispatcher::ConsumerDispatcher;
+use crate::dlq::{DefaultDlqRouter, DlqRouter, SharedDlqProducer};
 use crate::kafka_message::KafkaMessage;
 use crate::python::handler::PythonHandler;
 use crate::python::{DefaultExecutor, Executor};
@@ -118,6 +119,13 @@ impl Consumer {
             let queue_manager_arc = dispatcher.queue_manager();
             let retry_coordinator = std::sync::Arc::new(crate::coordinator::RetryCoordinator::new(&rust_config));
 
+            // Create DLQ producer and router from config
+            let dlq_producer = std::sync::Arc::new(
+                SharedDlqProducer::new(&rust_config)
+                    .expect("Failed to create DLQ producer"),
+            );
+            let dlq_router: std::sync::Arc<dyn DlqRouter> = std::sync::Arc::new(DefaultDlqRouter::new(rust_config.dlq_topic_prefix.clone()));
+
             let n_workers = 4; // EXEC-08: configurable
 
             let pool = WorkerPool::new(
@@ -128,6 +136,8 @@ impl Consumer {
                 queue_manager_arc.clone(),
                 offset_tracker.clone(),
                 retry_coordinator,
+                dlq_producer,
+                dlq_router,
                 shutdown_token,
             );
 
