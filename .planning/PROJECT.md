@@ -50,7 +50,7 @@ Current status (after Milestone v1.3):
 
 **Last milestone (v1.3):** Offset commit coordinator — per-topic-partition ack tracking via `OffsetTracker`, highest-contiguous-offset commit logic via `OffsetCommitter`, out-of-order completion handling, `store_offset()` + `commit()` coordination for at-least-once delivery.
 
-**Current milestone (v1.4):** Failure Handling & DLQ — Phase 18 (RetryPolicy & Retry Scheduling) complete. Phases 19-20 remaining.
+**Current milestone (v1.4):** Failure Handling & DLQ — All phases 17-20 complete. Ready for v1.4 milestone close.
 
 ## Validated Requirements
 
@@ -84,12 +84,13 @@ Current status (after Milestone v1.3):
 - ✓ RetryCoordinator returns should_dlq signal — v1.4
 - ✓ SharedDlqProducer fire-and-forget with bounded channel — v1.4
 - ✓ worker_loop DLQ routing integrated (Error + Rejected arms) — v1.4
+- ✓ PartitionState.has_terminal flag (set once, never cleared) — v1.4
+- ✓ should_commit returns false when has_terminal=true (per-partition blocking) — v1.4
+- ✓ flush_failed_to_dlq drains all failed (retryable + terminal) to DLQ — v1.4
+- ✓ WorkerPool::shutdown calls flush_failed_to_dlq before graceful_shutdown — v1.4
 
 ## Active Requirements
 
-- Terminal handling state gating offset commit eligibility — v1.4
-- Terminal handling state gating offset commit eligibility — v1.4
-- Rich DLQ metadata for replay/debugging — v1.4
 - Extensible design for future retry-topic support — v1.4
 
 ## Out of Scope
@@ -119,4 +120,4 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-*Last updated: 2026-04-17 after v1.3 milestone, v1.4 active*
+*Last updated: 2026-04-17 after v1.4 milestone complete*
