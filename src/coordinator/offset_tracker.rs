@@ -244,7 +244,12 @@ impl OffsetCoordinator for OffsetTracker {
         }
     }
 
-    fn graceful_shutdown(&self) {
+    /// Commits all ready offsets for each registered partition.
+///
+/// Called by WorkerPool::shutdown AFTER flush_failed_to_dlq() has drained
+/// all failed messages to DLQ. This ensures all terminal/retryable failures
+/// are flushed before final offset commit (D-02).
+fn graceful_shutdown(&self) {
         let partitions = self.all_partitions();
         for (topic, partition) in partitions {
             if !self.should_commit(&topic, partition) {
@@ -256,6 +261,79 @@ impl OffsetCoordinator for OffsetTracker {
                     let _ = runner_arc.store_offset(&topic, partition, offset);
                     let _ = runner_arc.commit();
                 }
+            }
+        }
+    }
+
+    fn flush_failed_to_dlq(
+        &self,
+        dlq_router: &std::sync::Arc<dyn crate::dlq::DlqRouter>,
+        dlq_producer: &std::sync::Arc<crate::dlq::SharedDlqProducer>,
+    ) {
+        use crate::dlq::DlqMetadata;
+
+        let partitions = self.all_partitions();
+        let now = chrono::Utc::now();
+
+        for (topic, partition) in partitions {
+            let failed_offsets: Vec<i64>;
+            let last_reason: Option<String>;
+
+            {
+                let key = TopicPartitionKey::new(&topic, partition);
+                let guard = self.partitions.lock();
+                if let Some(state) = guard.get(&key) {
+                    failed_offsets = state.failed_offsets.iter().cloned().collect();
+                    last_reason = state.last_failure_reason.as_ref().map(|r| r.to_string());
+                } else {
+                    continue;
+                }
+            }
+
+            if failed_offsets.is_empty() {
+                continue;
+            }
+
+            let reason_str = last_reason.unwrap_or_else(|| "unknown".to_string());
+
+            for &offset in &failed_offsets {
+                // OffsetTracker does not store original payload/key — log as limitation
+                tracing::warn!(
+                    topic = %topic,
+                    partition = partition,
+                    offset = offset,
+                    reason = %reason_str,
+                    "flush_failed_to_dlq: original payload not available, producing empty DLQ message"
+                );
+
+                let metadata = DlqMetadata::new(
+                    topic.clone(),
+                    partition,
+                    offset,
+                    reason_str.clone(),
+                    1, // attempt_count: not tracked per-offset in OffsetTracker
+                    now,
+                    now,
+                );
+
+                let tp = dlq_router.route(&metadata);
+                tracing::info!(
+                    topic = %topic,
+                    partition = partition,
+                    offset = offset,
+                    dlq_topic = %tp.topic,
+                    dlq_partition = tp.partition,
+                    "flushing failed offset to DLQ"
+                );
+
+                // Fire-and-forget — don't await
+                dlq_producer.produce_async(
+                    tp.topic,
+                    tp.partition,
+                    vec![],   // empty payload — OffsetTracker doesn't store it
+                    None,     // no key
+                    &metadata,
+                );
             }
         }
     }

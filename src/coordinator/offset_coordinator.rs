@@ -4,6 +4,7 @@
 //! Implementations must be thread-safe (Send + Sync) as the trait is
 //! used across tokio task boundaries via Arc.
 
+use crate::dlq::{DlqRouter, SharedDlqProducer};
 use crate::failure::FailureReason;
 
 /// Trait abstracting offset tracking operations for the worker pool.
@@ -26,4 +27,18 @@ pub trait OffsetCoordinator: Send + Sync {
     /// Phase 15 will use this to commit highest contiguous offsets before exit.
     /// Phase 14 implementation is a no-op.
     fn graceful_shutdown(&self);
+
+    /// Flushes all failed offsets to DLQ before final commit.
+    ///
+    /// Iterates all partitions, and for each one with failed_offsets, produces
+    /// all failed messages to DLQ via the router and producer (D-02: flush all
+    /// failed — retryable AND terminal).
+    ///
+    /// This is fire-and-forget — does not block waiting for broker acknowledgment.
+    /// OffsetTracker does not store original payloads, so empty payloads are used.
+    fn flush_failed_to_dlq(
+        &self,
+        dlq_router: &std::sync::Arc<dyn DlqRouter>,
+        dlq_producer: &std::sync::Arc<SharedDlqProducer>,
+    );
 }
