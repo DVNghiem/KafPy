@@ -4,7 +4,9 @@
 //! messages to DLQ topics with full metadata.
 
 pub mod metadata;
+pub mod produce;
 pub mod router;
 
 pub use metadata::DlqMetadata;
-pub use router::{DlqRouter, DefaultDlqRouter, TopicPartition};
+pub use produce::SharedDlqProducer;
+pub use router::{DefaultDlqRouter, DlqRouter, TopicPartition};
