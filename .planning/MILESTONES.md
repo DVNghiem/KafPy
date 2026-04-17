@@ -1,5 +1,20 @@
 # Milestones
 
+## v1.4 Failure Handling & DLQ (Shipped: 2026-04-17)
+
+**Phases completed:** 4 phases, 8 plans, 6 tasks
+
+**Key accomplishments:**
+
+- Objective:
+- Objective:
+- RetryPolicy struct with exponential backoff and jitter for retry delay computation
+- Wired RetryPolicy into ConsumerConfig, PythonHandler, and worker_loop retry scheduling.
+- Phase:
+- Phase:
+
+---
+
 ## v1.3 offset-coordinator (Shipped: 2026-04-17)
 
 **Phases completed:** 6 phases, 6 plans, 3 tasks
