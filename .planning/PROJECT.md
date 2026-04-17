@@ -10,11 +10,14 @@
 
 KafPy is a Python-facing Kafka framework where Rust provides the runtime/core engine and Python holds the business logic. PyO3 bridges the two. The pure-Rust consumer core handles Kafka protocol, while Python registers handlers/callbacks via bindings.
 
-Current status (after Milestone v1.3):
+Current status (after Milestone v1.4):
 - `src/consumer/` — pure-Rust consumer core: `ConsumerConfigBuilder`, `OwnedMessage`, `ConsumerRunner`, `ConsumerStream`, `ConsumerTask`
 - `src/dispatcher/` — message dispatcher: `Dispatcher`, `QueueManager`, `BackpressurePolicy`, `BackpressureAction`, `ConsumerDispatcher`
 - `src/python/` — Python execution lane: `PythonHandler`, `WorkerPool`, `ExecutionContext`, `ExecutionResult`, `Executor` trait
 - `src/coordinator/` — offset coordinator: `OffsetTracker`, `OffsetCommitter`, `OffsetCoordinator` trait
+- `src/failure/` — failure classification: `FailureReason`, `FailureCategory`, `FailureClassifier` trait
+- `src/retry/` — retry policy: `RetryPolicy`, `RetrySchedule` with exponential backoff + jitter
+- `src/dlq/` — DLQ routing: `DlqRouter` trait, `DlqMetadata`, `SharedDlqProducer`
 - `src/pyconsumer.rs` — PyO3 bridge: `Consumer` pyclass wrapping `ConsumerRunner`
 - `src/config.rs` — Python-facing `ConsumerConfig` / `ProducerConfig` (PyO3)
 - `src/kafka_message.rs` — PyO3 `KafkaMessage` wrapping `OwnedMessage`
@@ -39,18 +42,24 @@ Current status (after Milestone v1.3):
 | OffsetCoordinator trait | Separates offset tracking from Executor policy | Active |
 | Highest contiguous offset commit | Only commit when all prior offsets acked | Active |
 | store_offset + commit coordination | enable.auto.offset.store=false, explicit coordination | Active |
+| RetryCoordinator 3-tuple | (should_retry, should_dlq, delay) controls retry and DLQ routing | Active (v1.4) |
+| has_terminal per-partition gating | Once terminal on a TP, that partition stops committing until restart | Active (v1.4) |
+| fire-and-forget DLQ produce | Bounded mpsc channel (~100), non-blocking, DLQ failures logged only | Active (v1.4) |
+| configurable DLQ topic naming | dlq_topic_prefix per consumer, default "dlq." | Active (v1.4) |
 
 ## Context
 
-**Last milestone (v1.0):** Refactored duplicate consumer/message code into `src/consumer/` with clean separation between pure-Rust core and PyO3 bridge.
+**Milestone v1.0:** Refactored duplicate consumer/message code into `src/consumer/` with clean separation between pure-Rust core and PyO3 bridge.
 
-**Last milestone (v1.1):** Built dispatcher layer — `Dispatcher` routes `OwnedMessage` to per-topic bounded Tokio mpsc channels, with `QueueManager` tracking queue depth/inflight, `BackpressurePolicy` trait for extensible backpressure, and `ConsumerDispatcher` integrating with `ConsumerRunner`.
+**Milestone v1.1:** Built dispatcher layer — `Dispatcher` routes `OwnedMessage` to per-topic bounded Tokio mpsc channels, with `QueueManager` tracking queue depth/inflight, `BackpressurePolicy` trait for extensible backpressure, and `ConsumerDispatcher` integrating with `ConsumerRunner`.
 
-**Last milestone (v1.2):** Built Python execution lane — `PythonHandler` stores `Py<PyAny>` callbacks, `WorkerPool` pulls from handler queues and invokes via `spawn_blocking`, `Executor` trait for future policy extensibility.
+**Milestone v1.2:** Built Python execution lane — `PythonHandler` stores `Py<PyAny>` callbacks, `WorkerPool` pulls from handler queues and invokes via `spawn_blocking`, `Executor` trait for future policy extensibility.
 
-**Last milestone (v1.3):** Offset commit coordinator — per-topic-partition ack tracking via `OffsetTracker`, highest-contiguous-offset commit logic via `OffsetCommitter`, out-of-order completion handling, `store_offset()` + `commit()` coordination for at-least-once delivery.
+**Milestone v1.3:** Offset commit coordinator — per-topic-partition ack tracking via `OffsetTracker`, highest-contiguous-offset commit logic via `OffsetCommitter`, out-of-order completion handling, `store_offset()` + `commit()` coordination for at-least-once delivery.
 
-**Current milestone (v1.4):** Failure Handling & DLQ — All phases 17-20 complete. Ready for v1.4 milestone close.
+**Milestone v1.4:** Failure Handling & DLQ — Phases 17-20 complete. FailureReason taxonomy, RetryPolicy with exponential backoff, DLQ routing with metadata envelope, per-partition commit gating with terminal state tracking, graceful shutdown DLQ flush.
+
+**Current milestone (v1.5):** Extensible Routing — Pattern/header/key routing with optional Python fallback, Rust as fast-path owner.
 
 ## Validated Requirements
 
@@ -91,7 +100,10 @@ Current status (after Milestone v1.3):
 
 ## Active Requirements
 
-- Extensible design for future retry-topic support — v1.4
+- Pattern/header/key routing with Python fallback — v1.5
+- Routing precedence: pattern → header → key → python → default — v1.5
+- RoutingDecision trait: route, drop, reject, defer — v1.5
+- Integration with existing handler queues + backpressure — v1.5
 
 ## Out of Scope
 

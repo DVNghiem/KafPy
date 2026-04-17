@@ -1,101 +1,84 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.4
-milestone_name: milestone
-status: executing
-stopped_at: Completed 20-02-PLAN.md
-last_updated: "2026-04-17T15:42:02.607Z"
+milestone: v1.5
+milestone_name: Extensible Routing
+status: defining_requirements
+stopped_at: Milestone v1.5 started
+last_updated: "2026-04-17"
 last_activity: 2026-04-17
 progress:
-  total_phases: 4
-  completed_phases: 4
-  total_plans: 8
-  completed_plans: 8
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-16)
+See: .planning/PROJECT.md (updated 2026-04-17)
 
 **Core value:** High-performance Rust Kafka client with idiomatic Python API
-**Current focus:** Phase 19 — dlq-routing
+**Current focus:** v1.5 — Extensible Routing
 
 ## Current Position
 
-Phase: 20
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-04-17
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-17 — Milestone v1.5 started
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 10
-- Average duration: —
-- Total execution time: 0.0 hours
+- Total plans completed: 22
+- Total milestones: 4
 
-**By Phase:**
+**By Milestone:**
 
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| 11 | 1 | - | - |
-| 12 | 1 | - | - |
-| 13 | 1 | - | - |
-| 14 | 1 | - | - |
-| 15 | TBD | — | — |
-| 16 | 0 | - | - |
-| 18 | 2 | - | - |
-| 19 | 2 | - | - |
-| 20 | 2 | - | - |
-
-**Recent Trend:**
-
-- Last 5 plans: Phase 11 (1 plan), Phase 12 (1 plan)
-
-| Phase 18-retry-scheduling P18-01 | 5 | 2 tasks | 3 files |
-| Phase 18-retry-scheduling P02 | 25 | 4 tasks | 8 files |
-| Phase 19-dlq-routing P19-01 | 5 | 5 tasks | 8 files |
-| Phase 19-dlq-routing P02 | 5 | 3 tasks | 4 files |
-| Phase 20 P02 | 233 | 3 tasks | 3 files |
+| Milestone | Phases | Plans |
+|-----------|--------|-------|
+| v1.0 | 5 | — |
+| v1.1 | 3 | — |
+| v1.2 | 2 | — |
+| v1.3 | 6 | — |
+| v1.4 | 4 | 8 |
 
 ## Accumulated Context
 
 ### Decisions
 
-- **v1.3**: Per-topic-partition offset tracking via `OffsetTracker`
-- **v1.3**: Highest contiguous offset commit — only commit when all prior offsets acked
-- **v1.3**: `store_offset()` + `commit()` coordination — `enable.auto.offset.store=false`
-- **v1.3**: Failed messages do NOT advance commit position
-- **v1.3**: No duplicate commits — check `stored_offset` before committing
-- **v1.3**: `OffsetCoordinator` trait separates offset tracking from `Executor` policy
-- **v1.3 Phase 13**: `store_offset` async via `spawn_blocking`, two-phase guard in `OffsetCommitter::commit_partition`, `enable_auto_offset_store` added to `ConsumerConfig`
-- [Phase 20]: has_terminal set once never cleared per partition (D-03)
-- [Phase 20]: should_commit gates per-partition when has_terminal=true (D-01)
-- [Phase 20]: mark_failed sets has_terminal when FailureCategory::Terminal (D-05)
+- **v1.4**: RetryCoordinator 3-tuple (should_retry, should_dlq, delay)
+- **v1.4**: has_terminal per-partition gating (once terminal, blocks commit for that partition)
+- **v1.4**: fire-and-forget DLQ produce (bounded mpsc channel ~100)
+- **v1.4**: configurable DLQ topic naming (dlq_topic_prefix, default "dlq.")
+- **v1.5**: Routing precedence: pattern → header → key → python → default
+- **v1.5**: Rust is fast-path owner; Python routing is optional fallback only
+- **v1.5**: RoutingDecision: route, drop, reject, defer (no-route)
+- **v1.5**: No payload copies in routing path
 
 ### Pending Todos
 
-- Phase 13: ConsumerRunner `store_offset()` + two-phase commit guard (plan: ready)
-- Phase 14: OffsetCoordinator trait
-- Phase 15: WorkerPool integration
+- v1.5 routing: Phase 21 (TBD)
 
 ### Blockers/Concerns
 
-- PyO3 linking error in test binary (pre-existing, not caused by v1.3 work)
+- PyO3 linking error in test binary (pre-existing)
 
 ## Deferred Items
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| RetryExecutor integration | Offset tracking on retry | Pending v1.4 | v1.3 planning |
-| DLQ routing | Rejected messages routing | Pending v2 | v1.3 planning |
+| RetryExecutor integration | Offset tracking on retry | Pending v1.5+ | v1.3 planning |
+| DLQ routing | Rejected messages routing | Complete v1.4 | v1.3 planning |
+| Advanced rebalance | Rebalance interfaces | Deferred | v1.0 |
+| Schema registry | Avro support | Deferred | v1.0 |
 
 ## Session Continuity
 
-Last session: 2026-04-17T15:25:51.778Z
-Stopped at: Completed 20-02-PLAN.md
+Last session: 2026-04-17T22:45:00.000Z
+Stopped at: Milestone v1.5 started
 Resume file: None
