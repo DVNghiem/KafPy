@@ -12,3 +12,4 @@ pub mod topic_pattern;
 pub use context::{HandlerId, RoutingContext};
 pub use decision::{RejectReason, RoutingDecision};
 pub use router::Router;
+pub use topic_pattern::PatternType;
