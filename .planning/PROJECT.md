@@ -78,10 +78,16 @@ Current status (after Milestone v1.3):
 - ✓ PythonHandler per-handler retry_policy override — v1.4
 - ✓ RetryCoordinator tracking per-message state — v1.4
 - ✓ worker_loop retry scheduling (record_ack only on final success) — v1.4
+- ✓ DlqMetadata struct with all 7 envelope fields — v1.4
+- ✓ DlqRouter trait with DefaultDlqRouter — v1.4
+- ✓ ConsumerConfig dlq_topic_prefix (configurable DLQ naming) — v1.4
+- ✓ RetryCoordinator returns should_dlq signal — v1.4
+- ✓ SharedDlqProducer fire-and-forget with bounded channel — v1.4
+- ✓ worker_loop DLQ routing integrated (Error + Rejected arms) — v1.4
 
 ## Active Requirements
 
-- DLQ routing for exhausted or non-retryable failures — v1.4
+- Terminal handling state gating offset commit eligibility — v1.4
 - Terminal handling state gating offset commit eligibility — v1.4
 - Rich DLQ metadata for replay/debugging — v1.4
 - Extensible design for future retry-topic support — v1.4
