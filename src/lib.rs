@@ -25,6 +25,9 @@ pub mod coordinator;
 // Failure classification — structured failure taxonomy for retry/DLQ handling
 pub mod failure;
 
+// Retry scheduling — RetryPolicy, RetrySchedule for exponential backoff with jitter
+pub mod retry;
+
 use kafka_message::KafkaMessage;
 use logging::Logger;
 use produce::PyProducer;

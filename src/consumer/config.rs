@@ -1,3 +1,4 @@
+use crate::retry::RetryPolicy;
 use rdkafka::config::ClientConfig;
 use std::time::Duration;
 
@@ -33,6 +34,7 @@ pub struct ConsumerConfig {
     pub max_partition_fetch_bytes: i32,
     pub partition_assignment_strategy: PartitionAssignmentStrategy,
     pub retry_backoff_ms: u32,
+    pub default_retry_policy: RetryPolicy,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -88,6 +90,7 @@ pub struct ConsumerConfigBuilder {
     max_partition_fetch_bytes: i32,
     partition_assignment_strategy: PartitionAssignmentStrategy,
     retry_backoff_ms: u32,
+    default_retry_policy: RetryPolicy,
 }
 
 impl ConsumerConfigBuilder {
@@ -104,6 +107,7 @@ impl ConsumerConfigBuilder {
             max_partition_fetch_bytes: 10485760,
             partition_assignment_strategy: Default::default(),
             retry_backoff_ms: 100,
+            default_retry_policy: RetryPolicy::default(),
             ..Default::default()
         }
     }
@@ -195,6 +199,11 @@ impl ConsumerConfigBuilder {
         self
     }
 
+    pub fn default_retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.default_retry_policy = policy;
+        self
+    }
+
     pub fn build(self) -> Result<ConsumerConfig, BuildError> {
         let brokers = self.brokers.ok_or(BuildError::MissingField("brokers"))?;
         let group_id = self.group_id.ok_or(BuildError::MissingField("group_id"))?;
@@ -221,6 +230,7 @@ impl ConsumerConfigBuilder {
             max_partition_fetch_bytes: self.max_partition_fetch_bytes,
             partition_assignment_strategy: self.partition_assignment_strategy,
             retry_backoff_ms: self.retry_backoff_ms,
+            default_retry_policy: self.default_retry_policy,
         })
     }
 }

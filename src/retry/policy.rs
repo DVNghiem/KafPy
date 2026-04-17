@@ -48,7 +48,7 @@ impl RetryPolicy {
     }
 
     /// Returns the schedule for computing retry delays.
-    pub fn schedule(&self) -> RetrySchedule<'_> {
+    pub fn schedule(&self) -> RetrySchedule {
         RetrySchedule {
             base_delay: self.base_delay,
             max_delay: self.max_delay,
@@ -60,23 +60,25 @@ impl RetryPolicy {
 /// Computes retry delays using exponential backoff with jitter.
 ///
 /// Formula: min(base_delay * 2^attempt, max_delay) * (1 - jitter_factor + rng * jitter_factor * 2)
-pub struct RetrySchedule<'a> {
+pub struct RetrySchedule {
     base_delay: Duration,
     max_delay: Duration,
     jitter_factor: f64,
 }
 
-impl<'a> RetrySchedule<'a> {
+impl RetrySchedule {
     /// Computes the delay for a given attempt number (0-indexed).
     ///
     /// Attempt 0 = first retry (after initial failure).
     /// Attempt 1 = second retry, etc.
     pub fn next_delay(&self, attempt: usize) -> Duration {
         // Exponential backoff: base_delay * 2^attempt
-        let exp_delay = self.base_delay * 2usize.pow(attempt as u32);
+        let base_ms = self.base_delay.as_secs_f64();
+        let max_ms = self.max_delay.as_secs_f64();
+        let exp_delay = base_ms * 2_f64.powf(attempt as f64);
 
         // Cap at max_delay
-        let capped = std::cmp::min(exp_delay, self.max_delay);
+        let capped = f64::min(exp_delay, max_ms);
 
         // Apply jitter: multiplier = 1 - jitter_factor + rng * jitter_factor * 2
         // This gives range [1 - jitter_factor, 1 + jitter_factor]
@@ -86,7 +88,7 @@ impl<'a> RetrySchedule<'a> {
             1.0 - self.jitter_factor + jitter * self.jitter_factor * 2.0
         };
 
-        let nanos = (capped.as_nanos() as f64 * jitter_multiplier) as u64;
-        Duration::from_nanos(nanos)
+        let final_secs = capped * jitter_multiplier;
+        Duration::from_secs_f64(final_secs)
     }
 }
