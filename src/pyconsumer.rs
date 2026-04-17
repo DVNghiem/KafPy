@@ -86,12 +86,13 @@ impl Consumer {
             let runner = ConsumerRunner::new(rust_config)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
-            // Create ConsumerDispatcher (owned, not stored in Consumer struct)
-            let dispatcher = ConsumerDispatcher::new(runner);
+            // BRIDGE-01 + D-02: Create OffsetTracker and wire ConsumerRunner before pool
+            let runner_arc: std::sync::Arc<ConsumerRunner> = std::sync::Arc::new(runner);
+            let offset_tracker = std::sync::Arc::new(crate::coordinator::OffsetTracker::new());
+            offset_tracker.set_runner(std::sync::Arc::clone(&runner_arc));
 
-            // Create offset coordinator (used by WorkerPool for offset tracking)
-            let offset_tracker: std::sync::Arc<dyn crate::coordinator::OffsetCoordinator> =
-                std::sync::Arc::new(crate::coordinator::OffsetTracker::new());
+            // Create ConsumerDispatcher (owned, not stored in Consumer struct)
+            let dispatcher = ConsumerDispatcher::new((*runner_arc).clone());
 
             // Collect receivers from all registered handlers
             let receivers: Vec<_> = {
@@ -127,6 +128,18 @@ impl Consumer {
                 shutdown_token,
             );
 
+            // BRIDGE-01 + D-02: Create OffsetCommitter and spawn as Tokio task
+            let committer = crate::coordinator::OffsetCommitter::new(
+                std::sync::Arc::clone(&runner_arc),
+                std::sync::Arc::clone(&offset_tracker),
+                crate::coordinator::CommitConfig::default(),
+            );
+            let (tx, rx) = tokio::sync::watch::channel(crate::coordinator::TopicPartition::new("", 0));
+            let committer_handle = tokio::spawn(async move {
+                committer.run(rx).await;
+            });
+            drop(tx);
+
             // Run dispatcher and pool concurrently
             let dispatcher_handle = tokio::spawn(async move {
                 dispatcher
@@ -136,8 +149,9 @@ impl Consumer {
 
             pool.run().await;
 
-            // Keep dispatcher alive until we're done
+            // Keep handles alive until pool completes
             let _ = dispatcher_handle;
+            let _ = committer_handle;
 
             Ok(())
         })

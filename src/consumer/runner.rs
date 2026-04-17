@@ -20,6 +20,7 @@ use tracing::{debug, error, info};
 /// with the consumer buffer.
 ///
 /// Dropping the runner stops the consumer loop gracefully.
+#[derive(Clone)]
 pub struct ConsumerRunner {
     consumer: Arc<StreamConsumer>,
     shutdown_tx: broadcast::Sender<()>,

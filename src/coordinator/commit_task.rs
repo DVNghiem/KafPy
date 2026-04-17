@@ -148,25 +148,27 @@ impl OffsetCommitter {
     /// Evaluates the throttle state and, if conditions are met, calls
     /// `store_offset` + `commit` for each ready partition sequentially.
     async fn process_ready_partitions(&self) {
-        let state = self.state.lock();
-
-        if !state.should_commit(&self.config) {
-            return;
-        }
-
-        // Collect all ready partitions while holding the lock briefly
+        // Collect all ready partitions by scanning all known partitions.
+        // Since the committer ticks on interval and processes all ready partitions,
+        // we ignore the specific TopicPartition from the watch signal and always
+        // scan all registered partitions. The watch channel is kept for future
+        // signal-driven triggering.
         let ready: Vec<(String, i32, i64)> = {
-            // For now, we scan all known partitions. The tracker doesn't expose
-            // a "get all partitions" view, so we rely on the caller to send
-            // signals for each partition. The watch signal tells us which
-            // partition triggered this cycle; we extend to all that are ready.
-            // Since OffsetTracker doesn't expose an iterator, we collect what
-            // we know about from the tracker.
-            // TODO: Add a method to OffsetTracker to list all registered partitions.
-            vec![] // Placeholder — real implementation needs tracker.iter_partitions()
+            let state = self.state.lock();
+            if !state.should_commit(&self.config) {
+                return;
+            }
+            let all = self.tracker.all_partitions();
+            let mut commits = Vec::new();
+            for (topic, partition) in all {
+                if self.tracker.should_commit(&topic, partition) {
+                    if let Some(offset) = self.tracker.highest_contiguous(&topic, partition) {
+                        commits.push((topic, partition, offset));
+                    }
+                }
+            }
+            commits
         };
-
-        drop(state);
 
         for (topic, partition, offset) in ready {
             self.commit_partition(&topic, partition, offset).await;

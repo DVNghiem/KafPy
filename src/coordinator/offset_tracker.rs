@@ -117,7 +117,7 @@ impl OffsetTracker {
 
     /// Sets the ConsumerRunner for Kafka commit operations.
     /// Called once during setup before the worker pool starts.
-    pub fn set_runner(&mut self, runner: Arc<ConsumerRunner>) {
+    pub fn set_runner(&self, runner: Arc<ConsumerRunner>) {
         *self.runner.lock() = Some(runner);
     }
 
