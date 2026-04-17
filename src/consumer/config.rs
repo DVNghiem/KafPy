@@ -35,6 +35,7 @@ pub struct ConsumerConfig {
     pub partition_assignment_strategy: PartitionAssignmentStrategy,
     pub retry_backoff_ms: u32,
     pub default_retry_policy: RetryPolicy,
+    pub dlq_topic_prefix: String,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -91,6 +92,7 @@ pub struct ConsumerConfigBuilder {
     partition_assignment_strategy: PartitionAssignmentStrategy,
     retry_backoff_ms: u32,
     default_retry_policy: RetryPolicy,
+    dlq_topic_prefix: String,
 }
 
 impl ConsumerConfigBuilder {
@@ -108,6 +110,7 @@ impl ConsumerConfigBuilder {
             partition_assignment_strategy: Default::default(),
             retry_backoff_ms: 100,
             default_retry_policy: RetryPolicy::default(),
+            dlq_topic_prefix: "dlq.".to_string(),
             ..Default::default()
         }
     }
@@ -204,6 +207,11 @@ impl ConsumerConfigBuilder {
         self
     }
 
+    pub fn dlq_topic_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.dlq_topic_prefix = prefix.into();
+        self
+    }
+
     pub fn build(self) -> Result<ConsumerConfig, BuildError> {
         let brokers = self.brokers.ok_or(BuildError::MissingField("brokers"))?;
         let group_id = self.group_id.ok_or(BuildError::MissingField("group_id"))?;
@@ -231,6 +239,7 @@ impl ConsumerConfigBuilder {
             partition_assignment_strategy: self.partition_assignment_strategy,
             retry_backoff_ms: self.retry_backoff_ms,
             default_retry_policy: self.default_retry_policy,
+            dlq_topic_prefix: self.dlq_topic_prefix,
         })
     }
 }

@@ -28,6 +28,9 @@ pub mod failure;
 // Retry scheduling — RetryPolicy, RetrySchedule for exponential backoff with jitter
 pub mod retry;
 
+// DLQ routing — DlqMetadata envelope, DlqRouter trait, fire-and-forget produce
+pub mod dlq;
+
 use kafka_message::KafkaMessage;
 use logging::Logger;
 use produce::PyProducer;

@@ -9,6 +9,7 @@
 use crate::consumer::config::ConsumerConfig;
 use crate::failure::FailureReason;
 use crate::retry::RetryPolicy;
+use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,7 +23,7 @@ pub struct MessageRetryState {
     pub offset: i64,
     pub attempt: usize,
     pub last_failure: Option<FailureReason>,
-    pub first_failure: Option<Instant>,
+    pub first_failure: Option<DateTime<Utc>>,
 }
 
 /// RetryCoordinator — thread-safe retry state machine.
@@ -58,23 +59,22 @@ impl RetryCoordinator {
 
     /// Record a failed attempt and return the retry decision.
     ///
-    /// Returns `(should_retry, delay)`:
-    /// - `should_retry=true, delay=Some(duration)` → schedule retry
-    /// - `should_retry=false, delay=None` → route to DLQ
+    /// Returns `(should_retry, should_dlq, delay)`:
+    /// - `should_retry=true, should_dlq=false, delay=Some(duration)` → schedule retry
+    /// - `should_retry=false, should_dlq=true, delay=None` → route to DLQ
     pub fn record_failure(
         &self,
         topic: &str,
         partition: i32,
         offset: i64,
         reason: &FailureReason,
-    ) -> (bool, Option<Duration>) {
+    ) -> (bool, bool, Option<Duration>) {
         let key = RetryKey(topic.to_string(), partition, offset);
 
-        // Only retry retryable failures
+        // Non-retryable or terminal → go directly to DLQ
         let category = reason.category();
         if category != crate::failure::FailureCategory::Retryable {
-            // Terminal or NonRetryable → go directly to DLQ
-            return (false, None);
+            return (false, true, None);
         }
 
         let mut state_guard = self.state.lock();
@@ -90,19 +90,19 @@ impl RetryCoordinator {
         entry.attempt += 1;
         entry.last_failure = Some(reason.clone());
         if entry.first_failure.is_none() {
-            entry.first_failure = Some(Instant::now());
+            entry.first_failure = Some(Utc::now());
         }
 
         if entry.attempt >= self.default_policy.max_attempts {
             // Max attempts exceeded → DLQ
             state_guard.remove(&key);
-            return (false, None);
+            return (false, true, None);
         }
 
         // Compute next retry delay
         let schedule = self.default_policy.schedule();
         let delay = schedule.next_delay(entry.attempt - 1); // attempt 1 = first retry delay
-        (true, Some(delay))
+        (true, false, Some(delay))
     }
 
     /// Record a successful ack — clears retry state.
@@ -130,9 +130,10 @@ mod tests {
         let coordinator = RetryCoordinator::with_policy(policy);
         let reason = FailureReason::Retryable(crate::failure::RetryableKind::NetworkTimeout);
 
-        let (should_retry, delay) = coordinator.record_failure("topic", 0, 100, &reason);
+        let (should_retry, should_dlq, delay) = coordinator.record_failure("topic", 0, 100, &reason);
 
         assert!(should_retry);
+        assert!(!should_dlq);
         assert!(delay.is_some());
         assert_eq!(coordinator.attempt_count("topic", 0, 100), 1);
     }
@@ -142,9 +143,10 @@ mod tests {
         let coordinator = RetryCoordinator::with_policy(RetryPolicy::default());
         let reason = FailureReason::Terminal(crate::failure::TerminalKind::DeserializationFailed);
 
-        let (should_retry, delay) = coordinator.record_failure("topic", 0, 100, &reason);
+        let (should_retry, should_dlq, delay) = coordinator.record_failure("topic", 0, 100, &reason);
 
         assert!(!should_retry);
+        assert!(should_dlq);
         assert!(delay.is_none());
     }
 
@@ -155,16 +157,19 @@ mod tests {
         let reason = FailureReason::Retryable(crate::failure::RetryableKind::NetworkTimeout);
 
         // First attempt
-        let (should_retry, _) = coordinator.record_failure("topic", 0, 100, &reason);
+        let (should_retry, should_dlq, _) = coordinator.record_failure("topic", 0, 100, &reason);
         assert!(should_retry);
+        assert!(!should_dlq);
 
         // Second attempt
-        let (should_retry, _) = coordinator.record_failure("topic", 0, 100, &reason);
+        let (should_retry, should_dlq, _) = coordinator.record_failure("topic", 0, 100, &reason);
         assert!(should_retry);
+        assert!(!should_dlq);
 
         // Third attempt (exceeds max_attempts=2)
-        let (should_retry, delay) = coordinator.record_failure("topic", 0, 100, &reason);
+        let (should_retry, should_dlq, delay) = coordinator.record_failure("topic", 0, 100, &reason);
         assert!(!should_retry);
+        assert!(should_dlq);
         assert!(delay.is_none());
     }
 

@@ -78,7 +78,7 @@ async fn worker_loop(
                     crate::failure::logging::log_failure(&ctx, reason, exception, false);
 
                     // Check if we should retry
-                    let (should_retry, delay) = retry_coordinator.record_failure(
+                    let (should_retry, should_dlq, delay) = retry_coordinator.record_failure(
                         &ctx.topic, ctx.partition, ctx.offset, reason,
                     );
 
@@ -129,7 +129,7 @@ async fn worker_loop(
                     crate::failure::logging::log_failure(&ctx, reason, exc_name, false);
 
                     // Check if we should retry
-                    let (should_retry, delay) = retry_coordinator.record_failure(
+                    let (should_retry, should_dlq, delay) = retry_coordinator.record_failure(
                         &ctx.topic, ctx.partition, ctx.offset, reason,
                     );
 
