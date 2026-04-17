@@ -133,11 +133,11 @@ impl OffsetCommitter {
             tokio::select! {
                 // Watch channel signal — a topic-partition has new data ready
                 _ = rx.changed() => {
-                    self.process_ready_partitions();
+                    self.process_ready_partitions().await;
                 }
                 // Periodic tick — ensures commits happen even without signals
                 _ = ticker.tick() => {
-                    self.process_ready_partitions();
+                    self.process_ready_partitions().await;
                 }
             }
         }
@@ -147,7 +147,7 @@ impl OffsetCommitter {
     ///
     /// Evaluates the throttle state and, if conditions are met, calls
     /// `store_offset` + `commit` for each ready partition sequentially.
-    fn process_ready_partitions(&self) {
+    async fn process_ready_partitions(&self) {
         let state = self.state.lock();
 
         if !state.should_commit(&self.config) {
@@ -169,7 +169,7 @@ impl OffsetCommitter {
         drop(state);
 
         for (topic, partition, offset) in ready {
-            self.commit_partition(&topic, partition, offset);
+            self.commit_partition(&topic, partition, offset).await;
         }
 
         self.state.lock().reset();
@@ -178,7 +178,7 @@ impl OffsetCommitter {
     /// Commits a single topic-partition: store_offset + commit.
     ///
     /// Logs errors and continues on failure (does not block the cycle).
-    fn commit_partition(&self, topic: &str, partition: i32, offset: i64) {
+    async fn commit_partition(&self, topic: &str, partition: i32, offset: i64) {
         debug!(
             topic = topic,
             partition = partition,
@@ -186,8 +186,18 @@ impl OffsetCommitter {
             "Committing offset"
         );
 
-        // Phase 13 will add runner.store_offset(topic, partition, offset)
-        // For now, we call commit only (COMMIT-04 placeholder)
+        // Phase 13: Two-phase guard — store_offset first, then commit
+        // Only commit when highest_contiguous > committed_offset (enforced by caller)
+        if let Err(e) = self.runner.store_offset(topic, partition, offset).await {
+            error!(
+                topic = topic,
+                partition = partition,
+                offset = offset,
+                error = %e,
+                "Failed to store offset"
+            );
+            return;
+        }
         if let Err(e) = self.runner.commit() {
             error!(
                 topic = topic,
