@@ -11,7 +11,7 @@
 //! 5. `mark_failed()` removes offset from `pending_offsets` if present, inserts into `failed_offsets`
 
 use crate::consumer::ConsumerRunner;
-use crate::failure::FailureReason;
+use crate::failure::{FailureCategory, FailureReason};
 use parking_lot::Mutex;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
@@ -50,6 +50,9 @@ pub struct PartitionState {
     pub failed_offsets: BTreeSet<i64>,
     /// Last failure reason for this partition (for DLQ routing).
     pub last_failure_reason: Option<FailureReason>,
+    /// Whether a terminal failure has been seen on this partition.
+    /// When true, should_commit returns false for this partition (D-03: set once, never cleared).
+    pub has_terminal: bool,
 }
 
 impl PartitionState {
@@ -61,7 +64,15 @@ impl PartitionState {
             pending_offsets: BTreeSet::new(),
             failed_offsets: BTreeSet::new(),
             last_failure_reason: None,
+            has_terminal: false,
         }
+    }
+
+    /// Sets `has_terminal = true` for this partition.
+    ///
+    /// Idempotent — calling when already true is a no-op (D-03: set once, never clear).
+    pub fn set_terminal(&mut self) {
+        self.has_terminal = true;
     }
 
     /// Records an ack for `offset`, buffering if out-of-order.
@@ -154,10 +165,17 @@ impl OffsetTracker {
     ///
     /// This indicates that we should call `store_offset` + `commit` to persist
     /// the new high watermark.
+    ///
+    /// Returns `false` if `has_terminal=true` for this partition (D-01: terminal
+    /// messages block commit for that partition only — other partitions unaffected).
     pub fn should_commit(&self, topic: &str, partition: i32) -> bool {
         let key = TopicPartitionKey::new(topic, partition);
         let guard = self.partitions.lock();
-        guard.get(&key).map_or(false, |s| {
+        guard.get(&key).is_some_and(|s| {
+            // D-01: commit gating — terminal blocks commit for this partition only
+            if s.has_terminal {
+                return false;
+            }
             s.pending_offsets.contains(&(s.committed_offset + 1))
         })
     }
@@ -213,12 +231,16 @@ impl OffsetCoordinator for OffsetTracker {
         self.ack(topic, partition, offset);
     }
 
-    fn mark_failed(&self, topic: &str, partition: i32, offset: i64, _reason: &FailureReason) {
+    fn mark_failed(&self, topic: &str, partition: i32, offset: i64, reason: &FailureReason) {
         let key = TopicPartitionKey::new(topic, partition);
         let mut guard = self.partitions.lock();
         if let Some(state) = guard.get_mut(&key) {
             state.mark_failed(offset);
-            state.last_failure_reason = Some(_reason.clone());
+            state.last_failure_reason = Some(reason.clone());
+            // D-05: set has_terminal on Terminal category (D-03: set once, never clear — idempotent)
+            if reason.category() == FailureCategory::Terminal {
+                state.has_terminal = true;
+            }
         }
     }
 
