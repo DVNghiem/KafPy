@@ -6,17 +6,24 @@ use crate::failure::FailureReason;
 use crate::failure::FailureClassifier;
 use crate::python::context::ExecutionContext;
 use crate::python::execution_result::ExecutionResult;
+use crate::retry::RetryPolicy;
 use std::sync::Arc;
 
 /// Wraps a Python callable stored as `Py<PyAny>` (GIL-independent, Send+Sync).
 pub struct PythonHandler {
     callback: Arc<Py<PyAny>>,
+    retry_policy: Option<RetryPolicy>,
 }
 
 impl PythonHandler {
     /// Wraps a Python callable stored as `Arc<Py<PyAny>>` (GIL-independent, Send+Sync).
-    pub(crate) fn new(callback: Arc<Py<PyAny>>) -> Self {
-        Self { callback }
+    pub(crate) fn new(callback: Arc<Py<PyAny>>, retry_policy: Option<RetryPolicy>) -> Self {
+        Self { callback, retry_policy }
+    }
+
+    /// Returns the retry policy for this handler, if configured.
+    pub fn retry_policy(&self) -> Option<&RetryPolicy> {
+        self.retry_policy.as_ref()
     }
 
     /// Invokes the Python callable with the given message.

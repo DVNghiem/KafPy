@@ -83,6 +83,7 @@ impl Consumer {
                 .build()
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
+            let default_retry_policy = rust_config.default_retry_policy.clone();
             let runner = ConsumerRunner::new(rust_config)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
@@ -110,7 +111,7 @@ impl Consumer {
                     .values()
                     .next()
                     .expect("at least one handler must be registered");
-                Arc::new(PythonHandler::new(first_handler.clone()))
+                Arc::new(PythonHandler::new(first_handler.clone(), Some(default_retry_policy)))
             };
 
             let executor_arc: Arc<dyn Executor> = Arc::new(DefaultExecutor::default());

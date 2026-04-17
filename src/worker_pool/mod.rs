@@ -242,7 +242,7 @@ mod tests {
     fn dummy_handler() -> Arc<PythonHandler> {
         Python::with_gil(|py| {
             let py_none = py.None();
-            Arc::new(PythonHandler::new(py_none.into()))
+            Arc::new(PythonHandler::new(py_none.into(), None))
         })
     }
 
