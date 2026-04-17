@@ -2,12 +2,12 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: Extensible Routing
-status: defining_requirements
-stopped_at: Milestone v1.5 started
+status: planning
+stopped_at: Planning v1.5 roadmap
 last_updated: "2026-04-17"
 last_activity: 2026-04-17
 progress:
-  total_phases: 0
+  total_phases: 3
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -25,17 +25,17 @@ See: .planning/PROJECT.md (updated 2026-04-17)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: Not started (planning)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-04-17 — Milestone v1.5 started
+Status: Planning v1.5 roadmap
+Last activity: 2026-04-17 — Planning Phase 21, 22, 23
 
 ## Performance Metrics
 
 **Velocity:**
 
 - Total plans completed: 22
-- Total milestones: 4
+- Total milestones: 5 (including v1.5)
 
 **By Milestone:**
 
@@ -46,6 +46,7 @@ Last activity: 2026-04-17 — Milestone v1.5 started
 | v1.2 | 2 | — |
 | v1.3 | 6 | — |
 | v1.4 | 4 | 8 |
+| v1.5 | 3 | — |
 
 ## Accumulated Context
 
@@ -57,12 +58,15 @@ Last activity: 2026-04-17 — Milestone v1.5 started
 - **v1.4**: configurable DLQ topic naming (dlq_topic_prefix, default "dlq.")
 - **v1.5**: Routing precedence: pattern → header → key → python → default
 - **v1.5**: Rust is fast-path owner; Python routing is optional fallback only
-- **v1.5**: RoutingDecision: route, drop, reject, defer (no-route)
+- **v1.5**: RoutingDecision: Route(handler_id), Drop, Reject(reason), Defer
 - **v1.5**: No payload copies in routing path
+- **v1.5**: RoutingChain chains routers with precedence enforcement
 
 ### Pending Todos
 
-- v1.5 routing: Phase 21 (TBD)
+- Phase 21: Routing Core (ROUTER-01 to ROUTER-07, CONFIG-01, CONFIG-02)
+- Phase 22: Python Integration (PYROUTER-01 to PYROUTER-03)
+- Phase 23: Dispatcher Integration (DISPATCH-01, DISPATCH-02)
 
 ### Blockers/Concerns
 
@@ -73,12 +77,13 @@ Last activity: 2026-04-17 — Milestone v1.5 started
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
 | RetryExecutor integration | Offset tracking on retry | Pending v1.5+ | v1.3 planning |
-| DLQ routing | Rejected messages routing | Complete v1.4 | v1.3 planning |
 | Advanced rebalance | Rebalance interfaces | Deferred | v1.0 |
 | Schema registry | Avro support | Deferred | v1.0 |
+| Content-based routing | Payload parsing | Python fallback only | v1.5 |
+| Multi-handler fan-out | Single handler per message | Deferred | v1.5 |
 
 ## Session Continuity
 
 Last session: 2026-04-17T22:45:00.000Z
-Stopped at: Milestone v1.5 started
+Stopped at: Planning v1.5 roadmap
 Resume file: None
