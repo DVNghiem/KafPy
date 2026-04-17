@@ -22,6 +22,9 @@ pub mod worker_pool;
 // Offset commit coordinator — per-topic-partition ack tracking with highest-contiguous-offset
 pub mod coordinator;
 
+// Failure classification — structured failure taxonomy for retry/DLQ handling
+pub mod failure;
+
 use kafka_message::KafkaMessage;
 use logging::Logger;
 use produce::PyProducer;
