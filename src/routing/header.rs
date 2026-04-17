@@ -55,10 +55,10 @@ impl Router for HeaderRouter {
 mod tests {
     use super::*;
 
-    fn ctx_with_headers(headers: &[(impl Into<String>, Option<impl Into<Vec<u8>>>)]) -> RoutingContext<'static> {
+    fn ctx_with_headers(headers: &[(&str, Option<&[u8]>)]) -> RoutingContext<'static> {
         let owned: Vec<(String, Option<Vec<u8>>)> = headers
             .iter()
-            .map(|(k, v)| (k.into(), v.as_ref().map(|v| v.into())))
+            .map(|(k, v)| (k.to_string(), v.map(|b| b.to_vec())))
             .collect();
         RoutingContext {
             topic: "test",
@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn null_header_value_defers() {
         let router = HeaderRouter::new(vec![rule("x-trace", Some("*"), "handler1")]);
-        let ctx = ctx_with_headers(&[("x-trace", Option::<Vec<u8>>::None)]);
+        let ctx = ctx_with_headers(&[("x-trace", None)]);
         assert!(matches!(router.route(&ctx), RoutingDecision::Defer));
     }
 

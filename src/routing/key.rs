@@ -85,7 +85,7 @@ impl Router for KeyRouter {
 mod tests {
     use super::*;
 
-    fn ctx(key: Option<&[u8]>) -> RoutingContext<'static> {
+    fn ctx(key: Option<&[u8]>) -> RoutingContext<'_> {
         RoutingContext {
             topic: "test",
             partition: 0,

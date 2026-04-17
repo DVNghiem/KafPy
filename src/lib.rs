@@ -31,6 +31,9 @@ pub mod retry;
 // DLQ routing — DlqMetadata envelope, DlqRouter trait, fire-and-forget produce
 pub mod dlq;
 
+// Routing — zero-copy context, decision enum, router trait, and concrete routers
+pub mod routing;
+
 use kafka_message::KafkaMessage;
 use logging::Logger;
 use produce::PyProducer;

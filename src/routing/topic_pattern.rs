@@ -84,31 +84,31 @@ pub enum PatternError {
 mod tests {
     use super::*;
 
-    fn glob_router(patterns: &[(impl Into<String>, &str)]) -> TopicPatternRouter {
+    fn glob_router(patterns: &[(&str, &str)]) -> TopicPatternRouter {
         let rules: Vec<TopicRule> = patterns
             .iter()
             .map(|(p, h)| TopicRule {
-                pattern: p.into(),
+                pattern: (*p).into(),
                 pattern_type: PatternType::Glob,
-                handler_id: h.into(),
+                handler_id: (*h).into(),
             })
             .collect();
         TopicPatternRouter::new(rules).unwrap()
     }
 
-    fn regex_router(patterns: &[(impl Into<String>, &str)]) -> TopicPatternRouter {
+    fn regex_router(patterns: &[(&str, &str)]) -> TopicPatternRouter {
         let rules: Vec<TopicRule> = patterns
             .iter()
             .map(|(p, h)| TopicRule {
-                pattern: p.into(),
+                pattern: (*p).into(),
                 pattern_type: PatternType::Regex,
-                handler_id: h.into(),
+                handler_id: (*h).into(),
             })
             .collect();
         TopicPatternRouter::new(rules).unwrap()
     }
 
-    fn ctx(topic: &str) -> RoutingContext<'static> {
+    fn ctx(topic: &str) -> RoutingContext<'_> {
         RoutingContext {
             topic,
             partition: 0,
