@@ -10,10 +10,11 @@
 
 KafPy is a Python-facing Kafka framework where Rust provides the runtime/core engine and Python holds the business logic. PyO3 bridges the two. The pure-Rust consumer core handles Kafka protocol, while Python registers handlers/callbacks via bindings.
 
-Current status (after Milestone v1.2):
+Current status (after Milestone v1.3):
 - `src/consumer/` — pure-Rust consumer core: `ConsumerConfigBuilder`, `OwnedMessage`, `ConsumerRunner`, `ConsumerStream`, `ConsumerTask`
 - `src/dispatcher/` — message dispatcher: `Dispatcher`, `QueueManager`, `BackpressurePolicy`, `BackpressureAction`, `ConsumerDispatcher`
 - `src/python/` — Python execution lane: `PythonHandler`, `WorkerPool`, `ExecutionContext`, `ExecutionResult`, `Executor` trait
+- `src/coordinator/` — offset coordinator: `OffsetTracker`, `OffsetCommitter`, `OffsetCoordinator` trait
 - `src/pyconsumer.rs` — PyO3 bridge: `Consumer` pyclass wrapping `ConsumerRunner`
 - `src/config.rs` — Python-facing `ConsumerConfig` / `ProducerConfig` (PyO3)
 - `src/kafka_message.rs` — PyO3 `KafkaMessage` wrapping `OwnedMessage`
@@ -31,10 +32,13 @@ Current status (after Milestone v1.2):
 | PyO3-free consumer core | Clean separation, testable without Python | Active |
 | Per-topic bounded queue dispatch | Isolated backpressure per topic | Active |
 | BackpressurePolicy trait | Extensible backpressure handling (Drop/Wait/FuturePausePartition) | Active |
-| ConsumerDispatcher composition | Owns both ConsumerRunner + Dispatcher, wires stream→dispatch | Active |
+| ConsumerDispatcher composition | Owns both ConsumerRunner + Dispatcher, wires stream->dispatch | Active |
 | Py<PyAny> for callback storage | GIL-independent, sendable across threads | Active |
 | spawn_blocking for GIL | Minimal GIL hold window during Python execution | Active |
 | Executor trait | Future retry/commit/async/batch policies plug in here | Active |
+| OffsetCoordinator trait | Separates offset tracking from Executor policy | Active |
+| Highest contiguous offset commit | Only commit when all prior offsets acked | Active |
+| store_offset + commit coordination | enable.auto.offset.store=false, explicit coordination | Active |
 
 ## Context
 
@@ -44,7 +48,9 @@ Current status (after Milestone v1.2):
 
 **Last milestone (v1.2):** Built Python execution lane — `PythonHandler` stores `Py<PyAny>` callbacks, `WorkerPool` pulls from handler queues and invokes via `spawn_blocking`, `Executor` trait for future policy extensibility.
 
-**Current milestone (v1.3):** Offset commit coordinator — per-topic-partition ack tracking, highest-contiguous-offset commit logic, out-of-order completion handling for at-least-once delivery.
+**Last milestone (v1.3):** Offset commit coordinator — per-topic-partition ack tracking via `OffsetTracker`, highest-contiguous-offset commit logic via `OffsetCommitter`, out-of-order completion handling, `store_offset()` + `commit()` coordination for at-least-once delivery.
+
+**Current milestone (v1.4):** Failure Handling & DLQ — Rust owns failure classification, retry orchestration, and DLQ routing. Python holds business logic only.
 
 ## Validated Requirements
 
@@ -58,19 +64,27 @@ Current status (after Milestone v1.2):
 - ✓ WorkerPool with configurable N workers — v1.2
 - ✓ ExecutionResult normalized to Rust — v1.2
 - ✓ Executor trait for future policies — v1.2
+- ✓ Per-topic-partition OffsetTracker with ack tracking — v1.3
+- ✓ Execution completion events wired from ExecutionResult — v1.3
+- ✓ Out-of-order completion handling with buffering — v1.3
+- ✓ Highest contiguous acknowledged offset calculation — v1.3
+- ✓ store_offset() + commit() coordination for at-least-once delivery — v1.3
+- ✓ No duplicate commits when offset hasn't advanced — v1.3
+- ✓ OffsetCoordinator trait separating offset tracking from Executor policy — v1.3
+- ✓ Arc<dyn OffsetCoordinator> passed to WorkerPool — v1.3
 
 ## Active Requirements
 
-- Per-topic-partition `OffsetTracker` with ack tracking — v1.3
-- Execution completion events wired from `ExecutionResult` — v1.3
-- Out-of-order completion handling with buffering — v1.3
-- Highest contiguous acknowledged offset calculation — v1.3
-- `store_offset()` + `commit()` coordination for at-least-once delivery — v1.3
-- No duplicate commits when offset hasn't advanced — v1.3
+- Structured failure classification (retryable / terminal / non-retryable) — v1.4
+- RetryPolicy: max attempts, exponential backoff with jitter — v1.4
+- Retry scheduling (does NOT advance commit position) — v1.4
+- DLQ routing for exhausted or non-retryable failures — v1.4
+- Terminal handling state gating offset commit eligibility — v1.4
+- Rich DLQ metadata for replay/debugging — v1.4
+- Extensible design for future retry-topic support — v1.4
 
 ## Out of Scope
 
-- Full retry manager / DLQ — deferred to v1.4
 - Advanced rebalance logic — interfaces only, deferred
 - Schema registry / Avro support — deferred
 - Java/Node.js bindings — Python only
@@ -96,4 +110,4 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-*Last updated: 2026-04-16 after v1.3 milestone*
+*Last updated: 2026-04-17 after v1.3 milestone, v1.4 active*

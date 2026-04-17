@@ -1,90 +1,87 @@
-# Requirements — Milestone v1.3
+# Requirements — Milestone v1.4
 
-**Goal:** Implement per-topic-partition offset tracking with highest-contiguous-offset commit logic for at-least-once delivery guarantees.
+**Goal:** Implement failure handling and DLQ routing. Rust owns failure classification, retry orchestration, and DLQ routing. Python holds business logic only.
 
 ---
 
-## v1.3 Requirements
+## v1.4 Requirements
 
-### Offset Tracking
+### Failure Classification
 
-- [x] **OFFSET-01**: `PartitionState` struct — `committed_offset: i64`, `pending_offsets: BTreeSet<i64>`, `failed_offsets: BTreeSet<i64>`
-- [x] **OFFSET-02**: `OffsetTracker` — `HashMap<TopicPartition, PartitionState>` with `parking_lot::Mutex`
-- [x] **OFFSET-03**: `OffsetTracker::ack(topic, partition, offset)` — insert offset into `pending_offsets`, advance contiguous cursor
-- [x] **OFFSET-04**: `OffsetTracker::highest_contiguous(topic, partition) -> Option<i64>` — compute highest consecutive offset starting from `committed_offset + 1`
-- [x] **OFFSET-05**: `OffsetTracker::should_commit(topic, partition) -> bool` — true when `pending_offsets` contains `committed_offset + 1`
-- [x] **OFFSET-06**: `OffsetTracker::mark_failed(topic, partition, offset)` — move offset from `pending_offsets` to `failed_offsets`; does NOT advance `committed_offset`
-- [x] **OFFSET-07**: `OffsetTracker::committed_offset(topic, partition) -> i64` — return last committed offset for topic-partition
+- [ ] **FAIL-01**: `FailureReason` enum — variants: `Retryable(RetryableKind)`, `Terminal(TerminalKind)`, `NonRetryable(NonRetryableKind)`
+  - `RetryableKind`: `NetworkTimeout`, `BrokerUnavailable`, `TransientPartitionError`
+  - `TerminalKind`: `PoisonMessage`, `DeserializationFailed`, `HandlerPanic`
+  - `NonRetryableKind`: `ValidationError`, `BusinessLogicError`, `ConfigurationError`
+- [ ] **FAIL-02**: `ExecutionResult::Error(FailureReason, ...)` and `ExecutionResult::Rejected(FailureReason, ...)` carry failure reason
+- [ ] **FAIL-03**: `FailureClassifier` trait — `classify(&self, error: &PyErr, context: &ExecutionContext) -> FailureReason`
+  - Default classifier: maps Python exceptions to FailureReason variants
+  - Extensible: users can provide custom classifiers per handler
+- [ ] **FAIL-04**: Structured logging of failure reason with context (topic, partition, offset, attempt count)
 
-### Commit Coordination
+### RetryPolicy & Retry Scheduling
 
-- [ ] **COMMIT-01**: `ConsumerRunner::store_offset(topic, partition, offset)` — rdkafka `store_offset()` for two-phase manual offset management
-- [ ] **COMMIT-02**: `store_offset` + `commit()` two-phase guard — only call `commit()` when `highest_contiguous > committed_offset`
-- [ ] **COMMIT-03**: `OffsetCommitter` — background Tokio task; `watch` channel receives commit signals; throttles via `min_commit_interval`
-- [ ] **COMMIT-04**: `OffsetCommitter` calls `runner.store_offset(highest_contiguous)` then `runner.commit()` per topic-partition
-- [ ] **COMMIT-05**: No duplicate commit — `stored_offset` checked before `store_offset()` call
+- [ ] **RETRY-01**: `RetryPolicy` struct — `max_attempts: usize`, `base_delay: Duration`, `max_delay: Duration`, `jitter_factor: f64`
+  - Default: max_attempts=3, base_delay=100ms, max_delay=30s, jitter_factor=0.1
+- [ ] **RETRY-02**: `RetrySchedule::next_delay(attempt: usize) -> Duration` — exponential backoff with jitter
+  - Formula: `min(base_delay * 2^attempt, max_delay) * (1 - jitter_factor + rng::<0,1>() * jitter_factor * 2)`
+- [ ] **RETRY-03**: Retried messages are NOT acknowledged — `record_ack` NOT called until final success
+  - Retry attempts call `mark_failed` on the offset coordinator (tracks attempt count without advancing commit)
+- [ ] **RETRY-04**: After `max_attempts` exceeded, message routes to DLQ — not retry queue
+- [ ] **RETRY-05**: `ConsumerConfig` exposes `default_retry_policy: RetryPolicy`
+- [ ] **RETRY-06**: `PythonHandler` stores per-handler `retry_policy: Option<RetryPolicy>` (overrides global)
 
-### WorkerPool Integration
+### DLQ Routing
 
-- [ ] **WORKER-01**: `OffsetCoordinator` trait — `record_ack(topic, partition, offset)`, `mark_failed(topic, partition, offset)`, `graceful_shutdown()`
-- [ ] **WORKER-02**: `OffsetTracker` implements `OffsetCoordinator` trait
-- [ ] **WORKER-03**: `WorkerPool` holds `Arc<dyn OffsetCoordinator>` — injected at construction
-- [ ] **WORKER-04**: `WorkerPool::worker_loop()` calls `offset_coordinator.record_ack()` on `ExecutionResult::Ok`
-- [ ] **WORKER-05**: `WorkerPool::graceful_shutdown()` commits highest contiguous per topic-partition before worker exit
-- [ ] **WORKER-06**: Failed messages (`ExecutionResult::Error` / `Rejected`) call `offset_coordinator.mark_failed()`
+- [ ] **DLQ-01**: DLQ topic naming: `{original_topic}.DLQ` — partition preserved from original
+- [ ] **DLQ-02**: `DlqMetadata` struct — `original_topic: String`, `original_partition: i32`, `original_offset: i64`, `failure_reason: FailureReason`, `attempt_count: u32`, `first_failure_timestamp: DateTime<Utc>`, `last_failure_timestamp: DateTime<Utc>`
+- [ ] **DLQ-03**: `DlqRouter` trait — `route(&self, metadata: &DlqMetadata) -> TopicPartition`
+  - Default implementation: `DlqRouter::default()` → `{topic}.DLQ`, partition preserved
+- [ ] **DLQ-04**: On max_attempts exceeded OR non-retryable: produce to DLQ topic with metadata as headers
+  - Headers: `x-kafpy-original-topic`, `x-kafpy-original-partition`, `x-kafpy-original-offset`, `x-kafpy-failure-reason`, `x-kafpy-attempt-count`
+- [ ] **DLQ-05**: DLQ produce is fire-and-forget — does not block worker loop
+- [ ] **DLQ-06**: Extensible design: `DlqRouter` can be overridden per handler or globally via `ConsumerConfig`
 
-### Configuration
+### Terminal Handling & Commit Gating
 
-- [ ] **CONFIG-01**: `ConsumerConfig` sets `enable.auto.commit=false` (manual commit)
-- [ ] **CONFIG-02**: `ConsumerConfig` sets `enable.auto.offset.store=false` (manual store)
-- [ ] **CONFIG-03**: `commit_interval_ms` config option (default: 100ms)
-- [ ] **CONFIG-04**: `commit_max_messages` config option (default: 100)
-
-### PyO3 Bridge
-
-- [ ] **BRIDGE-01**: `PyConsumer` wires `OffsetTracker` + `OffsetCommitter` into consumer runtime
-- [ ] **BRIDGE-02**: `OffsetCommitter` spawned as Tokio task via `ConsumerRunner::run()`
-- [ ] **BRIDGE-03**: `ConsumerDispatcher` updated to pass `Arc<dyn OffsetCoordinator>` to `WorkerPool`
+- [ ] **TERM-01**: `PartitionState` tracks `has_terminal: bool` — set when any message for that TP is terminal
+- [ ] **TERM-02**: `OffsetTracker::should_commit` returns false if `has_terminal == true` for that topic-partition
+  - Terminal messages block commit to prevent at-least-once delivery of terminal payloads
+- [ ] **TERM-03**: `WorkerPool::shutdown` calls `flush_terminal_to_dlq()` before `graceful_shutdown`
+- [ ] **TERM-04**: `graceful_shutdown` produces all pending terminal messages to DLQ before committing offsets
 
 ### Out of Scope
 
-- RetryExecutor integration with offset tracking — deferred to v1.4
-- DLQ routing — deferred to v2
-- Schema registry / Avro support — deferred
-- `enable.auto.commit` toggle for at-most-once mode — deferred
+- Retry topic / exponential backoff via Kafka retry topics (requires Kafka transaction support) — deferred to v2.0
+- DLQ message compaction / retention policy configuration — deferred to future
+- DLQ consumption / replay utility — deferred to future
 
 ---
 
 ## Traceability
 
-| Requirement | Phase | Status |
-|-------------|-------|--------|
-| OFFSET-01 | Phase 11 | — |
-| OFFSET-02 | Phase 11 | — |
-| OFFSET-03 | Phase 11 | — |
-| OFFSET-04 | Phase 11 | — |
-| OFFSET-05 | Phase 11 | — |
-| OFFSET-06 | Phase 11 | — |
-| OFFSET-07 | Phase 11 | — |
-| COMMIT-01 | Phase 13 | — |
-| COMMIT-02 | Phase 13 | — |
-| COMMIT-03 | Phase 12 | — |
-| COMMIT-04 | Phase 12 | — |
-| COMMIT-05 | Phase 12 | — |
-| WORKER-01 | Phase 14 | — |
-| WORKER-02 | Phase 14 | — |
-| WORKER-03 | Phase 14 | — |
-| WORKER-04 | Phase 15 | — |
-| WORKER-05 | Phase 15 | — |
-| WORKER-06 | Phase 15 | — |
-| CONFIG-01 | Phase 13 | — |
-| CONFIG-02 | Phase 13 | — |
-| CONFIG-03 | Phase 12 | — |
-| CONFIG-04 | Phase 12 | — |
-| BRIDGE-01 | Phase 16 | — |
-| BRIDGE-02 | Phase 16 | — |
-| BRIDGE-03 | Phase 16 | — |
+| Requirement | Phase |
+|-------------|-------|
+| FAIL-01 | Phase 17 |
+| FAIL-02 | Phase 17 |
+| FAIL-03 | Phase 17 |
+| FAIL-04 | Phase 17 |
+| RETRY-01 | Phase 18 |
+| RETRY-02 | Phase 18 |
+| RETRY-03 | Phase 18 |
+| RETRY-04 | Phase 18 |
+| RETRY-05 | Phase 18 |
+| RETRY-06 | Phase 18 |
+| DLQ-01 | Phase 19 |
+| DLQ-02 | Phase 19 |
+| DLQ-03 | Phase 19 |
+| DLQ-04 | Phase 19 |
+| DLQ-05 | Phase 19 |
+| DLQ-06 | Phase 19 |
+| TERM-01 | Phase 20 |
+| TERM-02 | Phase 20 |
+| TERM-03 | Phase 20 |
+| TERM-04 | Phase 20 |
 
 ---
 
-*Last updated: 2026-04-16*
+*Last updated: 2026-04-17*
