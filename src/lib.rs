@@ -33,6 +33,7 @@ pub mod dlq;
 
 // Routing — zero-copy context, decision enum, router trait, and concrete routers
 pub mod routing;
+pub use routing::config::{RoutingRule, RoutingRuleBuilder, PatternType, RoutingRuleBuildError};
 
 use kafka_message::KafkaMessage;
 use logging::Logger;

@@ -36,7 +36,12 @@
 7. RoutingChain evaluates routers in precedence order: pattern → header → key → python → default
 8. ConsumerConfig exposes `routing_rules: Vec<RoutingRule>` with pattern/header/key config + target handler + priority
 
-**Plans**: TBD
+**Plans**: 3 plans in 2 waves
+
+Plans:
+- [ ] 21-01-PLAN.md — Core types: RoutingContext, RoutingDecision, HandlerId, Router trait
+- [ ] 21-02-PLAN.md — Three routers: TopicPatternRouter, HeaderRouter, KeyRouter
+- [ ] 21-03-PLAN.md — RoutingChain, RoutingRule config, ConsumerConfig integration
 
 ### Phase 22: Python Integration
 
@@ -79,7 +84,7 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 21. Routing Core | 0/- | Not started | - |
+| 21. Routing Core | 0/3 | Not started | - |
 | 22. Python Integration | 0/- | Not started | - |
 | 23. Dispatcher Integration | 0/- | Not started | - |
 

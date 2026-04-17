@@ -6,7 +6,9 @@
 
 use crate::routing::header::HeaderRule;
 use crate::routing::key::{KeyMatchMode, KeyRule};
-use crate::routing::topic_pattern::{PatternType, TopicRule};
+use crate::routing::topic_pattern::{PatternType as Pt, TopicRule};
+
+pub use crate::routing::topic_pattern::PatternType;
 
 /// A fully-built routing rule with a target handler and priority.
 #[derive(Debug, Clone)]
@@ -38,7 +40,7 @@ pub struct RoutingRule {
 pub struct RoutingRuleBuilder {
     priority: i32,
     topic_pattern: Option<String>,
-    pattern_type: PatternType,
+    pattern_type: Pt,
     header_key: Option<String>,
     header_value_pattern: Option<String>,
     key_match_mode: Option<KeyMatchMode>,
@@ -52,7 +54,7 @@ impl RoutingRuleBuilder {
         Self {
             priority: 0,
             topic_pattern: None,
-            pattern_type: PatternType::Glob,
+            pattern_type: Pt::Glob,
             header_key: None,
             header_value_pattern: None,
             key_match_mode: None,
@@ -62,7 +64,7 @@ impl RoutingRuleBuilder {
     }
 
     /// Sets the topic glob/regex pattern.
-    pub fn topic_pattern(mut self, pattern: impl Into<String>, pattern_type: PatternType) -> Self {
+    pub fn topic_pattern(mut self, pattern: impl Into<String>, pattern_type: Pt) -> Self {
         self.topic_pattern = Some(pattern.into());
         self.pattern_type = pattern_type;
         self
@@ -150,7 +152,7 @@ mod tests {
     #[test]
     fn topic_rule_build() {
         let rule = RoutingRuleBuilder::new()
-            .topic_pattern("events.*", PatternType::Glob)
+            .topic_pattern("events.*", Pt::Glob)
             .to_handler("handler1")
             .priority(1)
             .build()
@@ -192,7 +194,7 @@ mod tests {
     #[test]
     fn combined_rules() {
         let rule = RoutingRuleBuilder::new()
-            .topic_pattern("events.*", PatternType::Glob)
+            .topic_pattern("events.*", Pt::Glob)
             .header_key("content-type", Some("application/json*"))
             .key_match(KeyMatchMode::Prefix, b"order-")
             .to_handler("combined")
@@ -209,7 +211,7 @@ mod tests {
     #[test]
     fn missing_handler_error() {
         let result = RoutingRuleBuilder::new()
-            .topic_pattern("events.*", PatternType::Glob)
+            .topic_pattern("events.*", Pt::Glob)
             .build();
         assert!(matches!(result, Err(RoutingRuleBuildError::MissingHandler)));
     }
