@@ -10,9 +10,11 @@
 //! 4. `should_commit()` returns `pending_offsets.contains(committed_offset + 1)`
 //! 5. `mark_failed()` removes offset from `pending_offsets` if present, inserts into `failed_offsets`
 
+use crate::consumer::ConsumerRunner;
 use parking_lot::Mutex;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 /// Key type for topic-partition lookup.
 /// Using a tuple struct for type safety over raw (String, i32) pairs.
@@ -100,6 +102,8 @@ impl Default for PartitionState {
 /// Thread-safe via `parking_lot::Mutex` — all state access goes through the mutex.
 pub struct OffsetTracker {
     partitions: Mutex<HashMap<TopicPartitionKey, PartitionState>>,
+    /// ConsumerRunner for Kafka commit operations. Set via set_runner() before use.
+    runner: Mutex<Option<Arc<ConsumerRunner>>>,
 }
 
 impl OffsetTracker {
@@ -107,7 +111,14 @@ impl OffsetTracker {
     pub fn new() -> Self {
         Self {
             partitions: Mutex::new(HashMap::new()),
+            runner: Mutex::new(None),
         }
+    }
+
+    /// Sets the ConsumerRunner for Kafka commit operations.
+    /// Called once during setup before the worker pool starts.
+    pub fn set_runner(&mut self, runner: Arc<ConsumerRunner>) {
+        *self.runner.lock() = Some(runner);
     }
 
     /// Records an ack for the given topic-partition at `offset`.
@@ -169,6 +180,20 @@ impl OffsetTracker {
         let guard = self.partitions.lock();
         guard.get(&key).map_or(-1, |s| s.committed_offset)
     }
+
+    /// Returns all registered topic-partition pairs.
+    ///
+    /// Used by `graceful_shutdown()` to enumerate partitions for final commit.
+    pub fn all_partitions(&self) -> Vec<(String, i32)> {
+        let guard = self.partitions.lock();
+        guard
+            .keys()
+            .map(|key| {
+                let TopicPartitionKey(t, p) = key;
+                (t.clone(), *p)
+            })
+            .collect()
+    }
 }
 
 use super::OffsetCoordinator;
@@ -189,7 +214,19 @@ impl OffsetCoordinator for OffsetTracker {
     }
 
     fn graceful_shutdown(&self) {
-        // Phase 15: commit highest contiguous per topic-partition
+        let partitions = self.all_partitions();
+        for (topic, partition) in partitions {
+            if !self.should_commit(&topic, partition) {
+                continue;
+            }
+            if let Some(offset) = self.highest_contiguous(&topic, partition) {
+                let runner_guard = self.runner.lock();
+                if let Some(ref runner_arc) = *runner_guard {
+                    let _ = runner_arc.store_offset(&topic, partition, offset);
+                    let _ = runner_arc.commit();
+                }
+            }
+        }
     }
 }
 

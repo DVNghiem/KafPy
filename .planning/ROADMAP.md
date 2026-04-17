@@ -12,7 +12,7 @@
 - [x] **Phase 11: OffsetTracker Core** — PartitionState struct, BTreeSet pending/failed tracking, ack/highest_contiguous/should_commit/mark_failed methods (completed 2026-04-16)
 - [ ] **Phase 12: OffsetCommitter** — Background Tokio task, watch channel commit signals, interval throttle
 - [x] **Phase 13: ConsumerRunner store_offset** — Two-phase rdkafka commit guard, config disable auto-commit/auto-store (completed 2026-04-17)
-- [ ] **Phase 14: OffsetCoordinator Trait** — Trait definition, OffsetTracker impl, WorkerPool Arc<dyn OffsetCoordinator> injection
+- [x] **Phase 14: OffsetCoordinator Trait** — Trait definition, OffsetTracker impl, WorkerPool Arc<dyn OffsetCoordinator> injection (completed 2026-04-17)
 - [ ] **Phase 15: WorkerPool Integration** — record_ack on ExecutionResult::Ok, graceful_shutdown final commit, mark_failed on errors
 - [ ] **Phase 16: PyO3 Bridge** — OffsetTracker + OffsetCommitter wiring, Tokio task spawn, ConsumerDispatcher passes coordinator
 
@@ -93,7 +93,7 @@
 | 11. OffsetTracker Core | 1/1 | Complete    | 2026-04-16 |
 | 12. OffsetCommitter | 0/N | Not started | - |
 | 13. ConsumerRunner store_offset | 1/1 | Complete    | 2026-04-17 |
-| 14. OffsetCoordinator Trait | 0/N | Not started | - |
+| 14. OffsetCoordinator Trait | 1/1 | Complete    | 2026-04-17 |
 | 15. WorkerPool Integration | 0/N | Not started | - |
 | 16. PyO3 Bridge | 0/N | Not started | - |
 

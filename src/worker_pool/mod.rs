@@ -60,6 +60,7 @@ async fn worker_loop(
                         "handler executed successfully"
                     );
                     queue_manager.ack(&msg.topic, 1);
+                    offset_coordinator.record_ack(&ctx.topic, ctx.partition, ctx.offset);
                 }
                 ExecutionResult::Error { ref exception, .. } => {
                     tracing::warn!(
@@ -70,6 +71,7 @@ async fn worker_loop(
                         exception = %exception,
                         "handler raised exception"
                     );
+                    offset_coordinator.mark_failed(&ctx.topic, ctx.partition, ctx.offset);
                 }
                 ExecutionResult::Rejected { ref reason } => {
                     tracing::warn!(
@@ -80,6 +82,7 @@ async fn worker_loop(
                         reason = %reason,
                         "handler rejected message"
                     );
+                    offset_coordinator.mark_failed(&ctx.topic, ctx.partition, ctx.offset);
                 }
             }
 
@@ -179,6 +182,8 @@ impl WorkerPool {
     pub async fn shutdown(&mut self) {
         tracing::info!("initiating worker pool shutdown");
         self.shutdown_token.cancel();
+        // Commit all ready offsets before workers exit (D-03)
+        self.offset_coordinator.graceful_shutdown();
         self.join_set.shutdown().await;
         tracing::info!("worker pool shutdown complete");
     }
