@@ -1,5 +1,20 @@
 # Milestones
 
+## v1.3 offset-coordinator (Shipped: 2026-04-17)
+
+**Phases completed:** 6 phases, 6 plans, 3 tasks
+
+**Key accomplishments:**
+
+- One-liner:
+- Executed:
+- ConsumerRunner::store_offset async method via spawn_blocking, ConsumerConfig with enable_auto_offset_store (default false)
+- Phase:
+- Objective:
+- Objective:
+
+---
+
 ## v1.2 Python Execution Lane (Shipped: 2026-04-16)
 
 **Phases completed:** 2 phases, 4 plans, 0 tasks
