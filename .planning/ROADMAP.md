@@ -92,7 +92,7 @@
 |-------|----------------|--------|-----------|
 | 11. OffsetTracker Core | 1/1 | Complete    | 2026-04-16 |
 | 12. OffsetCommitter | 0/N | Not started | - |
-| 13. ConsumerRunner store_offset | 1/1 | Complete   | 2026-04-17 |
+| 13. ConsumerRunner store_offset | 1/1 | Complete    | 2026-04-17 |
 | 14. OffsetCoordinator Trait | 0/N | Not started | - |
 | 15. WorkerPool Integration | 0/N | Not started | - |
 | 16. PyO3 Bridge | 0/N | Not started | - |
