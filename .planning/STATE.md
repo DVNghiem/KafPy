@@ -3,15 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: Extensible Routing
 status: planning
-stopped_at: Planning v1.5 roadmap
-last_updated: "2026-04-17"
-last_activity: 2026-04-17
+stopped_at: Phase 21 context gathered
+last_updated: "2026-04-17T16:40:35.322Z"
+last_activity: 2026-04-17 — Planning Phase 21, 22, 23
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
-  percent: 0
 ---
 
 # Project State
@@ -84,6 +83,6 @@ Last activity: 2026-04-17 — Planning Phase 21, 22, 23
 
 ## Session Continuity
 
-Last session: 2026-04-17T22:45:00.000Z
-Stopped at: Planning v1.5 roadmap
-Resume file: None
+Last session: 2026-04-17T16:40:35.320Z
+Stopped at: Phase 21 context gathered
+Resume file: .planning/phases/21-routing-core/21-CONTEXT.md
