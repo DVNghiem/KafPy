@@ -30,7 +30,7 @@
   3. `OffsetTracker::highest_contiguous()` returns highest consecutive offset starting from `committed_offset + 1`
   4. `OffsetTracker::should_commit()` returns true only when `pending_offsets` contains `committed_offset + 1`
   5. `OffsetTracker::mark_failed()` moves offset from `pending_offsets` to `failed_offsets` without advancing `committed_offset`
-**Plans**: TBD
+**Plans**: 1/1 (complete)
 
 ### Phase 12: OffsetCommitter
 **Goal**: Background Tokio task that receives commit signals via watch channel and throttles commits by interval
@@ -53,7 +53,7 @@
   2. Two-phase guard: `commit()` is only called when `highest_contiguous > committed_offset`
   3. `ConsumerConfig` sets `enable.auto.commit=false`
   4. `ConsumerConfig` sets `enable.auto.offset.store=false`
-**Plans**: TBD
+**Plans**: 1/1 (complete)
 
 ### Phase 14: OffsetCoordinator Trait
 **Goal**: Define `OffsetCoordinator` trait and implement it on `OffsetTracker`; inject into `WorkerPool` at construction
@@ -63,7 +63,7 @@
   1. `OffsetCoordinator` trait defines `record_ack(topic, partition, offset)`, `mark_failed(topic, partition, offset)`, `graceful_shutdown()`
   2. `OffsetTracker` implements `OffsetCoordinator` trait
   3. `WorkerPool::new()` accepts `Arc<dyn OffsetCoordinator>` at construction
-**Plans**: TBD
+**Plans**: 1/1 (complete)
 
 ### Phase 15: WorkerPool Integration
 **Goal**: Wire `OffsetCoordinator` into worker loop — ack on success, mark_failed on errors, commit on graceful shutdown
@@ -83,8 +83,8 @@
   1. `PyConsumer` creates and wires `OffsetTracker` + `OffsetCommitter` into consumer runtime
   2. `OffsetCommitter` is spawned as a Tokio task via `ConsumerRunner::run()`
   3. `ConsumerDispatcher` passes `Arc<dyn OffsetCoordinator>` to `WorkerPool`
-**UI hint**: yes
-**Plans**: TBD
+**Plans**:
+- [ ] 16-01-PLAN.md — Wire OffsetTracker + OffsetCommitter into PyConsumer.start()
 
 ## Progress
 
@@ -95,7 +95,7 @@
 | 13. ConsumerRunner store_offset | 1/1 | Complete    | 2026-04-17 |
 | 14. OffsetCoordinator Trait | 1/1 | Complete    | 2026-04-17 |
 | 15. WorkerPool Integration | 0/N | Not started | - |
-| 16. PyO3 Bridge | 0/N | Not started | - |
+| 16. PyO3 Bridge | 1/1 | In progress | - |
 
 ---
 
