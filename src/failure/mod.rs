@@ -1,5 +1,6 @@
 pub mod reason;
 pub mod classifier;
+pub mod logging;
 pub mod tests;
 
 pub use reason::{

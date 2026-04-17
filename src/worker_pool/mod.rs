@@ -12,6 +12,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::coordinator::OffsetCoordinator;
+use crate::failure::{FailureReason, FailureCategory};
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::python::context::ExecutionContext;
@@ -62,7 +63,7 @@ async fn worker_loop(
                     queue_manager.ack(&msg.topic, 1);
                     offset_coordinator.record_ack(&ctx.topic, ctx.partition, ctx.offset);
                 }
-                ExecutionResult::Error { ref exception, .. } => {
+                ExecutionResult::Error { ref reason, ref exception, .. } => {
                     tracing::warn!(
                         worker_id = worker_id,
                         topic = %ctx.topic,
@@ -71,9 +72,10 @@ async fn worker_loop(
                         exception = %exception,
                         "handler raised exception"
                     );
-                    offset_coordinator.mark_failed(&ctx.topic, ctx.partition, ctx.offset);
+                    crate::failure::logging::log_failure(&ctx, reason, exception, false);
+                    offset_coordinator.mark_failed(&ctx.topic, ctx.partition, ctx.offset, reason);
                 }
-                ExecutionResult::Rejected { ref reason } => {
+                ExecutionResult::Rejected { ref reason, .. } => {
                     tracing::warn!(
                         worker_id = worker_id,
                         topic = %ctx.topic,
@@ -82,7 +84,10 @@ async fn worker_loop(
                         reason = %reason,
                         "handler rejected message"
                     );
-                    offset_coordinator.mark_failed(&ctx.topic, ctx.partition, ctx.offset);
+                    // Extract exception name for rejection (Rejected carries reason_str, not exception)
+                    let exc_name = "Rejected";
+                    crate::failure::logging::log_failure(&ctx, reason, exc_name, false);
+                    offset_coordinator.mark_failed(&ctx.topic, ctx.partition, ctx.offset, reason);
                 }
             }
 
@@ -298,6 +303,7 @@ mod tests {
             &ctx,
             &make_test_msg(),
             &ExecutionResult::Error {
+                reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
                 exception: "Test".to_string(),
                 traceback: "test".to_string(),
             },

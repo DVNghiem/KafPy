@@ -1,6 +1,9 @@
 //! Python handler — invokes a Python callback via spawn_blocking with minimal GIL window.
 
 use crate::dispatcher::OwnedMessage;
+use crate::failure::classifier::DefaultFailureClassifier;
+use crate::failure::FailureReason;
+use crate::failure::FailureClassifier;
 use crate::python::context::ExecutionContext;
 use crate::python::execution_result::ExecutionResult;
 use std::sync::Arc;
@@ -50,6 +53,9 @@ impl PythonHandler {
                 match callback.call1(py, (py_msg,)) {
                     Ok(_) => ExecutionResult::Ok,
                     Err(py_err) => {
+                        let classifier = DefaultFailureClassifier;
+                        let ctx_clone = ExecutionContext::new(topic, partition, offset, _worker_id);
+                        let reason = classifier.classify(&py_err, &ctx_clone);
                         let exception = py_err
                             .get_type(py)
                             .name()
@@ -57,6 +63,7 @@ impl PythonHandler {
                             .unwrap_or_else(|_| "Unknown".to_string());
                         let traceback = py_err.to_string();
                         ExecutionResult::Error {
+                            reason,
                             exception,
                             traceback,
                         }
@@ -69,6 +76,7 @@ impl PythonHandler {
         match result {
             Ok(r) => r,
             Err(_) => ExecutionResult::Error {
+                reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
                 exception: "Panic".to_string(),
                 traceback: "spawn_blocking task panicked".to_string(),
             },

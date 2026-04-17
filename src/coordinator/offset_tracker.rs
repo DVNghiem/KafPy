@@ -11,6 +11,7 @@
 //! 5. `mark_failed()` removes offset from `pending_offsets` if present, inserts into `failed_offsets`
 
 use crate::consumer::ConsumerRunner;
+use crate::failure::FailureReason;
 use parking_lot::Mutex;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
@@ -47,6 +48,8 @@ pub struct PartitionState {
     pub pending_offsets: BTreeSet<i64>,
     /// Failed offsets that should not be committed.
     pub failed_offsets: BTreeSet<i64>,
+    /// Last failure reason for this partition (for DLQ routing).
+    pub last_failure_reason: Option<FailureReason>,
 }
 
 impl PartitionState {
@@ -57,6 +60,7 @@ impl PartitionState {
             committed_offset: -1,
             pending_offsets: BTreeSet::new(),
             failed_offsets: BTreeSet::new(),
+            last_failure_reason: None,
         }
     }
 
@@ -209,8 +213,13 @@ impl OffsetCoordinator for OffsetTracker {
         self.ack(topic, partition, offset);
     }
 
-    fn mark_failed(&self, topic: &str, partition: i32, offset: i64) {
-        OffsetTracker::mark_failed(self, topic, partition, offset);
+    fn mark_failed(&self, topic: &str, partition: i32, offset: i64, _reason: &FailureReason) {
+        let key = TopicPartitionKey::new(topic, partition);
+        let mut guard = self.partitions.lock();
+        if let Some(state) = guard.get_mut(&key) {
+            state.mark_failed(offset);
+            state.last_failure_reason = Some(_reason.clone());
+        }
     }
 
     fn graceful_shutdown(&self) {

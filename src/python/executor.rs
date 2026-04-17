@@ -43,23 +43,25 @@ impl Executor for DefaultExecutor {
                     "handler executed successfully"
                 );
             }
-            ExecutionResult::Error { exception, .. } => {
-                tracing::warn!(
-                    topic = %ctx.topic,
-                    partition = ctx.partition,
-                    offset = ctx.offset,
-                    worker_id = ctx.worker_id,
-                    exception = %exception,
-                    "handler raised exception"
-                );
-            }
-            ExecutionResult::Rejected { reason } => {
+            ExecutionResult::Error { reason, exception, .. } => {
                 tracing::warn!(
                     topic = %ctx.topic,
                     partition = ctx.partition,
                     offset = ctx.offset,
                     worker_id = ctx.worker_id,
                     reason = %reason,
+                    exception = %exception,
+                    "handler raised exception"
+                );
+            }
+            ExecutionResult::Rejected { reason, reason_str } => {
+                tracing::warn!(
+                    topic = %ctx.topic,
+                    partition = ctx.partition,
+                    offset = ctx.offset,
+                    worker_id = ctx.worker_id,
+                    reason = %reason,
+                    reason_str = %reason_str,
                     "handler rejected message"
                 );
             }

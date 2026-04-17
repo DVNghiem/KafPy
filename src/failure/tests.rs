@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::failure::{
+        FailureReason, FailureCategory, RetryableKind, TerminalKind, NonRetryableKind,
+    };
 
     #[test]
     fn failure_reason_category_retryable() {
