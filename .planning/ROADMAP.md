@@ -11,7 +11,7 @@
 ## Phases
 
 - [x] **Phase 17: Failure Classification** — Structured failure type taxonomy, FailureReason enum, classify method on ExecutionResult (plans 17-01, 17-02 complete)
-- [ ] **Phase 18: RetryPolicy & Retry Scheduling** — RetryPolicy config, exponential backoff with jitter, retry scheduling (no commit advance)
+- [x] **Phase 18: RetryPolicy & Retry Scheduling** — RetryPolicy config, exponential backoff with jitter, retry scheduling (no commit advance) (completed 2026-04-17)
 - [ ] **Phase 19: DLQ Routing** — DLQ topic naming, DLQ metadata envelope, routing from exhausted/non-retryable failures
 - [ ] **Phase 20: Terminal Handling & Commit Gating** — Terminal state tracking, commit eligibility gating, graceful shutdown DLQ flush
 
@@ -72,7 +72,7 @@
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 17. Failure Classification | 2/2 | Complete | 2026-04-17 |
-| 18. RetryPolicy & Retry Scheduling | 1/2 | In Progress|  |
+| 18. RetryPolicy & Retry Scheduling | 2/2 | Complete    | 2026-04-17 |
 | 19. DLQ Routing | 0/N | Not started | - |
 | 20. Terminal Handling & Commit Gating | 0/N | Not started | - |
 

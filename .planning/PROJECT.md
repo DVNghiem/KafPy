@@ -50,7 +50,7 @@ Current status (after Milestone v1.3):
 
 **Last milestone (v1.3):** Offset commit coordinator — per-topic-partition ack tracking via `OffsetTracker`, highest-contiguous-offset commit logic via `OffsetCommitter`, out-of-order completion handling, `store_offset()` + `commit()` coordination for at-least-once delivery.
 
-**Current milestone (v1.4):** Failure Handling & DLQ — Rust owns failure classification, retry orchestration, and DLQ routing. Python holds business logic only.
+**Current milestone (v1.4):** Failure Handling & DLQ — Phase 18 (RetryPolicy & Retry Scheduling) complete. Phases 19-20 remaining.
 
 ## Validated Requirements
 
@@ -72,12 +72,15 @@ Current status (after Milestone v1.3):
 - ✓ No duplicate commits when offset hasn't advanced — v1.3
 - ✓ OffsetCoordinator trait separating offset tracking from Executor policy — v1.3
 - ✓ Arc<dyn OffsetCoordinator> passed to WorkerPool — v1.3
+- ✓ RetryPolicy struct with max_attempts, base_delay, max_delay, jitter_factor — v1.4
+- ✓ RetrySchedule with exponential backoff + jitter — v1.4
+- ✓ ConsumerConfig::default_retry_policy wired — v1.4
+- ✓ PythonHandler per-handler retry_policy override — v1.4
+- ✓ RetryCoordinator tracking per-message state — v1.4
+- ✓ worker_loop retry scheduling (record_ack only on final success) — v1.4
 
 ## Active Requirements
 
-- Structured failure classification (retryable / terminal / non-retryable) — v1.4
-- RetryPolicy: max attempts, exponential backoff with jitter — v1.4
-- Retry scheduling (does NOT advance commit position) — v1.4
 - DLQ routing for exhausted or non-retryable failures — v1.4
 - Terminal handling state gating offset commit eligibility — v1.4
 - Rich DLQ metadata for replay/debugging — v1.4
