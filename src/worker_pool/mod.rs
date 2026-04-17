@@ -12,6 +12,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::coordinator::OffsetCoordinator;
+use crate::coordinator::retry_coordinator::RetryCoordinator;
 use crate::failure::{FailureReason, FailureCategory};
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
@@ -36,6 +37,7 @@ async fn worker_loop(
     executor: Arc<dyn Executor>,
     queue_manager: Arc<QueueManager>,
     offset_coordinator: Arc<dyn OffsetCoordinator>,
+    retry_coordinator: Arc<RetryCoordinator>,
     worker_id: usize,
     shutdown_token: CancellationToken,
 ) {
@@ -60,6 +62,7 @@ async fn worker_loop(
                         offset = ctx.offset,
                         "handler executed successfully"
                     );
+                    retry_coordinator.record_success(&ctx.topic, ctx.partition, ctx.offset);
                     queue_manager.ack(&msg.topic, 1);
                     offset_coordinator.record_ack(&ctx.topic, ctx.partition, ctx.offset);
                 }
@@ -73,7 +76,44 @@ async fn worker_loop(
                         "handler raised exception"
                     );
                     crate::failure::logging::log_failure(&ctx, reason, exception, false);
+
+                    // Check if we should retry
+                    let (should_retry, delay) = retry_coordinator.record_failure(
+                        &ctx.topic, ctx.partition, ctx.offset, reason,
+                    );
+
                     offset_coordinator.mark_failed(&ctx.topic, ctx.partition, ctx.offset, reason);
+
+                    if should_retry {
+                        // Sleep then retry
+                        if let Some(d) = delay {
+                            tracing::info!(
+                                worker_id = worker_id,
+                                topic = %ctx.topic,
+                                partition = ctx.partition,
+                                offset = ctx.offset,
+                                attempt = retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset),
+                                delay_ms = d.as_millis(),
+                                "scheduling retry"
+                            );
+                            tokio::time::sleep(d).await;
+                            // Re-queue for retry (stay in active_message slot)
+                            active_message = Some(msg);
+                            continue;
+                        }
+                    }
+
+                    // Max attempts exceeded or non-retryable → route to DLQ
+                    tracing::error!(
+                        worker_id = worker_id,
+                        topic = %ctx.topic,
+                        partition = ctx.partition,
+                        offset = ctx.offset,
+                        reason = %reason,
+                        "max attempts exceeded — DLQ routing not implemented in this phase"
+                    );
+                    // DLQ routing happens in Phase 19 — for now just log
+                    queue_manager.ack(&msg.topic, 1);
                 }
                 ExecutionResult::Rejected { ref reason, .. } => {
                     tracing::warn!(
@@ -87,7 +127,44 @@ async fn worker_loop(
                     // Extract exception name for rejection (Rejected carries reason_str, not exception)
                     let exc_name = "Rejected";
                     crate::failure::logging::log_failure(&ctx, reason, exc_name, false);
+
+                    // Check if we should retry
+                    let (should_retry, delay) = retry_coordinator.record_failure(
+                        &ctx.topic, ctx.partition, ctx.offset, reason,
+                    );
+
                     offset_coordinator.mark_failed(&ctx.topic, ctx.partition, ctx.offset, reason);
+
+                    if should_retry {
+                        // Sleep then retry
+                        if let Some(d) = delay {
+                            tracing::info!(
+                                worker_id = worker_id,
+                                topic = %ctx.topic,
+                                partition = ctx.partition,
+                                offset = ctx.offset,
+                                attempt = retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset),
+                                delay_ms = d.as_millis(),
+                                "scheduling retry"
+                            );
+                            tokio::time::sleep(d).await;
+                            // Re-queue for retry (stay in active_message slot)
+                            active_message = Some(msg);
+                            continue;
+                        }
+                    }
+
+                    // Max attempts exceeded or non-retryable → route to DLQ
+                    tracing::error!(
+                        worker_id = worker_id,
+                        topic = %ctx.topic,
+                        partition = ctx.partition,
+                        offset = ctx.offset,
+                        reason = %reason,
+                        "max attempts exceeded — DLQ routing not implemented in this phase"
+                    );
+                    // DLQ routing happens in Phase 19 — for now just log
+                    queue_manager.ack(&msg.topic, 1);
                 }
             }
 
@@ -131,6 +208,7 @@ pub struct WorkerPool {
     /// Exposed publicly so Consumer::stop() can cancel via Arc<WorkerPool>.
     pub(crate) shutdown_token: CancellationToken,
     offset_coordinator: Arc<dyn OffsetCoordinator>,
+    retry_coordinator: Arc<RetryCoordinator>,
 }
 
 impl WorkerPool {
@@ -147,6 +225,7 @@ impl WorkerPool {
         executor: Arc<dyn Executor>,
         queue_manager: Arc<QueueManager>,
         offset_coordinator: Arc<dyn OffsetCoordinator>,
+        retry_coordinator: Arc<RetryCoordinator>,
         shutdown_token: CancellationToken,
     ) -> Self {
         let mut join_set = JoinSet::new();
@@ -158,6 +237,7 @@ impl WorkerPool {
             let queue_manager = Arc::clone(&queue_manager);
             let token = shutdown_token.clone();
             let offset_coordinator = offset_coordinator.clone();
+            let retry_coordinator = retry_coordinator.clone();
 
             join_set.spawn(worker_loop(
                 rx,
@@ -165,6 +245,7 @@ impl WorkerPool {
                 executor,
                 queue_manager,
                 offset_coordinator,
+                retry_coordinator,
                 worker_id,
                 token,
             ));
@@ -175,6 +256,7 @@ impl WorkerPool {
             join_set,
             shutdown_token,
             offset_coordinator,
+            retry_coordinator,
         }
     }
 
@@ -256,6 +338,9 @@ mod tests {
             Arc::new(DefaultExecutor),
             Arc::new(QueueManager::new()),
             Arc::new(crate::coordinator::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,
+            Arc::new(crate::coordinator::RetryCoordinator::with_policy(
+                crate::retry::RetryPolicy::default(),
+            )),
             CancellationToken::new(),
         );
         let _ = tx;
@@ -275,6 +360,9 @@ mod tests {
                 Arc::new(DefaultExecutor) as Arc<dyn Executor>,
                 Arc::new(QueueManager::new()),
                 Arc::new(crate::coordinator::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,
+                Arc::new(crate::coordinator::RetryCoordinator::with_policy(
+                    crate::retry::RetryPolicy::default(),
+                )),
                 0,
                 token,
             ),
@@ -325,6 +413,9 @@ mod tests {
             Arc::new(DefaultExecutor) as Arc<dyn Executor>,
             Arc::new(QueueManager::new()),
             Arc::new(crate::coordinator::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,
+            Arc::new(crate::coordinator::RetryCoordinator::with_policy(
+                crate::retry::RetryPolicy::default(),
+            )),
             0,
             token.clone(),
         ));

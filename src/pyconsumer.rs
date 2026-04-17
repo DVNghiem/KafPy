@@ -84,7 +84,7 @@ impl Consumer {
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
             let default_retry_policy = rust_config.default_retry_policy.clone();
-            let runner = ConsumerRunner::new(rust_config)
+            let runner = ConsumerRunner::new(rust_config.clone())
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
             // BRIDGE-01 + D-02: Create OffsetTracker and wire ConsumerRunner before pool
@@ -116,6 +116,7 @@ impl Consumer {
 
             let executor_arc: Arc<dyn Executor> = Arc::new(DefaultExecutor::default());
             let queue_manager_arc = dispatcher.queue_manager();
+            let retry_coordinator = std::sync::Arc::new(crate::coordinator::RetryCoordinator::new(&rust_config));
 
             let n_workers = 4; // EXEC-08: configurable
 
@@ -126,6 +127,7 @@ impl Consumer {
                 executor_arc,
                 queue_manager_arc.clone(),
                 offset_tracker.clone(),
+                retry_coordinator,
                 shutdown_token,
             );
 
