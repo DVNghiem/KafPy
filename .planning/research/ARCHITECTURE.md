@@ -1,353 +1,555 @@
-# Architecture Research
+# Architecture Research: KafPy Observability Layer
 
-**Domain:** PyO3 Kafka Consumer Framework - Batch and Async Handler Execution
+**Domain:** Rust/PyO3 Kafka Consumer Observability Integration
 **Researched:** 2026-04-18
-**Confidence:** MEDIUM
+**Confidence:** HIGH
 
 ## Executive Summary
 
-KafPy is a Rust-backed Kafka consumer where the Rust core handles protocol (rdkafka + Tokio) and Python holds business logic (handlers). Adding batch and async handlers requires: (1) a `BatchExecutor` that accumulates messages into vectors until `max_batch_size` OR `max_batch_wait` timeout, (2) async handler support via `pyo3_async_runtime` GIL-ref spawn returning a future that `.await` releases the GIL properly within Tokio, (3) a `HandlerMode` enum (single-sync, single-async, batch-sync, batch-async) that unifies the execution interface, and (4) batch result modeling where "full success" advances all offsets atomically and "full failure" routes all to retry/DLQ. Integration points are: `WorkerPool::worker_loop` for single-message processing, `OffsetTracker` for batch ack, and `QueueManager` for inflight tracking.
+KafPy's observability layer integrates three complementary systems: structured logging via the existing `tracing` facade, metrics via the `metrics` crate facade, and OpenTelemetry tracing via `tracing-opentelemetry`. The architecture follows a facade/abstraction pattern so users can wire their own backends. Key integration points are the `worker_loop` (handler invocation), `BatchAccumulator` (batch-level metrics), `ConsumerDispatcher` (Kafka-level metrics), and `QueueManager` (queue introspection).
 
-## System Overview
+## Existing Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                     ConsumerDispatcher                                │
-│  (ConsumerRunner + Dispatcher + RoutingChain — owns message stream)   │
-└──────────────────────────────┬───────────────────────────────────────┘
-                               │ spawns worker_loop(s) via tokio::spawn
-                               ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                         WorkerPool                                    │
-│  N Tokio tasks polling mpsc::Receiver<OwnedMessage>                   │
-│  Per worker: active_message tracking for graceful shutdown            │
-└──────────────┬─────────────────────────────────┬────────────────────┘
-               │                                 │
-        ┌──────▼──────┐                   ┌──────▼──────┐
-        │  worker 0   │                   │  worker N   │
-        │  (rx.recv)  │                   │  (rx.recv)  │
-        └──────┬──────┘                   └──────┬──────┘
-               │                                 │
-         ┌─────▼─────────────────────────────┐    │
-         │         worker_loop (tokio::select!)  │
-         │  1. poll mpsc receiver            │
-         │  2. invoke PythonHandler::invoke() │
-         │  3. executor.execute() for policy │
-         │  4. retry/DLQ routing on failure  │
-         │  5. offset_coordinator.record_ack()│
-         │  6. queue_manager.ack()            │
-         └─────┬─────────────────────────────┘
-               │                                 │
-     ┌─────────┴─────────┐            ┌──────────┴──────────┐
-     │   PythonHandler   │            │   AsyncPythonHandler│
-     │  (spawn_blocking) │            │  (pyo3-async-rt)   │
-     └───────────────────┘            └───────────────────┘
+ConsumerDispatcher
+    └── ConsumerRunner (Kafka stream)
+    └── Dispatcher
+            └── QueueManager (queue_depth, inflight atomics)
+                    └── HandlerEntry { sender, metadata }
+    └── RoutingChain (optional)
+
+WorkerPool
+    └── worker_loop / batch_worker_loop
+            └── PythonHandler (invoke_mode dispatch)
+            └── Executor (post-execution policy)
+            └── OffsetCoordinator (ack tracking)
+            └── RetryCoordinator (retry state)
+            └── DlqRouter + SharedDlqProducer
+    └── CancellationToken (shutdown)
+```
+
+**Current logging:** `tracing` facade with `tracing-subscriber` fmt layer. Structured fields via `tracing::info!`, `tracing::warn!`, `tracing::error!` macros scattered throughout `worker_loop`, `ConsumerDispatcher::run`, and `OffsetTracker`.
+
+**Current metrics:** None -- queue depth and inflight tracked via `AtomicUsize` but not exposed as metrics.
+
+---
+
+## Recommended Observability Architecture
+
+### System Overview
+
+```
++-------------------------------------------------------------------------+
+|                         KafPy Observability Layer                        |
++-------------------------------------------------------------------------+
+|                                                                          |
+|  +-------------------------------------------------------------------+  |
+|  |                    Metrics Recorder (Facade)                      |  |
+|  |  +----------+  +----------+  +----------+  +----------+           |  |
+|  |  | Handler  |  |  Batch   |  |  Kafka   |  | Worker   |           |  |
+|  |  | Metrics  |  | Metrics  |  | Metrics  |  |  Pool    |           |  |
+|  |  +----+-----+  +----+-----+  +----+-----+  +----+-----+           |  |
+|  |       |             |             |             |                  |  |
+|  |  +----+-------------+-------------+-------------+----+             |  |
+|  |  |              Metrics Trait Objects                |             |  |
+|  |  |     (Counter, Histogram, Gauge per handler)      |             |  |
+|  |  +----------------------+--------------------------+             |  |
+|  +--------------------------+---------------------------------------+  |
+|                             |                                               |
+|  +--------------------------+---------------------------------------+  |
+|  |         Tracing Layer     |  (tracing + tracing-opentelemetry)   |  |
+|  |  +-----------------------+------------------------+             |  |
+|  |  |              OpenTelemetry Spans                  |             |  |
+|  |  |  per message  |  per handler invoke  |  per batch |             |  |
+|  |  +-------------------------------------------------+             |  |
+|  +-------------------------------------------------------------------+  |
+|                                                                          |
+|  +-------------------------------------------------------------------+  |
+|  |                      Structured Log Sink                            |  |
+|  |         (tracing-subscriber Layer -> user-configured backend)       |  |
+|  +-------------------------------------------------------------------+  |
+|                                                                          |
++-------------------------------------------------------------------------+
 ```
 
 ### Component Responsibilities
 
 | Component | Responsibility | Implementation |
 |-----------|----------------|----------------|
-| `ConsumerDispatcher` | Owns consumer stream, routes to handler queues, pause/resume | `src/dispatcher/mod.rs` |
-| `Dispatcher` | Routes `OwnedMessage` to per-handler Tokio mpsc channels | `src/dispatcher/mod.rs` |
-| `QueueManager` | Tracks queue depth and inflight per handler via AtomicUsize | `src/dispatcher/queue_manager.rs` |
-| `WorkerPool` | Manages N Tokio workers, graceful shutdown via CancellationToken | `src/worker_pool/mod.rs` |
-| `PythonHandler` | Invokes sync Python callable via `spawn_blocking`, GIL only inside `Python::with_gil` | `src/python/handler.rs` |
-| `Executor` trait | Post-execution policy decisions (ack/retry/rejected) | `src/python/executor.rs` |
-| `OffsetTracker` | Per-TP BTreeSet-based out-of-order buffering, highest-contiguous algorithm | `src/coordinator/offset_tracker.rs` |
-| `RetryCoordinator` | 3-tuple (should_retry, should_dlq, delay) per message retry state | `src/coordinator/retry_coordinator.rs` |
-| `RoutingChain` | Chains routers: pattern → header → key → python → default | `src/routing/chain.rs` |
+| `Observable` trait | Defines metrics + tracing contract for all instrumented components | New trait in `src/observability/` |
+| `HandlerMetrics` | Per-handler: invocation count, latency histogram, error count, batch size | `metrics` crate counters + histograms |
+| `BatchMetrics` | Per-batch: size distribution, flush reason, accumulation time | `metrics` crate histograms |
+| `KafkaMetrics` | Kafka-level: consumer lag per TP, assignment size, committed vs HW | `rdkafka` stats callback + `metrics` gauges |
+| `WorkerPoolMetrics` | Pool-level: idle/active/busy workers, queue depths | `metrics` gauges |
+| `TracingLayer` | Bridges `tracing` spans to OpenTelemetry via `tracing-opentelemetry` | `tracing_subscriber::Layer` |
+| `MetricsLayer` | Exposes `metrics` recordings via OpenTelemetry Meter | `tracing-opentelemetry::MetricsLayer` |
+| `ObservableDecorator` | Attaches metrics + span context to `ExecutionContext` | New struct wrapping context |
 
-## Batch Handler Integration
+---
 
-### Batch Accumulation
+## New Components
 
-A `BatchExecutor` (or batch-mode variant of the executor) accumulates messages into a `Vec<OwnedMessage>` until either:
-- `max_batch_size` messages accumulated
-- `max_batch_wait` duration elapsed (Tokio `sleep` race against message arrival)
+### 1. `src/observability/mod.rs` -- Observability Module Root
 
 ```rust
-// New: batch accumulation layer
-pub struct BatchAccumulator {
-    messages: Vec<OwnedMessage>,
-    max_size: usize,
-    max_wait: Duration,
+//! Observability facade -- metrics, tracing, and structured logging.
+//!
+//! Provides a pluggable backend architecture:
+//! - Metrics: `metrics` crate facade (noop when no recorder installed)
+//! - Tracing: `tracing` facade + optional OpenTelemetry layer
+//! - Logging: `tracing-subscriber` layered on top of `tracing`
+
+pub mod metrics;
+pub mod tracing;
+pub mod facade;
+```
+
+### 2. `src/observability/metrics.rs` -- Metrics Domain
+
+```rust
+/// Per-handler metric instruments.
+/// All metrics use a "kafpy.handler." prefix with handler_id label.
+pub struct HandlerMetrics {
+    /// Number of handler invocations (success + error separately).
+    pub invocations: Counter,
+    /// Latency from message dispatch to execution complete.
+    pub latency_ms: Histogram,
+    /// Batch sizes observed at invocation time.
+    pub batch_size: Histogram,
+    /// Current inflight messages for this handler (gauge).
+    pub inflight: Gauge,
+    /// Queue depth at dispatch time.
+    pub queue_depth: Gauge,
 }
 
-impl BatchAccumulator {
-    pub async fn accumulate(&mut self, mut rx: mpsc::Receiver<OwnedMessage>) {
-        let timeout = tokio::time::sleep(self.max_wait);
-        tokio::pin!(timeout);
+/// Kafka-level metrics.
+/// Prefix: "kafpy.kafka."
+pub struct KafkaMetrics {
+    /// Consumer lag per topic-partition (high_watermark - committed_offset).
+    pub consumer_lag: IntGauge,
+    /// Number of assigned partitions.
+    pub assignment_size: Gauge,
+    /// Committed offset per topic-partition.
+    pub committed_offset: IntGauge,
+}
 
-        loop {
-            tokio::select! {
-                Some(msg) = rx.recv() => {
-                    self.messages.push(msg);
-                    if self.messages.len() >= self.max_size {
-                        return; // batch ready
-                    }
-                }
-                _ = &mut timeout => {
-                    return; // timer expired
-                }
-            }
-        }
-    }
+/// Worker pool metrics.
+/// Prefix: "kafpy.pool."
+pub struct WorkerPoolMetrics {
+    pub idle_workers: Gauge,
+    pub active_workers: Gauge,
+    pub busy_workers: Gauge,
 }
 ```
 
-### Queue Management Changes
+**Integration:** `HandlerMetrics` is created per `handler_id` via `Arc<MetricsGuard>` stored in `ExecutionContext`. The guard holds weak references; actual recording happens only if a global recorder is installed (facade pattern).
 
-For batch handlers, `queue_manager.ack()` needs a batch variant:
+### 3. `src/observability/tracing.rs` -- OpenTelemetry Tracing Integration
 
 ```rust
-// Current (single): queue_manager.ack(&topic, 1);
-// Batch needed:     queue_manager.ack_batch(&topic, batch_size);
+/// Initializes OpenTelemetry tracing with OTLP exporter.
+/// Call once at module init, before creating any consumers.
+pub fn init_otel_tracing(service_name: &str, endpoint: &str) -> Result<(), ObservabilityError> {
+    // 1. Build OTLP exporter (grpc-tonic)
+    // 2. Create SdkTracerProvider with batch processor
+    // 3. Create tracing-opentelemetry::layer()
+    // 4. Compose with existing tracing_subscriber layers
+    // 5. Set global tracer + propagator
+}
 
+/// Span names follow semantic conventions:
+/// - "kafpy.handler.invoke" -- handler execution
+/// - "kafpy.batch.invoke" -- batch execution
+/// - "kafpy.dlq.produce" -- DLQ produce
+/// - "kafpy.offset.commit" -- offset commit
+/// - "kafpy.dispatcher.dispatch" -- message dispatch
+```
+
+**Key insight:** `tracing-opentelemetry` `MetricsLayer` (with `metrics` feature) automatically converts specially-named `tracing` events to OpenTelemetry metrics. This bridges the `metrics` facade to OpenTelemetry without double-instrumentation.
+
+### 4. `src/observability/runtime.rs` -- Runtime Introspection
+
+```rust
+/// Exposes internal state for debugging/monitoring.
+/// Thread-safe snapshot of WorkerPool + QueueManager + OffsetTracker state.
+pub struct RuntimeSnapshot {
+    pub workers: Vec<WorkerState>,  // idle / active / busy
+    pub handlers: Vec<HandlerState>, // queue_depth, inflight, capacity
+    pub partitions: Vec<PartitionState>, // committed_offset, pending, failed
+}
+
+/// Python-callable via PyO3 so users can inspect state from Python.
+pub fn get_runtime_snapshot() -> Py<PyDict>;
+```
+
+---
+
+## Modified Components
+
+### 1. `ExecutionContext` (in `src/python/context.rs`)
+
+**Change:** Add optional metrics guard and span context.
+
+```rust
+pub struct ExecutionContext {
+    pub topic: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub worker_id: usize,
+    // NEW:
+    pub metrics: Option<Arc<HandlerMetrics>>,
+    pub span: Option<Span>,
+}
+```
+
+**Rationale:** `ExecutionContext` already flows through `worker_loop` and `batch_worker_loop`. Attaching metrics here means every handler invocation automatically gets instrumentation without changing call signatures.
+
+### 2. `worker_loop` (in `src/worker_pool/mod.rs`)
+
+**Change:** Record metrics at key points. Wrap handler invocation in a span.
+
+```rust
+async fn worker_loop(...) {
+    // At message pickup:
+    let span = tracer.span_builder("kafpy.handler.invoke")
+        .with_attribute("handler_id", handler_id.clone())
+        .with_attribute("topic", msg.topic.clone())
+        .with_attribute("partition", msg.partition)
+        .start(&tracer);
+
+    let result = handler.invoke_mode(&ctx, msg.clone()).instrument(span).await;
+
+    // After execution, record metrics:
+    metrics.latency_ms.record(elapsed_ms as f64, &[
+        KeyValue::new("handler_id", handler_id.clone()),
+        KeyValue::new("result", result.variant_name()),
+    ]);
+    metrics.invocations.increment(&[
+        KeyValue::new("handler_id", handler_id.clone()),
+        KeyValue::new("result", result.variant_name()),
+    ]);
+}
+```
+
+**Rationale:** `worker_loop` is the hot path. Instrumenting here covers all 4 `HandlerMode` variants since `invoke_mode` is the single dispatch point.
+
+### 3. `batch_worker_loop` (in `src/worker_pool/mod.rs`)
+
+**Change:** Record batch-size histogram and flush-reason counter.
+
+```rust
+// At flush:
+metrics.batch_size.record(batch.len() as f64, &[
+    KeyValue::new("handler_id", handler_id.clone()),
+    KeyValue::new("flush_reason", flush_reason.as_str()), // "size" | "deadline" | "shutdown"
+]);
+
+// Track accumulation time per partition:
+let accumulation_time_ms = deadline.map(|d| d.elapsed().as_millis() as f64).unwrap_or(0.0);
+metrics.accumulation_ms.record(accumulation_time_ms, &[
+    KeyValue::new("handler_id", handler_id.clone()),
+]);
+```
+
+### 4. `ConsumerDispatcher::run` (in `src/dispatcher/mod.rs`)
+
+**Change:** Add dispatch span with topic/partition/offset attributes.
+
+```rust
+// Around each send_with_policy call:
+let span = tracer.span_builder("kafpy.dispatcher.dispatch")
+    .with_attribute("topic", msg.topic.clone())
+    .with_attribute("partition", msg.partition)
+    .with_attribute("offset", msg.offset)
+    .start(&tracer);
+
+let (outcome, pause_signal) = self.dispatcher.send_with_policy_and_signal(msg, policy)
+    .instrument(span).await;
+```
+
+### 5. `QueueManager` (in `src/dispatcher/queue_manager.rs`)
+
+**Change:** Expose queue depth and inflight as `metrics::Gauge` readings via periodic sweep.
+
+```rust
 impl QueueManager {
-    pub fn ack_batch(&self, topic: &str, count: usize) {
-        // Decrement inflight by count atomically
-        // Decrement queue_depth by count atomically
+    /// Returns snapshot of all handler queue states for metrics recording.
+    pub fn queue_snapshots(&self) -> Vec<HandlerQueueSnapshot> {
+        let guard = self.handlers.lock();
+        guard.iter().map(|(id, entry)| HandlerQueueSnapshot {
+            handler_id: id.clone(),
+            queue_depth: entry.metadata.get_queue_depth(),
+            inflight: entry.metadata.get_inflight(),
+            capacity: entry.metadata.capacity,
+        }).collect()
     }
 }
 ```
 
-### Integration with Existing Queue System
+**Rationale:** `QueueManager` already has all this data in atomic counters. Exposing snapshots enables a periodic metrics recorder (e.g., every 10s) to update gauges without adding polling infrastructure to the hot path.
 
-Batch handlers register via the same `register_handler()` flow. The `mpsc::Receiver<OwnedMessage>` feeds into a batch accumulator. The `BackpressurePolicy` still applies per-message at dispatch time (DISP-08/DISP-15), not at batch time.
+### 6. `OffsetTracker` (in `src/coordinator/offset_tracker.rs`)
 
-**Key insight:** The queue depth and inflight counters in `QueueManager` track individual messages, not batches. When a batch is dispatched, the channel sends N messages. The semaphore permit (DISP-15) must be acquired N times for N messages.
-
-### Batch-Size Backpressure Interaction
-
-When `max_batch_size=50` and queue has only 10 messages, the accumulator waits for `max_batch_wait` timeout. Backpressure still applies to dispatch — if queue is full at dispatch time, `send_with_policy` returns `Backpressure` before the batch accumulator ever sees the messages.
-
-## Async Python Handler Integration
-
-### Tokio Runtime Compatibility
-
-The Tokio runtime is already running (the whole system is Tokio-based). Async Python handlers require `pyo3-async-runtimes` which provides a `GILRef` type that can be `.await`ed to safely access Python objects from async contexts.
-
-The critical requirement: **GIL must only be held within the `.await` window**, not across yield points.
+**Change:** Expose committed offset + consumer lag via `KafkaMetrics`.
 
 ```rust
-// Current sync handler (PythonHandler::invoke):
-tokio::task::spawn_blocking(move || {
-    Python::with_gil(|py| {
-        // GIL held for entire callback
-        callback.call1(py, (py_msg,))
-    })
-}).await
-
-// Async handler approach (pyo3-async-runtimes):
-// GIL acquired inside GILRef await, released between yield points
-let gil_ref = GILRef::acquire().await;
-let result = gil_ref.python(|py| {
-    callback.call1(py, (py_msg,))
-}).await;
-drop(gil_ref); // GIL released here
-```
-
-### Integration Points
-
-Async handlers integrate at the `PythonHandler` / new `AsyncPythonHandler` level. The `worker_loop` remains unchanged — it awaits `handler.invoke()`. The difference is that async handlers yield to Tokio while waiting for GIL, allowing other tasks to run.
-
-**Runtime requirement:** `pyo3-async-runtimes` `GILRef::acquire()` requires a Tokio context. Since `worker_loop` runs inside Tokio tasks, this is satisfied.
-
-### Async Handler Registration
-
-Python coroutines are stored as `Py<PyAny>` (same as sync callables). The runtime detects whether the callable is a coroutine via `inspect.iscoroutinefunction()` and routes to the appropriate invoker:
-
-```rust
-pub enum HandlerMode {
-    SyncSingle(Arc<PythonHandler>),
-    AsyncSingle(Arc<AsyncPythonHandler>),
-    BatchSync(Arc<BatchSyncHandler>),
-    BatchAsync(Arc<BatchAsyncHandler>),
+/// Periodic snapshot for metrics -- called by a background task.
+/// Returns (topic, partition, committed_offset, high_watermark).
+pub fn offset_snapshots(&self) -> Vec<PartitionOffsetSnapshot> {
+    // Iterate all partitions, look up high watermark from runner
 }
 ```
 
-## Offset Commit Flow Changes
+**Note:** High watermark requires `ConsumerRunner::position()` or stats callback. `OffsetTracker` already holds `Arc<ConsumerRunner>` for commits; expose it for lag calculation.
 
-### Single-Message Commit (Existing)
+### 7. `PythonHandler` (in `src/python/handler.rs`)
 
-```
-handler.invoke() → ExecutionResult::Ok
-    → retry_coordinator.record_success()
-    → offset_coordinator.record_ack()  // BTreeSet insert, advance contiguous cursor
-    → queue_manager.ack()               // inflight--
-    → (later) should_commit() → true → store_offset() + commit()
-```
+**Change:** No structural change. The `invoke_mode` method is already the instrumented entry point from `worker_loop`. Metrics recording happens at the `worker_loop` call site, not inside `PythonHandler` itself.
 
-### Batch Commit Requirements
+### 8. `lib.rs` / `logging.rs`
 
-For batch handlers, the commit semantics must preserve "all or nothing" at the batch level:
-
-```
-BatchExecutionResult::AllSuccess(batch)
-    → for each msg in batch: offset_coordinator.record_ack()  // N acks
-    → queue_manager.ack_batch(topic, N)                      // N inflight decrements
-
-BatchExecutionResult::AllFailure(batch)
-    → for each msg in batch: offset_coordinator.mark_failed()
-    → retry_coordinator.record_failure_batch() // retry state per message
-    → DLQ routing per message
-```
-
-**Critical constraint:** `OffsetTracker` already has per-offset tracking via BTreeSet. For batch, each message in the batch gets its own ack recorded individually. The highest-contiguous algorithm works unchanged — batch success advances offsets the same as single success.
-
-**Partial batch failure** (some messages succeed, some fail) is modeled as two sub-batches: success sub-batch acks normally, failure sub-batch goes through retry/DLQ.
-
-## New Components Required
-
-### 1. `BatchAccumulator` (src/batch/accumulator.rs)
-
-Accumulates messages into batches. Plugs into `WorkerPool` as an alternative polling strategy.
-
-### 2. `BatchHandler` (src/batch/handler.rs)
-
-Invokes sync Python handler on a `Vec<OwnedMessage>`. Returns `BatchExecutionResult`.
-
-### 3. `AsyncPythonHandler` (src/python/async_handler.rs)
-
-Invokes async Python coroutine via `pyo3-async-runtimes` `GILRef`. Returns `Result<ExecutionResult, HandlerError>`.
-
-### 4. `BatchExecutionResult` (src/batch/result.rs)
+**Change:** Refactor `Logger::init()` to accept an optional `ObservabilityConfig` that configures OTLP, Prometheus, or user-provided exporters.
 
 ```rust
-pub enum BatchExecutionResult {
-    AllSuccess { count: usize },
-    AllFailure { count: usize, results: Vec<ExecutionResult> },
-    PartialFailure { successes: usize, failures: Vec<ExecutionResult> },
+/// Observability configuration -- passed to Logger::init() or a new Observability::init()
+pub struct ObservabilityConfig {
+    pub service_name: String,
+    pub otlp_endpoint: Option<String>,      // OTLP gRPC endpoint
+    pub prometheus_port: Option<u16>,        // Prometheus scrape endpoint
+    pub log_format: LogFormat,              // json / pretty / simple
+    pub log_level: String,                   // env-filter string
 }
 ```
 
-### 5. `HandlerMode` enum (src/handler/mode.rs)
-
-Unifies execution interface across all four modes (single-sync, single-async, batch-sync, batch-async).
-
-### 6. `AsyncExecutor` trait (src/python/async_executor.rs)
-
-Post-execution policy for async handlers (extends `Executor`).
+---
 
 ## Data Flow Changes
 
-### Single-Message Flow (unchanged)
+### Message Flow with Observability
 
 ```
+Kafka Message
+    |
+    v
 ConsumerDispatcher::run()
-  → stream.next() → OwnedMessage
-  → dispatcher.send_with_policy() → DispatchOutcome
-  → WorkerPool::worker_loop() receives message
-  → handler.invoke(&ctx, msg) → ExecutionResult
-  → executor.execute() → ExecutorOutcome
-  → [on Ok] retry_coordinator.record_success(), offset_coordinator.record_ack(), queue_manager.ack()
-  → [on Error] retry_coordinator.record_failure() → (should_retry, should_dlq, delay)
+    | span: "kafpy.dispatcher.dispatch" {topic, partition, offset}
+    v
+Dispatcher::send_with_policy()
+    | record: queue_depth gauge (snapshot)
+    v
+QueueManager -> HandlerChannel
+    |
+    v
+worker_loop picks up message
+    | span: "kafpy.handler.invoke" {handler_id, topic, partition}
+    | record: latency_ms start_time
+    v
+PythonHandler::invoke_mode()
+    |
+    +-- SingleSync -> invoke() -> spawn_blocking -> Python callback
+    +-- SingleAsync -> invoke_async() -> PythonAsyncFuture
+    +-- BatchSync -> invoke_batch() -> spawn_blocking
+    +-- BatchAsync -> invoke_batch_async() -> PythonAsyncFuture
+    |
+    v
+ExecutionResult
+    | span: set_status(Ok | Error)
+    | record: latency_ms (stopwatch), invocations counter, batch_size histogram
+    v
+Executor::execute() -> OffsetCoordinator::record_ack / record_failure
+    |
+    v
+OffsetTracker
+    | span: "kafpy.offset.commit" (at commit time)
+    | record: committed_offset gauge, consumer_lag gauge
+    v
+QueueManager::ack()
+    | record: inflight gauge (decrement)
+    v
+DLQ routing if needed
+    | span: "kafpy.dlq.produce"
 ```
 
-### Batch Flow (new)
+---
 
+## Architectural Patterns
+
+### Pattern 1: Metrics Facade with Lazy Initialization
+
+**What:** Use the `metrics` crate facade. Instrumented code records through `metrics::counter!()`, `metrics::histogram!()` macros. Actual recording happens only if a global recorder is installed.
+
+**When:** For library code like KafPy where you don't know what backend the user will choose.
+
+**Trade-offs:**
+- Pro: Zero overhead when no recorder (noop implementation is atomic load + compare)
+- Pro: Users choose their own backend (Prometheus, OpenTelemetry, Datadog, etc.)
+- Con: Labels (handler_id, topic, partition) must be provided at every call site
+
+**Example:**
+```rust
+// In worker_loop:
+metrics::histogram!("kafpy.handler.latency_ms", elapsed_ms as f64, "handler_id" => handler_id.clone());
+
+// At startup (user code):
+metrics::_recorder(MetricsRecorder::OpenTelemetry(meter));
 ```
-ConsumerDispatcher::run() [unchanged]
-  → WorkerPool::batch_worker_loop() receives message
-  → BatchAccumulator::accumulate() waits for size or timeout
-  → BatchHandler::invoke(batch) → BatchExecutionResult
-  → [on AllSuccess] for each: offset_coordinator.record_ack(), queue_manager.ack()
-  → [on AllFailure] for each: offset_coordinator.mark_failed(), retry_coordinator.record_failure(), DLQ
-  → [on PartialFailure] split and handle each sub-batch
+
+### Pattern 2: Tracing Span Hierarchy
+
+**What:** Parent span = dispatch, child span = handler invocation, nested child = Python callback. `tracing`'s `instrument()` combinator propagates context automatically.
+
+**When:** For correlating metrics across async boundaries.
+
+**Trade-offs:**
+- Pro: Automatic span propagation through `spawn_blocking` and `tokio::select!`
+- Pro: `tracing-opentelemetry` `MetricsLayer` converts events to metrics without double instrumentation
+- Con: Span lifetime must outlive the async operation -- use `Span::current()` for spawned tasks
+
+### Pattern 3: Snapshot-Based Polling for Gauge Metrics
+
+**What:** Gauge metrics (queue depth, inflight, worker state) are recorded by periodically sweeping the source of truth and recording the snapshot. Not updated inline on every operation.
+
+**When:** For high-frequency counters that don't need per-event granularity (queue depths, pool state).
+
+**Trade-offs:**
+- Pro: No performance impact on hot path (atomics already exist, no extra work)
+- Con: Slight staleness (10s polling interval typical)
+- Con: Requires background task or periodic callback
+
+**Example:**
+```rust
+// Background task every 10s:
+tokio::spawn(async {
+    let mut interval = tokio::time::interval(Duration::from_secs(10));
+    loop {
+        interval.tick().await;
+        for snapshot in queue_manager.queue_snapshots() {
+            GAUGE_QUEUE_DEPTH.set(snapshot.queue_depth as f64, &["handler_id" => snapshot.handler_id]);
+        }
+    }
+});
 ```
 
-### Async Flow (new)
+### Pattern 4: OpenTelemetry Layer as Backend Bridge
 
-```
-ConsumerDispatcher::run() [unchanged]
-  → WorkerPool::worker_loop() receives message
-  → AsyncPythonHandler::invoke(&ctx, msg) →.await→ ExecutionResult
-  → [same post-execution flow as single-message]
-```
+**What:** `tracing-opentelemetry::layer()` + `SdkTracerProvider` + OTLP exporter bridges `tracing` spans to any OTLP-compatible backend (Jaeger, Tempo, CloudWatch, etc.). `MetricsLayer` bridges `tracing` events named `otel.*` to OpenTelemetry metrics.
 
-## Key Architectural Decisions
+**When:** For zero-vendor lock-in observability with a standard protocol.
 
-### Decision 1: Batch accumulation at worker level, not dispatcher level
+**Trade-offs:**
+- Pro: Industry standard, many compatible backends
+- Pro: Single instrumented codebase produces traces + metrics + logs
+- Con: OTLP overhead (batch processing mitigates this)
+- Con: Semantic conventions require discipline
 
-The dispatcher dispatches individual `OwnedMessage` values as it does today. The batch accumulation happens inside the worker task after dispatch, using a `tokio::select!` loop that races `rx.recv()` against a timeout.
-
-**Why:** Minimizes changes to the dispatcher/queue infrastructure. Backpressure is still per-message at dispatch time.
-
-### Decision 2: Async handler invoked as async fn inside worker loop
-
-The `worker_loop` `async fn` can `.await` an async handler directly. `spawn_blocking` is only used for sync handlers.
-
-**Why:** Keeps the worker loop as the central control point for both sync and async handlers.
-
-### Decision 3: Batch result model is pessimistic (all-or-nothing by default)
-
-Batch execution returns `AllSuccess`, `AllFailure`, or `PartialFailure`. `PartialFailure` splits into success/failure sub-batches processed independently.
-
-**Why:** Per-message outcomes within a batch add complexity. Start with all-or-nothing semantics and defer per-message granularity to future work.
-
-### Decision 4: GIL minimal usage principle extends to async
-
-For async handlers, GIL is held only inside the `gil_ref.python()` closure (within an `.await`), not across yield points. `pyo3-async-runtimes` manages this via `GILRef`.
-
-**Why:** Consistent with EXEC-06 (GIL minimal usage — no GIL held across Rust-side orchestration).
-
-### Decision 5: Handler mode registered at handler creation time
-
-When registering a handler, specify `HandlerMode` (single-sync, single-async, batch-sync, batch-async). The `WorkerPool` constructs the appropriate handler variant at startup.
-
-**Why:** Avoids runtime type checking on every message. Mode is a construction-time decision.
+---
 
 ## Anti-Patterns to Avoid
 
-### Anti-Pattern 1: Batch accumulation blocking consumer pause
+### Anti-Pattern 1: Double Instrumentation
 
-If batch accumulation holds the message channel receiver until timeout, it blocks `ConsumerDispatcher::run()` from processing pause/resume signals.
+**What:** Instrumenting the same operation both with `metrics` counters AND with `tracing` events that carry metric names for `MetricsLayer`.
 
-**Fix:** Use `tokio::select!` with a cancel token branch so pause/resume can interrupt batch waiting.
+**Why:** Causes inflated counts or confusing data when both paths are active.
 
-### Anti-Pattern 2: GIL held across async yield points
+**Do this instead:** Choose one -- use `metrics` facade for numerical data, use `tracing` for categorical events (error types, retry reasons, routing decisions). `MetricsLayer` converts the latter to metrics automatically if you follow naming conventions.
 
-If async handler holds GIL across `.await`, it blocks all Python execution in all threads.
+### Anti-Pattern 2: Blocking in Span Enter/Exit
 
-**Fix:** Use `pyo3-async-runtimes` `GILRef::acquire().await` pattern where GIL is acquired and released within await boundaries.
+**What:** Performing I/O or expensive computation inside `Span::enter()` guards.
 
-### Anti-Pattern 3: Batch size creates dead end at backpressure boundary
+**Why:** `Span::enter()` is synchronous. Blocking there blocks the async executor.
 
-If `max_batch_size=100` and queue depth is 100 when backpressure kicks in, the batch will never fill and the accumulator waits indefinitely.
+**Do this instead:** Create spans using `tracer.span_builder()` + `.start()` outside the async task. Use `.instrument(future)` to attach the span to an async operation.
 
-**Fix:** `max_batch_wait` provides a timeout escape hatch. Also consider: if `max_batch_size > queue_capacity / 2`, warn or error at registration time.
+### Anti-Pattern 3: Storing Metric State in Instrumented Components
 
-### Anti-Pattern 4: Async handler called with spawn_blocking
+**What:** Adding `metrics::Counter` fields directly to `PythonHandler`, `QueueManager`, etc.
 
-If async handlers are called via `spawn_blocking`, they block a Tokio worker thread for the duration, defeating the purpose of async.
+**Why:** Pollutes domain structs with observability concerns. Metrics should be external and looked up by ID.
 
-**Fix:** Call async handlers directly with `.await` in the worker loop. `spawn_blocking` is only for sync handlers.
+**Do this instead:** Use the `metrics` global facade. Components don't know about metrics. Call sites use `metrics::histogram!()` with labels.
+
+### Anti-Pattern 4: Missing Span Context on Spawned Tasks
+
+**What:** Spawning a `tokio::spawn` without attaching the current span context.
+
+**Why:** Child tasks appear as orphan spans in the trace.
+
+**Do this instead:** Use `tracing::TaskContext::current()` or `tracing::future::Instrument::instrument(spawned, Span::current())`.
+
+---
+
+## Build Order
+
+### Phase 1: Metrics Infrastructure (Foundation)
+1. Add `metrics` crate dependency
+2. Create `src/observability/metrics.rs` with `HandlerMetrics`, `KafkaMetrics`, `WorkerPoolMetrics` structs
+3. Add `MetricsGuard` registry that creates instruments lazily per handler_id
+4. Modify `worker_loop` to record `latency_ms` histogram and `invocations` counter at invocation result
+5. Add `QueueManager::queue_snapshots()` for polling-based gauge updates
+
+**Rationale:** Metrics are the most impactful observability signal. Start here to establish the recording pattern before adding tracing.
+
+### Phase 2: Tracing Infrastructure
+1. Add `opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp` dependencies
+2. Create `src/observability/tracing.rs` with `init_otel_tracing()` function
+3. Add `tracing-opentelemetry::layer()` to subscriber stack in `Logger::init()`
+4. Wrap `worker_loop` handler invocation in `span.instrument(future)`
+5. Add dispatch span in `ConsumerDispatcher::run()`
+
+**Rationale:** Tracing spans provide correlation context for metrics. The span hierarchy (dispatch -> handler -> offset commit) enables distributed-tracing-style analysis.
+
+### Phase 3: Kafka-Level Metrics
+1. Wire `rdkafka` stats callback to `KafkaMetrics` consumer_lag and assignment_size gauges
+2. Add `OffsetTracker::offset_snapshots()` for committed_offset per TP
+3. Implement background polling task (10s interval) to update lag gauges
+
+**Rationale:** Consumer lag is the most important Kafka-specific metric. Requires `rdkafka` integration.
+
+### Phase 4: Runtime Introspection API
+1. Create `src/observability/runtime.rs` with `RuntimeSnapshot` struct
+2. Add `get_runtime_snapshot()` PyO3 function
+3. Expose worker pool state (idle/active/busy) via `WorkerPoolMetrics`
+
+**Rationale:** Python users need runtime visibility. PyO3 bridge enables `consumer.runtime_snapshot()` API.
+
+### Phase 5: Structured Logging Refinement
+1. Refactor `logging.rs` into `ObservabilityConfig` with OTLP + Prometheus + log format options
+2. Ensure all `tracing::info!` / `warn!` / `error!` calls in hot paths use structured fields
+3. Add `LogFormat::Json` with OTLP-compatible field names
+
+**Rationale:** Structured logs complement metrics/tracing. Ensure fields are consistent across all three signals.
+
+---
 
 ## Integration Points Summary
 
-| Point | What's There Today | What's Needed |
-|-------|---------------------|---------------|
-| `WorkerPool::worker_loop` | Single-message polling and processing | Add `batch_worker_loop` variant; add mode enum dispatch |
-| `PythonHandler::invoke` | Sync only via `spawn_blocking` | Add `AsyncPythonHandler::invoke` using `GILRef` |
-| `Executor` trait | Single-message post-execution policy | Add `BatchExecutor` for batch-level policy |
-| `OffsetTracker` | Per-offset BTreeSet, `record_ack(offset)` | Unchanged — batch acks call `record_ack` per message |
-| `QueueManager` | `ack(topic, 1)` | Add `ack_batch(topic, N)` |
-| `Dispatcher` | Per-topic channel, backpressure policy | Unchanged |
-| `ConsumerDispatcher` | Routes to handler queues | Unchanged |
-| `RetryCoordinator` | Per-message 3-tuple state | Unchanged for sync; needs batch variant for batch handlers |
+| Component | What Changes | Metrics Recorded | Tracing Spans |
+|-----------|-------------|------------------|---------------|
+| `ConsumerDispatcher::run` | Dispatch span added | None (Kafka metrics handle this) | `kafpy.dispatcher.dispatch` |
+| `Dispatcher::send_with_policy` | Snapshot recording | `queue_depth` gauge | None |
+| `worker_loop` | Latency + count recording, span wrapping | `latency_ms`, `invocations`, `batch_size` | `kafpy.handler.invoke` |
+| `batch_worker_loop` | Flush reason recording, accumulation time | `batch_size`, flush reason counter, `accumulation_ms` | `kafpy.batch.invoke` |
+| `QueueManager` | `queue_snapshots()` method added | `inflight`, `queue_depth` gauges | None |
+| `OffsetTracker` | `offset_snapshots()` method added | `committed_offset`, `consumer_lag` gauges | `kafpy.offset.commit` |
+| `ExecutionContext` | `metrics: Option<Arc<HandlerMetrics>>` field | Carried through call chain | Span context field |
+| `PythonHandler` | No change (instrumented at call site) | -- | -- |
+| `Logger::init` | Refactored to `ObservabilityConfig` | None | Sets up global tracer |
 
-## Confidence Assessment
-
-| Area | Level | Notes |
-|------|-------|-------|
-| Batch integration with queue management | MEDIUM | Confirmed queue/inflight are per-message counters. Batch ack needs `ack_batch`. OffsetTracker unchanged. |
-| Async handler with Tokio | MEDIUM | `pyo3-async-runtimes` GILRef pattern is correct but not verified against KafPy's specific Tokio version. Requires verification. |
-| Architecture of new components | MEDIUM | Structural recommendations are sound. BatchAccumulator timing details need implementation verification. |
-| GIL usage for async | MEDIUM | Pattern understood from `pyo3-async-runtimes` docs. Needs Context7 verification for exact API. |
+---
 
 ## Sources
 
-- [pyo3-async-runtimes GILRef documentation](https://docs.rs/pyo3-async-runtimes/) — async Python handler GIL management
-- [Tokio select! documentation](https://tokio.rs/tokio/tutorial/select) — batch accumulation timing
-- KafPy existing implementation — `src/python/handler.rs`, `src/worker_pool/mod.rs`, `src/coordinator/offset_tracker.rs`
+- [OpenTelemetry Rust Getting Started](https://opentelemetry.io/docs/languages/rust/getting-started/) -- SDK initialization, tracer provider
+- [OpenTelemetry Rust Exporters](https://opentelemetry.io/docs/languages/rust/exporters/) -- OTLP exporter setup
+- [tracing crate docs](https://docs.rs/tracing/latest/tracing/) -- Span, instrument macro, semantic conventions
+- [tracing-subscriber Layer docs](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/layer/) -- layer composition, filtering
+- [tracing-opentelemetry docs](https://docs.rs/tracing-opentelemetry/latest/tracing_opentelemetry/) -- OpenTelemetryLayer, MetricsLayer
+- [opentelemetry_sdk metrics docs](https://docs.rs/opentelemetry_sdk/latest/opentelemetry_sdk/metrics/) -- Meter, Counter, Histogram, SdkMeterProvider
+- [metrics crate docs](https://docs.rs/metrics/latest/metrics/) -- Counter, Gauge, Histogram, Recorder trait, facade pattern
+
+---
+
+*Architecture research for: KafPy Observability Layer*
+*Researched: 2026-04-18*
