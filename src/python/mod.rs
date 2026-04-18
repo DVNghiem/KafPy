@@ -13,6 +13,7 @@
 //! - Phase 9-02: PythonHandler (spawn_blocking invoke) [pending]
 //! - Phase 10: WorkerPool [Phase 10]
 
+pub mod async_bridge;
 pub mod context;
 pub mod execution_result;
 pub mod executor;
