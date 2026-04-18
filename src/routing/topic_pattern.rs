@@ -37,12 +37,16 @@ impl TopicPatternRouter {
         let mut compiled = Vec::with_capacity(rules.len());
         for rule in &rules {
             let cp = match rule.pattern_type {
-                PatternType::Glob => CompiledPattern::Glob(
-                    Pattern::new(&rule.pattern).map_err(|e| PatternError::InvalidGlob(rule.pattern.clone(), e.to_string()))?,
-                ),
-                PatternType::Regex => CompiledPattern::Regex(
-                    Regex::new(&rule.pattern).map_err(|e| PatternError::InvalidRegex(rule.pattern.clone(), e.to_string()))?,
-                ),
+                PatternType::Glob => {
+                    CompiledPattern::Glob(Pattern::new(&rule.pattern).map_err(|e| {
+                        PatternError::InvalidGlob(rule.pattern.clone(), e.to_string())
+                    })?)
+                }
+                PatternType::Regex => {
+                    CompiledPattern::Regex(Regex::new(&rule.pattern).map_err(|e| {
+                        PatternError::InvalidRegex(rule.pattern.clone(), e.to_string())
+                    })?)
+                }
             };
             compiled.push(cp);
         }
@@ -122,33 +126,49 @@ mod tests {
     #[test]
     fn glob_exact_match() {
         let router = glob_router(&[("events", "handler1")]);
-        assert!(matches!(router.route(&ctx("events")), RoutingDecision::Route(id) if id == "handler1"));
+        assert!(
+            matches!(router.route(&ctx("events")), RoutingDecision::Route(id) if id == "handler1")
+        );
     }
 
     #[test]
     fn glob_wildcard_match() {
         let router = glob_router(&[("events.*", "handler1")]);
-        assert!(matches!(router.route(&ctx("events.us")), RoutingDecision::Route(id) if id == "handler1"));
-        assert!(matches!(router.route(&ctx("events.eu")), RoutingDecision::Route(id) if id == "handler1"));
+        assert!(
+            matches!(router.route(&ctx("events.us")), RoutingDecision::Route(id) if id == "handler1")
+        );
+        assert!(
+            matches!(router.route(&ctx("events.eu")), RoutingDecision::Route(id) if id == "handler1")
+        );
     }
 
     #[test]
     fn glob_no_match_defer() {
         let router = glob_router(&[("events.*", "handler1")]);
-        assert!(matches!(router.route(&ctx("other")), RoutingDecision::Defer));
+        assert!(matches!(
+            router.route(&ctx("other")),
+            RoutingDecision::Defer
+        ));
     }
 
     #[test]
     fn glob_first_match_wins() {
         let router = glob_router(&[("events.*", "handler1"), ("events.us", "handler2")]);
-        assert!(matches!(router.route(&ctx("events.us")), RoutingDecision::Route(id) if id == "handler1"));
+        assert!(
+            matches!(router.route(&ctx("events.us")), RoutingDecision::Route(id) if id == "handler1")
+        );
     }
 
     #[test]
     fn regex_match() {
         let router = regex_router(&[(r"^events\..+$", "handler1")]);
-        assert!(matches!(router.route(&ctx("events.us")), RoutingDecision::Route(id) if id == "handler1"));
-        assert!(matches!(router.route(&ctx("events")), RoutingDecision::Defer));
+        assert!(
+            matches!(router.route(&ctx("events.us")), RoutingDecision::Route(id) if id == "handler1")
+        );
+        assert!(matches!(
+            router.route(&ctx("events")),
+            RoutingDecision::Defer
+        ));
     }
 
     #[test]

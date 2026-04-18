@@ -99,7 +99,9 @@ impl RoutingRuleBuilder {
 
     /// Builds the RoutingRule, or returns an error if handler_id is not set.
     pub fn build(self) -> Result<RoutingRule, RoutingRuleBuildError> {
-        let handler_id = self.handler_id.ok_or(RoutingRuleBuildError::MissingHandler)?;
+        let handler_id = self
+            .handler_id
+            .ok_or(RoutingRuleBuildError::MissingHandler)?;
 
         let topic_rule = self.topic_pattern.map(|pattern| TopicRule {
             pattern,

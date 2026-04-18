@@ -41,10 +41,19 @@ pub struct RoutingChain {
 impl std::fmt::Debug for RoutingChain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RoutingChain")
-            .field("topic_router", &self.topic_router.as_ref().map(|_| "Some(..)"))
-            .field("header_router", &self.header_router.as_ref().map(|_| "Some(..)"))
+            .field(
+                "topic_router",
+                &self.topic_router.as_ref().map(|_| "Some(..)"),
+            )
+            .field(
+                "header_router",
+                &self.header_router.as_ref().map(|_| "Some(..)"),
+            )
             .field("key_router", &self.key_router.as_ref().map(|_| "Some(..)"))
-            .field("python_router", &self.python_router.as_ref().map(|_| "Some(..)"))
+            .field(
+                "python_router",
+                &self.python_router.as_ref().map(|_| "Some(..)"),
+            )
             .field("default_handler", &self.default_handler)
             .finish()
     }
@@ -192,9 +201,15 @@ mod tests {
     #[test]
     fn first_non_defer_wins() {
         let chain = RoutingChain::new()
-            .with_topic_router(MockRouter { decision: RoutingDecision::Drop })
-            .with_header_router(MockRouter { decision: RoutingDecision::Route("header-handler".into()) })
-            .with_key_router(MockRouter { decision: RoutingDecision::Route("key-handler".into()) })
+            .with_topic_router(MockRouter {
+                decision: RoutingDecision::Drop,
+            })
+            .with_header_router(MockRouter {
+                decision: RoutingDecision::Route("header-handler".into()),
+            })
+            .with_key_router(MockRouter {
+                decision: RoutingDecision::Route("key-handler".into()),
+            })
             .with_default_handler("default".into());
 
         // TopicRouter returns Drop — non-Defer, chain stops
@@ -204,20 +219,34 @@ mod tests {
     #[test]
     fn defer_continues_chain() {
         let chain = RoutingChain::new()
-            .with_topic_router(MockRouter { decision: RoutingDecision::Defer })
-            .with_header_router(MockRouter { decision: RoutingDecision::Route("header-handler".into()) })
-            .with_key_router(MockRouter { decision: RoutingDecision::Route("key-handler".into()) })
+            .with_topic_router(MockRouter {
+                decision: RoutingDecision::Defer,
+            })
+            .with_header_router(MockRouter {
+                decision: RoutingDecision::Route("header-handler".into()),
+            })
+            .with_key_router(MockRouter {
+                decision: RoutingDecision::Route("key-handler".into()),
+            })
             .with_default_handler("default".into());
 
-        assert!(matches!(chain.route(&ctx()), RoutingDecision::Route(id) if id == "header-handler"));
+        assert!(
+            matches!(chain.route(&ctx()), RoutingDecision::Route(id) if id == "header-handler")
+        );
     }
 
     #[test]
     fn all_defer_returns_default() {
         let chain = RoutingChain::new()
-            .with_topic_router(MockRouter { decision: RoutingDecision::Defer })
-            .with_header_router(MockRouter { decision: RoutingDecision::Defer })
-            .with_key_router(MockRouter { decision: RoutingDecision::Defer })
+            .with_topic_router(MockRouter {
+                decision: RoutingDecision::Defer,
+            })
+            .with_header_router(MockRouter {
+                decision: RoutingDecision::Defer,
+            })
+            .with_key_router(MockRouter {
+                decision: RoutingDecision::Defer,
+            })
             .with_default_handler("my-default".into());
 
         assert!(matches!(chain.route(&ctx()), RoutingDecision::Route(id) if id == "my-default"));
@@ -227,7 +256,9 @@ mod tests {
     fn skips_none_routers() {
         // No topic or header router, only key + default
         let chain = RoutingChain::new()
-            .with_key_router(MockRouter { decision: RoutingDecision::Route("key-handler".into()) })
+            .with_key_router(MockRouter {
+                decision: RoutingDecision::Route("key-handler".into()),
+            })
             .with_default_handler("default".into());
 
         assert!(matches!(chain.route(&ctx()), RoutingDecision::Route(id) if id == "key-handler"));
@@ -249,9 +280,21 @@ mod tests {
         }
 
         let chain = RoutingChain::new()
-            .with_topic_router(TracingRouter("pattern", RoutingDecision::Defer, Arc::clone(&calls2)))
-            .with_header_router(TracingRouter("header", RoutingDecision::Defer, Arc::clone(&calls2)))
-            .with_key_router(TracingRouter("key", RoutingDecision::Route("final".into()), Arc::clone(&calls2)))
+            .with_topic_router(TracingRouter(
+                "pattern",
+                RoutingDecision::Defer,
+                Arc::clone(&calls2),
+            ))
+            .with_header_router(TracingRouter(
+                "header",
+                RoutingDecision::Defer,
+                Arc::clone(&calls2),
+            ))
+            .with_key_router(TracingRouter(
+                "key",
+                RoutingDecision::Route("final".into()),
+                Arc::clone(&calls2),
+            ))
             .with_default_handler("default".into());
 
         chain.route(&ctx());

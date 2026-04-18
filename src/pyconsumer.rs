@@ -112,19 +112,25 @@ impl Consumer {
                     .values()
                     .next()
                     .expect("at least one handler must be registered");
-                Arc::new(PythonHandler::new(first_handler.clone(), Some(default_retry_policy), crate::python::handler::HandlerMode::SingleSync, None))
+                Arc::new(PythonHandler::new(
+                    first_handler.clone(),
+                    Some(default_retry_policy),
+                    crate::python::handler::HandlerMode::SingleSync,
+                    None,
+                ))
             };
 
             let executor_arc: Arc<dyn Executor> = Arc::new(DefaultExecutor::default());
             let queue_manager_arc = dispatcher.queue_manager();
-            let retry_coordinator = std::sync::Arc::new(crate::coordinator::RetryCoordinator::new(&rust_config));
+            let retry_coordinator =
+                std::sync::Arc::new(crate::coordinator::RetryCoordinator::new(&rust_config));
 
             // Create DLQ producer and router from config
             let dlq_producer = std::sync::Arc::new(
-                SharedDlqProducer::new(&rust_config)
-                    .expect("Failed to create DLQ producer"),
+                SharedDlqProducer::new(&rust_config).expect("Failed to create DLQ producer"),
             );
-            let dlq_router: std::sync::Arc<dyn DlqRouter> = std::sync::Arc::new(DefaultDlqRouter::new(rust_config.dlq_topic_prefix.clone()));
+            let dlq_router: std::sync::Arc<dyn DlqRouter> =
+                std::sync::Arc::new(DefaultDlqRouter::new(rust_config.dlq_topic_prefix.clone()));
 
             let n_workers = 4; // EXEC-08: configurable
 
@@ -147,7 +153,8 @@ impl Consumer {
                 std::sync::Arc::clone(&offset_tracker),
                 crate::coordinator::CommitConfig::default(),
             );
-            let (tx, rx) = tokio::sync::watch::channel(crate::coordinator::TopicPartition::new("", 0));
+            let (tx, rx) =
+                tokio::sync::watch::channel(crate::coordinator::TopicPartition::new("", 0));
             let committer_handle = tokio::spawn(async move {
                 committer.run(rx).await;
             });

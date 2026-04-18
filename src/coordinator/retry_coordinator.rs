@@ -78,14 +78,16 @@ impl RetryCoordinator {
         }
 
         let mut state_guard = self.state.lock();
-        let entry = state_guard.entry(key.clone()).or_insert_with(|| MessageRetryState {
-            topic: topic.to_string(),
-            partition,
-            offset,
-            attempt: 0,
-            last_failure: None,
-            first_failure: None,
-        });
+        let entry = state_guard
+            .entry(key.clone())
+            .or_insert_with(|| MessageRetryState {
+                topic: topic.to_string(),
+                partition,
+                offset,
+                attempt: 0,
+                last_failure: None,
+                first_failure: None,
+            });
 
         entry.attempt += 1;
         entry.last_failure = Some(reason.clone());
@@ -130,7 +132,8 @@ mod tests {
         let coordinator = RetryCoordinator::with_policy(policy);
         let reason = FailureReason::Retryable(crate::failure::RetryableKind::NetworkTimeout);
 
-        let (should_retry, should_dlq, delay) = coordinator.record_failure("topic", 0, 100, &reason);
+        let (should_retry, should_dlq, delay) =
+            coordinator.record_failure("topic", 0, 100, &reason);
 
         assert!(should_retry);
         assert!(!should_dlq);
@@ -143,7 +146,8 @@ mod tests {
         let coordinator = RetryCoordinator::with_policy(RetryPolicy::default());
         let reason = FailureReason::Terminal(crate::failure::TerminalKind::DeserializationFailed);
 
-        let (should_retry, should_dlq, delay) = coordinator.record_failure("topic", 0, 100, &reason);
+        let (should_retry, should_dlq, delay) =
+            coordinator.record_failure("topic", 0, 100, &reason);
 
         assert!(!should_retry);
         assert!(should_dlq);
@@ -167,7 +171,8 @@ mod tests {
         assert!(!should_dlq);
 
         // Third attempt (exceeds max_attempts=2)
-        let (should_retry, should_dlq, delay) = coordinator.record_failure("topic", 0, 100, &reason);
+        let (should_retry, should_dlq, delay) =
+            coordinator.record_failure("topic", 0, 100, &reason);
         assert!(!should_retry);
         assert!(should_dlq);
         assert!(delay.is_none());

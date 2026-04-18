@@ -1,8 +1,13 @@
+use crate::failure::{FailureCategory, FailureReason};
 use crate::python::ExecutionContext;
-use crate::failure::{FailureReason, FailureCategory};
 
 /// Log a failure with structured context at appropriate level
-pub fn log_failure(context: &ExecutionContext, reason: &FailureReason, exception_name: &str, is_retry: bool) {
+pub fn log_failure(
+    context: &ExecutionContext,
+    reason: &FailureReason,
+    exception_name: &str,
+    is_retry: bool,
+) {
     match reason.category() {
         FailureCategory::Retryable => {
             tracing::warn!(

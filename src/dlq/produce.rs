@@ -57,7 +57,9 @@ impl SharedDlqProducer {
         Ok(Self { producer, send_tx })
     }
 
-    fn create_producer(config: &ConsumerConfig) -> Result<FutureProducer, rdkafka::error::KafkaError> {
+    fn create_producer(
+        config: &ConsumerConfig,
+    ) -> Result<FutureProducer, rdkafka::error::KafkaError> {
         let mut cfg = rdkafka::config::ClientConfig::new();
         cfg.set("bootstrap.servers", &config.brokers)
             .set("message.timeout.ms", "5000")
@@ -93,7 +95,13 @@ impl SharedDlqProducer {
             record = record.key(key.as_slice());
         }
 
-        match producer.send(record, rdkafka::util::Timeout::After(Duration::from_secs(5))).await {
+        match producer
+            .send(
+                record,
+                rdkafka::util::Timeout::After(Duration::from_secs(5)),
+            )
+            .await
+        {
             Ok(delivery) => {
                 debug!(
                     "DLQ message delivered to '{}' partition {} offset {}",
@@ -158,13 +166,42 @@ impl SharedDlqProducer {
     /// Converts DlqMetadata into Kafka headers.
     pub fn metadata_to_headers(metadata: &DlqMetadata) -> Vec<(String, Vec<u8>)> {
         vec![
-            ("dlq.original_topic".to_string(), metadata.original_topic.as_bytes().to_vec()),
-            ("dlq.partition".to_string(), metadata.original_partition.to_string().as_bytes().to_vec()),
-            ("dlq.offset".to_string(), metadata.original_offset.to_string().as_bytes().to_vec()),
-            ("dlq.reason".to_string(), metadata.failure_reason.as_bytes().to_vec()),
-            ("dlq.attempts".to_string(), metadata.attempt_count.to_string().as_bytes().to_vec()),
-            ("dlq.first_failure".to_string(), metadata.first_failure_timestamp.to_rfc3339().as_bytes().to_vec()),
-            ("dlq.last_failure".to_string(), metadata.last_failure_timestamp.to_rfc3339().as_bytes().to_vec()),
+            (
+                "dlq.original_topic".to_string(),
+                metadata.original_topic.as_bytes().to_vec(),
+            ),
+            (
+                "dlq.partition".to_string(),
+                metadata.original_partition.to_string().as_bytes().to_vec(),
+            ),
+            (
+                "dlq.offset".to_string(),
+                metadata.original_offset.to_string().as_bytes().to_vec(),
+            ),
+            (
+                "dlq.reason".to_string(),
+                metadata.failure_reason.as_bytes().to_vec(),
+            ),
+            (
+                "dlq.attempts".to_string(),
+                metadata.attempt_count.to_string().as_bytes().to_vec(),
+            ),
+            (
+                "dlq.first_failure".to_string(),
+                metadata
+                    .first_failure_timestamp
+                    .to_rfc3339()
+                    .as_bytes()
+                    .to_vec(),
+            ),
+            (
+                "dlq.last_failure".to_string(),
+                metadata
+                    .last_failure_timestamp
+                    .to_rfc3339()
+                    .as_bytes()
+                    .to_vec(),
+            ),
         ]
     }
 }

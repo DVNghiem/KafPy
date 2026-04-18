@@ -376,7 +376,10 @@ impl ConsumerDispatcher {
         msg: OwnedMessage,
         chain: &Arc<RoutingChain>,
         policy: &dyn BackpressurePolicy,
-    ) -> (Result<DispatchOutcome, DispatchError>, Option<BackpressureAction>) {
+    ) -> (
+        Result<DispatchOutcome, DispatchError>,
+        Option<BackpressureAction>,
+    ) {
         let ctx = RoutingContext::from_message(&msg);
         match chain.route(&ctx) {
             RoutingDecision::Route(handler_id) => {
@@ -385,14 +388,22 @@ impl ConsumerDispatcher {
                 match qm.send_to_handler_by_id(&handler_id, msg) {
                     Ok(outcome) => (Ok(outcome), None),
                     Err(DispatchError::Backpressure(_)) => {
-                        let action = policy.on_queue_full(&handler_id, &qm.handlers.lock().get(&handler_id).map(|e| &e.metadata).unwrap_or_else(|| panic!("handler '{}' not found", handler_id)));
+                        let action = policy.on_queue_full(
+                            &handler_id,
+                            &qm.handlers
+                                .lock()
+                                .get(&handler_id)
+                                .map(|e| &e.metadata)
+                                .unwrap_or_else(|| panic!("handler '{}' not found", handler_id)),
+                        );
                         match action {
                             BackpressureAction::Drop | BackpressureAction::Wait => {
                                 (Err(DispatchError::Backpressure(handler_id)), None)
                             }
-                            BackpressureAction::FuturePausePartition(t) => {
-                                (Err(DispatchError::Backpressure(handler_id)), Some(BackpressureAction::FuturePausePartition(t)))
-                            }
+                            BackpressureAction::FuturePausePartition(t) => (
+                                Err(DispatchError::Backpressure(handler_id)),
+                                Some(BackpressureAction::FuturePausePartition(t)),
+                            ),
                         }
                     }
                     Err(e) => (Err(e), None),
@@ -400,16 +411,25 @@ impl ConsumerDispatcher {
             }
             RoutingDecision::Drop => {
                 tracing::debug!("message dropped by routing chain");
-                (Err(DispatchError::HandlerNotRegistered("routing-drop".into())), None)
+                (
+                    Err(DispatchError::HandlerNotRegistered("routing-drop".into())),
+                    None,
+                )
             }
             RoutingDecision::Reject(reason) => {
                 tracing::warn!("message rejected by routing chain: {}", reason);
-                (Err(DispatchError::HandlerNotRegistered("routing-reject".into())), None)
+                (
+                    Err(DispatchError::HandlerNotRegistered("routing-reject".into())),
+                    None,
+                )
             }
             RoutingDecision::Defer => {
                 // Should not happen with properly configured chain, but handle gracefully
                 tracing::warn!("routing chain returned Defer with no fallback");
-                (Err(DispatchError::HandlerNotRegistered("routing-defer".into())), None)
+                (
+                    Err(DispatchError::HandlerNotRegistered("routing-defer".into())),
+                    None,
+                )
             }
         }
     }

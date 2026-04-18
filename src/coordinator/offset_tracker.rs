@@ -245,11 +245,11 @@ impl OffsetCoordinator for OffsetTracker {
     }
 
     /// Commits all ready offsets for each registered partition.
-///
-/// Called by WorkerPool::shutdown AFTER flush_failed_to_dlq() has drained
-/// all failed messages to DLQ. This ensures all terminal/retryable failures
-/// are flushed before final offset commit (D-02).
-fn graceful_shutdown(&self) {
+    ///
+    /// Called by WorkerPool::shutdown AFTER flush_failed_to_dlq() has drained
+    /// all failed messages to DLQ. This ensures all terminal/retryable failures
+    /// are flushed before final offset commit (D-02).
+    fn graceful_shutdown(&self) {
         let partitions = self.all_partitions();
         for (topic, partition) in partitions {
             if !self.should_commit(&topic, partition) {
@@ -330,8 +330,8 @@ fn graceful_shutdown(&self) {
                 dlq_producer.produce_async(
                     tp.topic,
                     tp.partition,
-                    vec![],   // empty payload — OffsetTracker doesn't store it
-                    None,     // no key
+                    vec![], // empty payload — OffsetTracker doesn't store it
+                    None,   // no key
                     &metadata,
                 );
             }

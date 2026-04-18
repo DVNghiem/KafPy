@@ -1,6 +1,6 @@
+use super::reason::{FailureReason, NonRetryableKind, RetryableKind, TerminalKind};
 use crate::python::ExecutionContext;
 use pyo3::PyErr;
-use super::reason::{FailureReason, RetryableKind, TerminalKind, NonRetryableKind};
 
 /// Trait for classifying Python exceptions into FailureReason
 pub trait FailureClassifier: Send + Sync {
@@ -25,13 +25,16 @@ impl FailureClassifier for DefaultFailureClassifier {
             FailureReason::Retryable(RetryableKind::TransientPartitionError)
         } else if error_repr.contains("PoisonError") || traceback.contains("poison") {
             FailureReason::Terminal(TerminalKind::PoisonMessage)
-        } else if error_repr.contains("DeserializationError") || error_repr.contains("DecodeError") {
+        } else if error_repr.contains("DeserializationError") || error_repr.contains("DecodeError")
+        {
             FailureReason::Terminal(TerminalKind::DeserializationFailed)
         } else if error_repr.contains("PanicException") || error_repr.contains("SystemExit") {
             FailureReason::Terminal(TerminalKind::HandlerPanic)
         } else if error_repr.contains("ValidationError") || error_repr.contains("ValueError") {
             FailureReason::NonRetryable(NonRetryableKind::ValidationError)
-        } else if error_repr.contains("BusinessLogicError") || error_repr.contains("DomainException") {
+        } else if error_repr.contains("BusinessLogicError")
+            || error_repr.contains("DomainException")
+        {
             FailureReason::NonRetryable(NonRetryableKind::BusinessLogicError)
         } else if error_repr.contains("ConfigError") || error_repr.contains("ConfigurationError") {
             FailureReason::NonRetryable(NonRetryableKind::ConfigurationError)

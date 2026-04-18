@@ -3,9 +3,9 @@
 use crate::routing::context::RoutingContext;
 use crate::routing::decision::{RejectReason, RoutingDecision};
 use crate::routing::router::Router;
-use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use std::sync::Arc;
 use tracing::warn;
 
 /// PythonRouter wraps a Py<PyAny> callback that receives routing context.
@@ -34,7 +34,11 @@ impl PythonRouter {
         let offset = ctx.offset;
         let key = ctx.key.map(|b| b.to_vec());
         let payload = ctx.payload.map(|b| b.to_vec());
-        let headers: Vec<(String, Option<Vec<u8>>)> = ctx.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let headers: Vec<(String, Option<Vec<u8>>)> = ctx
+            .headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
 
         // Use block_in_place so route() (sync) can call into async spawn_blocking
         let handle = tokio::task::spawn_blocking(move || {
@@ -53,9 +57,9 @@ impl PythonRouter {
 
                 match callback.call1(py, (py_dict,)) {
                     Ok(py_result) => {
-                        let s: String = py_result.extract(py).unwrap_or_else(|_| {
-                            "reject:python_router_invalid_return".to_string()
-                        });
+                        let s: String = py_result
+                            .extract(py)
+                            .unwrap_or_else(|_| "reject:python_router_invalid_return".to_string());
                         Self::parse_return(s)
                     }
                     Err(py_err) => {
@@ -72,11 +76,13 @@ impl PythonRouter {
         });
 
         // route() is sync but spawn_blocking returns a JoinHandle, so block_on it
-        tokio::runtime::Handle::current().block_on(handle).unwrap_or_else(|_| {
-            // spawn_blocking panicked — treat as routing error
-            warn!("Python router spawn_blocking task panicked");
-            RoutingDecision::Reject(RejectReason::Explicit("python_router_panic".to_string()))
-        })
+        tokio::runtime::Handle::current()
+            .block_on(handle)
+            .unwrap_or_else(|_| {
+                // spawn_blocking panicked — treat as routing error
+                warn!("Python router spawn_blocking task panicked");
+                RoutingDecision::Reject(RejectReason::Explicit("python_router_panic".to_string()))
+            })
     }
 
     /// Parse returned string into RoutingDecision per D-07.
@@ -128,7 +134,9 @@ mod tests {
             offset: 100,
             key: None,
             payload: Some(b"hello"),
-            headers: Box::leak(vec![("x-trace".to_string(), Some(b"abc".to_vec()))].into_boxed_slice()),
+            headers: Box::leak(
+                vec![("x-trace".to_string(), Some(b"abc".to_vec()))].into_boxed_slice(),
+            ),
         }
     }
 

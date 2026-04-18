@@ -20,7 +20,9 @@ pub struct HeaderRouter {
 
 impl HeaderRouter {
     pub fn new(rules: Vec<HeaderRule>) -> Self {
-        Self { rules: rules.into() }
+        Self {
+            rules: rules.into(),
+        }
     }
 
     pub fn rule_count(&self) -> usize {
@@ -94,14 +96,22 @@ mod tests {
 
     #[test]
     fn value_pattern_match() {
-        let router = HeaderRouter::new(vec![rule("content-type", Some("application/json*"), "handler1")]);
+        let router = HeaderRouter::new(vec![rule(
+            "content-type",
+            Some("application/json*"),
+            "handler1",
+        )]);
         let ctx = ctx_with_headers(&[("content-type", Some(b"application/json; charset=utf-8"))]);
         assert!(matches!(router.route(&ctx), RoutingDecision::Route(id) if id == "handler1"));
     }
 
     #[test]
     fn value_pattern_no_match() {
-        let router = HeaderRouter::new(vec![rule("content-type", Some("application/json*"), "handler1")]);
+        let router = HeaderRouter::new(vec![rule(
+            "content-type",
+            Some("application/json*"),
+            "handler1",
+        )]);
         let ctx = ctx_with_headers(&[("content-type", Some(b"text/plain"))]);
         assert!(matches!(router.route(&ctx), RoutingDecision::Defer));
     }

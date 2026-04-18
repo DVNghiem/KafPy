@@ -1,9 +1,7 @@
-pub mod reason;
 pub mod classifier;
 pub mod logging;
+pub mod reason;
 pub mod tests;
 
-pub use reason::{
-    FailureReason, FailureCategory, RetryableKind, TerminalKind, NonRetryableKind,
-};
-pub use classifier::{FailureClassifier, DefaultFailureClassifier};
+pub use classifier::{DefaultFailureClassifier, FailureClassifier};
+pub use reason::{FailureCategory, FailureReason, NonRetryableKind, RetryableKind, TerminalKind};

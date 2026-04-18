@@ -43,7 +43,9 @@ impl Executor for DefaultExecutor {
                     "handler executed successfully"
                 );
             }
-            ExecutionResult::Error { reason, exception, .. } => {
+            ExecutionResult::Error {
+                reason, exception, ..
+            } => {
                 tracing::warn!(
                     topic = %ctx.topic,
                     partition = ctx.partition,
