@@ -21,6 +21,7 @@ use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
 use crate::failure::FailureCategory;
 use crate::observability::metrics::{HandlerMetrics, MetricLabels};
+use crate::observability::tracing::KafpySpanExt;
 use crate::python::context::ExecutionContext;
 use crate::python::execution_result::{BatchExecutionResult, ExecutionResult};
 use crate::python::executor::Executor;
@@ -223,7 +224,16 @@ async fn worker_loop(
                 .insert("handler_id", ctx.topic.as_str())
                 .insert("topic", ctx.topic.as_str())
                 .insert("mode", handler.mode().as_str());
-            let result = handler.invoke_mode(&ctx, msg.clone()).await;
+            let span = tracing::Span::current().kafpy_handler_invoke(
+                ctx.topic.as_str(),
+                ctx.topic.as_str(),
+                ctx.partition,
+                ctx.offset,
+                handler.mode().as_str(),
+            );
+            let result = span.in_scope(|| async {
+                handler.invoke_mode(&ctx, msg.clone()).await
+            }).await;
             let elapsed = start.elapsed();
             // Record invocation and latency after invoke returns
             HANDLER_METRICS.record_invocation(&NoopSink, &invocation_labels);
@@ -306,7 +316,12 @@ async fn worker_loop(
                             chrono::Utc::now(),
                         );
 
-                        let tp = dlq_router.route(&metadata);
+                        let dlq_span = tracing::Span::current().kafpy_dlq_route(
+                            ctx.topic.as_str(),
+                            &reason.to_string(),
+                            ctx.partition,
+                        );
+                        let tp = dlq_span.in_scope(|| dlq_router.route(&metadata));
                         tracing::error!(
                             worker_id = worker_id,
                             topic = %ctx.topic,
@@ -389,7 +404,12 @@ async fn worker_loop(
                             chrono::Utc::now(),
                         );
 
-                        let tp = dlq_router.route(&metadata);
+                        let dlq_span = tracing::Span::current().kafpy_dlq_route(
+                            ctx.topic.as_str(),
+                            &reason.to_string(),
+                            ctx.partition,
+                        );
+                        let tp = dlq_span.in_scope(|| dlq_router.route(&metadata));
                         tracing::error!(
                             worker_id = worker_id,
                             topic = %ctx.topic,
@@ -513,7 +533,16 @@ async fn batch_worker_loop(
                                     batch[0].offset,
                                     worker_id,
                                 );
-                                let result = handler.invoke_mode_batch(&ctx, batch.clone()).await;
+                                let span = tracing::Span::current().kafpy_handler_invoke(
+                                    topic.as_str(),
+                                    topic.as_str(),
+                                    partition,
+                                    batch[0].offset,
+                                    handler.mode().as_str(),
+                                );
+                                let result = span.in_scope(|| async {
+                                    handler.invoke_mode_batch(&ctx, batch.clone()).await
+                                }).await;
                                 handle_batch_result_inline(
                                     result,
                                     batch,
@@ -555,7 +584,16 @@ async fn batch_worker_loop(
                                                     batch[0].offset,
                                                     worker_id,
                                                 );
-                                                let result = handler.invoke_mode_batch(&ctx, batch.clone()).await;
+                                                let span = tracing::Span::current().kafpy_handler_invoke(
+                                                    topic.as_str(),
+                                                    topic.as_str(),
+                                                    partition,
+                                                    batch[0].offset,
+                                                    handler.mode().as_str(),
+                                                );
+                                                let result = span.in_scope(|| async {
+                                                    handler.invoke_mode_batch(&ctx, batch.clone()).await
+                                                }).await;
                                                 handle_batch_result_inline(
                                                     result,
                                                     batch,
@@ -589,7 +627,16 @@ async fn batch_worker_loop(
                                         batch[0].offset,
                                         worker_id,
                                     );
-                                    let result = handler.invoke_mode_batch(&ctx, batch.clone()).await;
+                                    let span = tracing::Span::current().kafpy_handler_invoke(
+                                        topic.as_str(),
+                                        topic.as_str(),
+                                        partition,
+                                        batch[0].offset,
+                                        handler.mode().as_str(),
+                                    );
+                                    let result = span.in_scope(|| async {
+                                        handler.invoke_mode_batch(&ctx, batch.clone()).await
+                                    }).await;
                                     handle_batch_result_inline(
                                         result,
                                         batch,
@@ -624,7 +671,16 @@ async fn batch_worker_loop(
                                         batch[0].offset,
                                         worker_id,
                                     );
-                                    let result = handler.invoke_mode_batch(&ctx, batch.clone()).await;
+                                    let span = tracing::Span::current().kafpy_handler_invoke(
+                                        topic.as_str(),
+                                        topic.as_str(),
+                                        partition,
+                                        batch[0].offset,
+                                        handler.mode().as_str(),
+                                    );
+                                    let result = span.in_scope(|| async {
+                                        handler.invoke_mode_batch(&ctx, batch.clone()).await
+                                    }).await;
                                     handle_batch_result_inline(
                                         result,
                                         batch,
@@ -659,7 +715,16 @@ async fn batch_worker_loop(
                                     batch[0].offset,
                                     worker_id,
                                 );
-                                let result = handler.invoke_mode_batch(&ctx, batch.clone()).await;
+                                let span = tracing::Span::current().kafpy_handler_invoke(
+                                    topic.as_str(),
+                                    topic.as_str(),
+                                    partition,
+                                    batch[0].offset,
+                                    handler.mode().as_str(),
+                                );
+                                let result = span.in_scope(|| async {
+                                    handler.invoke_mode_batch(&ctx, batch.clone()).await
+                                }).await;
                                 handle_batch_result_inline(
                                     result,
                                     batch,
@@ -697,7 +762,16 @@ async fn batch_worker_loop(
                             batch[0].offset,
                             worker_id,
                         );
-                        let result = handler.invoke_mode_batch(&ctx, batch.clone()).await;
+                        let span = tracing::Span::current().kafpy_handler_invoke(
+                            topic.as_str(),
+                            topic.as_str(),
+                            partition,
+                            batch[0].offset,
+                            handler.mode().as_str(),
+                        );
+                        let result = span.in_scope(|| async {
+                            handler.invoke_mode_batch(&ctx, batch.clone()).await
+                        }).await;
                         handle_batch_result_inline(
                             result,
                             batch,
@@ -815,7 +889,12 @@ async fn handle_batch_result_inline(
                         chrono::Utc::now(),
                     );
 
-                    let tp = _dlq_router.route(&metadata);
+                    let dlq_span = tracing::Span::current().kafpy_dlq_route(
+                        topic,
+                        &reason.to_string(),
+                        partition,
+                    );
+                    let tp = dlq_span.in_scope(|| _dlq_router.route(&metadata));
                     tracing::error!(
                         topic = %topic,
                         partition = partition,

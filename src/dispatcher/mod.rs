@@ -30,6 +30,7 @@ pub use crate::consumer::{MessageTimestamp, OwnedMessage};
 pub(crate) use backpressure::BackpressurePolicy;
 pub use backpressure::{BackpressureAction, DefaultBackpressurePolicy, PauseOnFullPolicy};
 pub use error::DispatchError;
+use crate::observability::tracing::KafpySpanExt;
 use queue_manager::QueueManager;
 use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
@@ -324,16 +325,30 @@ impl ConsumerDispatcher {
             match result {
                 Ok(msg) => {
                     let topic = msg.topic.clone();
-                    let (outcome, pause_signal) = if let Some(ref chain) = self.routing_chain {
-                        self.route_with_chain(msg, chain, policy)
-                    } else {
-                        self.dispatcher.send_with_policy_and_signal(msg, policy)
+                    let partition = msg.partition;
+                    let offset = msg.offset;
+                    // Dispatch inside span; routing_decision is derived from outcome
+                    let (outcome, pause_signal) = {
+                        let span = tracing::Span::current().kafpy_dispatch_process(
+                            &topic,
+                            partition,
+                            offset,
+                            "dispatched",
+                        );
+                        span.in_scope(|| {
+                            if let Some(ref chain) = self.routing_chain {
+                                self.route_with_chain(msg, chain, policy)
+                            } else {
+                                self.dispatcher.send_with_policy_and_signal(msg, policy)
+                            }
+                        })
                     };
                     match outcome {
                         Ok(outcome) => {
                             self.check_resume(&topic, outcome.queue_depth);
                         }
                         Err(DispatchError::Backpressure(_)) => {
+                            tracing::Span::current().record("routing_decision", &"backpressure");
                             if let Some(BackpressureAction::FuturePausePartition(pause_topic)) =
                                 pause_signal
                             {
@@ -356,9 +371,11 @@ impl ConsumerDispatcher {
                             }
                         }
                         Err(DispatchError::HandlerNotRegistered(t)) => {
+                            tracing::Span::current().record("routing_decision", &"not_registered");
                             tracing::debug!("no handler for topic '{}', skipping", t);
                         }
                         Err(e) => {
+                            tracing::Span::current().record("routing_decision", &"queue_closed");
                             tracing::error!("dispatch error: {}", e);
                         }
                     }

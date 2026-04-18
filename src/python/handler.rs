@@ -5,6 +5,7 @@ use crate::dispatcher::OwnedMessage;
 use crate::failure::classifier::DefaultFailureClassifier;
 use crate::failure::FailureClassifier;
 use crate::failure::FailureReason;
+use crate::observability::tracing::inject_trace_context;
 use crate::python::async_bridge::PythonAsyncFuture;
 use crate::python::context::ExecutionContext;
 use crate::python::execution_result::{BatchExecutionResult, ExecutionResult};
@@ -169,6 +170,10 @@ impl PythonHandler {
         let headers = message.headers.clone();
         let timestamp = message.timestamp;
 
+        // Extract W3C trace context before crossing GIL boundary
+        let mut trace_context = std::collections::HashMap::new();
+        inject_trace_context(&mut trace_context);
+
         let result = tokio::task::spawn_blocking(move || {
             Python::attach(|py| {
                 let py_msg = PyDict::new(py);
@@ -184,6 +189,13 @@ impl PythonHandler {
                 };
                 let _ = py_msg.set_item("timestamp", ts);
                 let _ = py_msg.set_item("headers", &headers);
+
+                // Inject W3C trace context headers for Python to propagate
+                let trace_dict = PyDict::new(py);
+                for (k, v) in &trace_context {
+                    let _ = trace_dict.set_item(k, v);
+                }
+                let _ = py_msg.set_item("_trace_context", trace_dict);
 
                 match callback.call1(py, (py_msg,)) {
                     Ok(_) => ExecutionResult::Ok,
@@ -233,6 +245,10 @@ impl PythonHandler {
         let partition = ctx.partition;
         let worker_id = ctx.worker_id;
 
+        // Extract W3C trace context before crossing GIL boundary
+        let mut trace_context = std::collections::HashMap::new();
+        inject_trace_context(&mut trace_context);
+
         let result = tokio::task::spawn_blocking(move || {
             Python::attach(|py| {
                 // Build Vec<PyDict> for the batch — one dict per message
@@ -252,6 +268,14 @@ impl PythonHandler {
                         };
                         let _ = py_msg.set_item("timestamp", ts);
                         let _ = py_msg.set_item("headers", &msg.headers);
+
+                        // Inject W3C trace context headers for Python to propagate
+                        let trace_dict = PyDict::new(py);
+                        for (k, v) in &trace_context {
+                            let _ = trace_dict.set_item(k, v);
+                        }
+                        let _ = py_msg.set_item("_trace_context", trace_dict);
+
                         py_msg.into()
                     })
                     .collect();
