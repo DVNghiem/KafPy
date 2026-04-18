@@ -7,8 +7,8 @@
 
 ### Table Stakes
 
-- [ ] **OBS-01**: KafPy exposes a `MetricsSink` trait that users implement to plug in their own metrics backend (Prometheus, DataDog, OTLP). Default noop implementation provided.
-- [ ] **OBS-02**: `HandlerMetrics` struct records invocation count, latency histogram, error count, and batch size histogram per handler using the `metrics` crate facade.
+- [x] **OBS-01**: KafPy exposes a `MetricsSink` trait that users implement to plug in their own metrics backend (Prometheus, DataDog, OTLP). Default noop implementation provided.
+- [x] **OBS-02**: `HandlerMetrics` struct records invocation count, latency histogram, error count, and batch size histogram per handler using the `metrics` crate facade.
 - [ ] **OBS-03**: `worker_loop` and `batch_worker_loop` record handler invocation counter (labels: handler_id, topic, mode) on every `invoke_mode` call.
 - [ ] **OBS-04**: `worker_loop` and `batch_worker_loop` record handler latency histogram (Duration from invoke start to ExecutionResult) with configurable bucket boundaries.
 - [ ] **OBS-05**: `worker_loop` and `batch_worker_loop` record error counter (labels: handler_id, error_type) on ExecutionResult::Error and RoutingDecision::Reject.
@@ -17,9 +17,9 @@
 
 ### Differentiators
 
-- [ ] **OBS-08**: Prometheus sink adapter (`PrometheusMetricsSink`) implements `MetricsSink` using `prometheus-client` crate, registered via builder pattern.
-- [ ] **OBS-09**: MetricLabels type enforces lexicographically sorted label ordering to prevent cardinality explosion from non-deterministic label insertion order.
-- [ ] **OBS-10**: Metrics are zero-cost when no recorder is installed — `metrics` facade silently drops all recordings when no recorder is set.
+- [x] **OBS-08**: Prometheus sink adapter (`PrometheusMetricsSink`) implements `MetricsSink` using `prometheus-client` crate, registered via builder pattern.
+- [x] **OBS-09**: MetricLabels type enforces lexicographically sorted label ordering to prevent cardinality explosion from non-deterministic label insertion order.
+- [x] **OBS-10**: Metrics are zero-cost when no recorder is installed — `metrics` facade silently drops all recordings when no recorder is set.
 
 ## Category: Tracing Infrastructure (OBS-02)
 
