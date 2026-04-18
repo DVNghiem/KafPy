@@ -42,55 +42,39 @@ impl MetricLabels {
 pub struct HandlerMetrics;
 
 impl HandlerMetrics {
-    pub const PREFIX: &'static str = "kafpy.handler";
-
     /// Record invocation counter: kafpy.handler.invocation
     pub fn record_invocation(&self, sink: &dyn MetricsSink, labels: &MetricLabels) {
-        sink.record_counter(
-            concat!(Self::PREFIX, ".invocation"),
-            &labels.as_slice(),
-        );
+        sink.record_counter("kafpy.handler.invocation", &labels.as_slice());
     }
 
     /// Record latency histogram: kafpy.handler.latency (seconds)
     pub fn record_latency(&self, sink: &dyn MetricsSink, labels: &MetricLabels, elapsed: Duration) {
-        sink.record_histogram(
-            concat!(Self::PREFIX, ".latency"),
-            elapsed.as_secs_f64(),
-            &labels.as_slice(),
-        );
+        sink.record_histogram("kafpy.handler.latency", elapsed.as_secs_f64(), &labels.as_slice());
     }
 
     /// Record error counter: kafpy.handler.error
     pub fn record_error(&self, sink: &dyn MetricsSink, labels: &MetricLabels) {
-        sink.record_counter(
-            concat!(Self::PREFIX, ".error"),
-            &labels.as_slice(),
-        );
+        sink.record_counter("kafpy.handler.error", &labels.as_slice());
     }
 
     /// Record batch size histogram: kafpy.handler.batch_size
     pub fn record_batch_size(&self, sink: &dyn MetricsSink, labels: &MetricLabels, size: usize) {
-        sink.record_histogram(
-            concat!(Self::PREFIX, ".batch_size"),
-            size as f64,
-            &labels.as_slice(),
-        );
+        sink.record_histogram("kafpy.handler.batch_size", size as f64, &labels.as_slice());
     }
 }
 
 /// Snapshot of queue depth and inflight message counts.
 /// Polling-based: updated by background task every 10s, not per-message.
 pub struct QueueSnapshot {
-    pub queue_depth: std::sync::atomic::AtomicUsize,
-    pub inflight: std::sync::atomic::AtomicUsize,
+    pub queue_depth: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub inflight: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl QueueSnapshot {
     pub fn new() -> Self {
         Self {
-            queue_depth: std::sync::atomic::AtomicUsize::new(0),
-            inflight: std::sync::atomic::AtomicUsize::new(0),
+            queue_depth: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            inflight: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 }

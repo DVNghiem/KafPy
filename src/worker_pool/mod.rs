@@ -18,12 +18,24 @@ use crate::coordinator::retry_coordinator::RetryCoordinator;
 use crate::coordinator::OffsetCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
-use crate::dlq::{DefaultDlqRouter, DlqMetadata, DlqRouter, SharedDlqProducer};
-use crate::failure::{FailureCategory, FailureReason};
+use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
+use crate::failure::FailureCategory;
+use crate::observability::metrics::{HandlerMetrics, MetricLabels};
 use crate::python::context::ExecutionContext;
 use crate::python::execution_result::{BatchExecutionResult, ExecutionResult};
-use crate::python::executor::{DefaultExecutor, Executor};
+use crate::python::executor::Executor;
 use crate::python::handler::PythonHandler;
+
+// Static shared handler metrics recorder (noop until a sink is installed)
+static HANDLER_METRICS: HandlerMetrics = HandlerMetrics;
+
+// Noop sink used when no metrics sink is configured
+struct NoopSink;
+impl crate::observability::metrics::MetricsSink for NoopSink {
+    fn record_counter(&self, _name: &str, _labels: &[(&str, &str)]) {}
+    fn record_histogram(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
+    fn record_gauge(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
+}
 
 // ─── Batch Accumulator ─────────────────────────────────────────────────────────
 
@@ -205,7 +217,24 @@ async fn worker_loop(
         if let Some(msg) = active_message.take() {
             let ctx =
                 ExecutionContext::new(msg.topic.clone(), msg.partition, msg.offset, worker_id);
+            // Metrics: start latency timer and build labels before invoke
+            let start = std::time::Instant::now();
+            let invocation_labels = MetricLabels::new()
+                .insert("handler_id", ctx.topic.as_str())
+                .insert("topic", ctx.topic.as_str())
+                .insert("mode", handler.mode().as_str());
             let result = handler.invoke_mode(&ctx, msg.clone()).await;
+            let elapsed = start.elapsed();
+            // Record invocation and latency after invoke returns
+            HANDLER_METRICS.record_invocation(&NoopSink, &invocation_labels);
+            HANDLER_METRICS.record_latency(&NoopSink, &invocation_labels, elapsed);
+            // Record error counter on non-ok results
+            if !result.is_ok() {
+                let error_labels = MetricLabels::new()
+                    .insert("handler_id", ctx.topic.as_str())
+                    .insert("error_type", result.error_type_label());
+                HANDLER_METRICS.record_error(&NoopSink, &error_labels);
+            }
             let _outcome = executor.execute(&ctx, &msg, &result);
 
             match result {
@@ -713,6 +742,13 @@ async fn handle_batch_result_inline(
 ) {
     match result {
         BatchExecutionResult::AllSuccess(offsets) => {
+            // Record batch size histogram for this partition
+            let batch_size_labels = MetricLabels::new()
+                .insert("handler_id", topic)
+                .insert("topic", topic)
+                .insert("partition", partition.to_string());
+            HANDLER_METRICS.record_batch_size(&NoopSink, &batch_size_labels, batch.len());
+
             // EXEC-10: Each message calls record_ack individually
             for offset in offsets {
                 retry_coordinator.record_success(topic, partition, offset);
@@ -727,6 +763,13 @@ async fn handle_batch_result_inline(
             }
         }
         BatchExecutionResult::AllFailure(reason) => {
+            // Record batch size histogram for this failed batch
+            let batch_size_labels = MetricLabels::new()
+                .insert("handler_id", topic)
+                .insert("topic", topic)
+                .insert("partition", partition.to_string());
+            HANDLER_METRICS.record_batch_size(&NoopSink, &batch_size_labels, batch.len());
+
             // EXEC-10: All messages in batch flow to RetryCoordinator
             // We have access to the original batch messages here for routing
             tracing::warn!(
@@ -803,6 +846,13 @@ async fn handle_batch_result_inline(
         // PartialFailure — NOT IMPLEMENTED in v1.6
         // Skip per D-05
         BatchExecutionResult::PartialFailure { .. } => {
+            // Record batch size histogram for this partial-failure batch
+            let batch_size_labels = MetricLabels::new()
+                .insert("handler_id", topic)
+                .insert("topic", topic)
+                .insert("partition", partition.to_string());
+            HANDLER_METRICS.record_batch_size(&NoopSink, &batch_size_labels, batch.len());
+
             tracing::warn!(
                 topic = %topic,
                 partition = partition,

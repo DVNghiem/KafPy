@@ -35,6 +35,15 @@ impl ExecutionResult {
     pub fn is_rejected(&self) -> bool {
         matches!(self, ExecutionResult::Rejected { .. })
     }
+
+    /// Returns the error type label for metrics recording.
+    pub fn error_type_label(&self) -> &'static str {
+        match self {
+            ExecutionResult::Ok => "Ok",
+            ExecutionResult::Error { .. } => "Error",
+            ExecutionResult::Rejected { .. } => "Rejected",
+        }
+    }
 }
 
 /// Batch execution result from a BatchSync or BatchAsync Python handler.

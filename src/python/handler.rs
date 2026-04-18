@@ -30,6 +30,18 @@ impl Default for HandlerMode {
     }
 }
 
+impl HandlerMode {
+    /// Returns the mode name as a string for metrics labeling.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HandlerMode::SingleSync => "SingleSync",
+            HandlerMode::SingleAsync => "SingleAsync",
+            HandlerMode::BatchSync => "BatchSync",
+            HandlerMode::BatchAsync => "BatchAsync",
+        }
+    }
+}
+
 /// Batch configuration for batch-mode handlers.
 ///
 /// # Defaults

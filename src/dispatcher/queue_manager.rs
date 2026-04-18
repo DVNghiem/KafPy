@@ -6,8 +6,11 @@
 //! - `queue_depth`: messages currently buffered in the bounded channel (sender-side).
 //! - `inflight`: messages dispatched to the handler but not yet acknowledged via `ack()`.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+
+use crate::observability::metrics::QueueSnapshot;
 use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 
@@ -19,10 +22,10 @@ use crate::routing::context::HandlerId;
 pub(crate) struct HandlerMetadata {
     /// Bounded channel capacity for this handler.
     pub capacity: usize,
-    /// Messages currently buffered in the channel.
-    pub(crate) queue_depth: AtomicUsize,
-    /// Messages dispatched but not yet acknowledged.
-    pub(crate) inflight: AtomicUsize,
+    /// Messages currently buffered in the channel (wrapped in Arc for cheap cloning).
+    pub(crate) queue_depth: Arc<AtomicUsize>,
+    /// Messages dispatched but not yet acknowledged (wrapped in Arc for cheap cloning).
+    pub(crate) inflight: Arc<AtomicUsize>,
     /// Optional semaphore for concurrency limiting.
     pub(crate) semaphore: Option<Arc<Semaphore>>,
     /// How many permits are currently "checked out" (dispatched but not ack'd).
@@ -39,8 +42,8 @@ impl HandlerMetadata {
     pub fn new(capacity: usize, semaphore: Option<Arc<Semaphore>>, limit: usize) -> Self {
         Self {
             capacity,
-            queue_depth: AtomicUsize::new(0),
-            inflight: AtomicUsize::new(0),
+            queue_depth: Arc::new(AtomicUsize::new(0)),
+            inflight: Arc::new(AtomicUsize::new(0)),
             semaphore,
             outstanding_permits: AtomicUsize::new(0),
             semaphore_limit: limit,
@@ -220,6 +223,26 @@ impl QueueManager {
             .lock()
             .get(topic)
             .map(|entry| entry.metadata.get_inflight())
+    }
+
+    /// Returns a snapshot of queue depth and inflight counts for all registered handlers.
+    ///
+    /// Polling-based: called by a background task every 10s to update gauge metrics.
+    /// Each `QueueSnapshot` holds cloned `AtomicUsize` references (cheap Arc clone).
+    pub fn queue_snapshots(&self) -> HashMap<String, QueueSnapshot> {
+        let handlers = self.handlers.lock();
+        handlers
+            .iter()
+            .map(|(handler_id, entry)| {
+                (
+                    handler_id.clone(),
+                    QueueSnapshot {
+                        queue_depth: entry.metadata.queue_depth.clone(),
+                        inflight: entry.metadata.inflight.clone(),
+                    },
+                )
+            })
+            .collect()
     }
 
     /// Called by the Python/PyO3 layer after processing `count` messages.

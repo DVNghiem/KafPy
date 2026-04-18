@@ -31,6 +31,9 @@ pub mod retry;
 // DLQ routing — DlqMetadata envelope, DlqRouter trait, fire-and-forget produce
 pub mod dlq;
 
+// Observability — metrics sink, metric labels, handler metrics, queue snapshots
+pub mod observability;
+
 // Routing — zero-copy context, decision enum, router trait, and concrete routers
 pub mod routing;
 pub use routing::config::{PatternType, RoutingRule, RoutingRuleBuildError, RoutingRuleBuilder};
