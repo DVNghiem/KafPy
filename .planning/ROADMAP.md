@@ -13,7 +13,7 @@
 ### v1.5 Extensible Routing (Planned)
 
 - [ ] **Phase 21: Routing Core** — RoutingContext, RoutingDecision, Router trait, TopicPatternRouter, HeaderRouter, KeyRouter, RoutingChain, CONFIG-01, CONFIG-02
-- [ ] **Phase 22: Python Integration** — PythonRouter with spawn_blocking, Py<PyAny> callback
+- [x] **Phase 22: Python Integration** — PythonRouter with spawn_blocking, Py<PyAny> callback (completed 2026-04-18)
 - [ ] **Phase 23: Dispatcher Integration** — wire Router into ConsumerDispatcher, RoutingDecision handling (Drop→offset advance, Reject→DLQ, Defer→default)
 
 ## Phase Details
@@ -85,7 +85,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 21. Routing Core | 0/3 | Not started | - |
-| 22. Python Integration | 0/1 | Planned    |  |
+| 22. Python Integration | 1/1 | Complete    | 2026-04-18 |
 | 23. Dispatcher Integration | 0/- | Not started | - |
 
 ---
