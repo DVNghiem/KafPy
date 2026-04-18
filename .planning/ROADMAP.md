@@ -58,7 +58,12 @@ Plans:
 6. BatchExecutionResult::AllSuccess triggers record_ack for each message individually
 7. BatchExecutionResult::AllFailure routes all messages in batch to RetryCoordinator
 
-**Plans:** TBD
+**Plans:** 3 plans
+
+Plans:
+- [ ] 25-01-PLAN.md — BatchAccumulator struct, accumulator logic, backpressure integration
+- [ ] 25-02-PLAN.md — BatchAccumulator::flush, batch_worker_loop with timeout/size flush
+- [ ] 25-03-PLAN.md — WorkerPool spawn dispatch by HandlerMode, BatchExecutionResult routing
 
 ### Phase 26: Async Python Handlers
 
@@ -108,7 +113,7 @@ Plans:
 | 22. Python Integration | v1.5 | 1/1 | Complete | 2026-04-18 |
 | 23. Dispatcher Integration | v1.5 | 1/1 | Complete | 2026-04-18 |
 | 24. HandlerMode & Execution Foundation | v1.6 | 1/- | In progress | - |
-| 25. Batch Accumulation & Flush | v1.6 | 0/- | Not started | - |
+| 25. Batch Accumulation & Flush | v1.6 | 3/3 | In progress | - |
 | 26. Async Python Handlers | v1.6 | 0/- | Not started | - |
 | 27. Shutdown Drain & Polish | v1.6 | 0/- | Not started | - |
 
