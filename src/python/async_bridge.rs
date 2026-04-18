@@ -114,14 +114,18 @@ mod tests {
 
     #[test]
     fn test_python_async_future_new() {
-        // Verify construction from a zeroed Py<PyAny> (not a real coroutine).
-        let coro: Py<PyAny> = unsafe { std::mem::zeroed() };
-        let _future = PythonAsyncFuture::new(coro);
+        // Verify construction from a valid Python object.
+        Python::attach(|py| {
+            let coro = py.None().into();
+            let _future = PythonAsyncFuture::new(coro);
+        });
     }
 
     #[test]
     fn test_from_py_any() {
-        let coro: Py<PyAny> = unsafe { std::mem::zeroed() };
-        let _future: PythonAsyncFuture = coro.into();
+        Python::attach(|py| {
+            let coro: Py<PyAny> = py.None().into();
+            let _future: PythonAsyncFuture = coro.into();
+        });
     }
 }

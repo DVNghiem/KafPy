@@ -156,30 +156,6 @@ impl QueueManager {
         }
     }
 
-    /// Registers a handler for `topic` with a bounded channel of `capacity`.
-    ///
-    /// Returns the `mpsc::Receiver` to the caller (Python/PyO3 layer).
-    /// Thread-safe.
-    pub fn register_handler(
-        &self,
-        topic: impl Into<String>,
-        capacity: usize,
-    ) -> mpsc::Receiver<OwnedMessage> {
-        self.register_handler_with_semaphore(topic, capacity, None)
-    }
-
-    /// Registers a handler by HandlerId instead of topic name.
-    ///
-    /// This allows routing to dispatch to named handlers rather than topic names.
-    /// The handler ID is used as the queue key in QueueManager.
-    pub fn register_handler_by_id(
-        &self,
-        handler_id: impl Into<String>,
-        capacity: usize,
-    ) -> mpsc::Receiver<OwnedMessage> {
-        self.register_handler_with_semaphore(handler_id, capacity, None)
-    }
-
     /// Registers a handler with optional semaphore for concurrency limiting.
     pub(crate) fn register_handler_with_semaphore(
         &self,
@@ -207,14 +183,6 @@ impl QueueManager {
             .lock()
             .get(topic)
             .map(|entry| entry.metadata.capacity)
-    }
-
-    /// Returns the current queue depth for `topic`, or `None` if not registered.
-    pub fn get_queue_depth(&self, topic: &str) -> Option<usize> {
-        self.handlers
-            .lock()
-            .get(topic)
-            .map(|entry| entry.metadata.get_queue_depth())
     }
 
     /// Returns the current inflight count for `topic`, or `None` if not registered.
@@ -251,41 +219,6 @@ impl QueueManager {
     pub fn ack(&self, topic: &str, count: usize) {
         if let Some(entry) = self.handlers.lock().get(topic) {
             entry.metadata.ack(count);
-        }
-    }
-
-    /// Internal: sends `message` to the handler registered for `message.topic`.
-    ///
-    /// Increments `queue_depth` (message buffered) and `inflight` (dispatched).
-    /// Returns `DispatchOutcome` on success, `DispatchError` on failure.
-    pub(crate) fn send_to_handler(
-        &self,
-        message: OwnedMessage,
-    ) -> Result<crate::dispatcher::DispatchOutcome, DispatchError> {
-        let topic = message.topic.clone();
-        let partition = message.partition;
-        let offset = message.offset;
-
-        let guard = self.handlers.lock();
-        let entry = guard
-            .get(&topic)
-            .ok_or_else(|| DispatchError::HandlerNotRegistered(topic.clone()))?;
-
-        match entry.sender.try_send(message) {
-            Ok(()) => {
-                // Message is now buffered in the channel.
-                entry.metadata.inc_queue_depth();
-                // Message is dispatched to handler for processing.
-                entry.metadata.inc_inflight();
-                Ok(crate::dispatcher::DispatchOutcome {
-                    topic,
-                    partition,
-                    offset,
-                    queue_depth: entry.metadata.get_queue_depth(),
-                })
-            }
-            Err(TrySendError::Full(_)) => Err(DispatchError::QueueFull(topic)),
-            Err(TrySendError::Closed(_)) => Err(DispatchError::QueueClosed(topic)),
         }
     }
 

@@ -319,7 +319,7 @@ impl ConsumerDispatcher {
     /// When a routing chain is configured, messages are first evaluated through
     /// the chain to determine the target handler_id, then dispatched to that handler.
     /// When no routing chain is set, messages are dispatched by topic (backward compat).
-    pub async fn run(&self, policy: &dyn BackpressurePolicy) {
+    pub(crate) async fn run(&self, policy: &dyn BackpressurePolicy) {
         let mut stream = self.runner.stream();
         while let Some(result) = stream.next().await {
             match result {
@@ -527,7 +527,7 @@ impl ConsumerDispatcher {
     }
 
     /// Returns an `Arc<QueueManager>` for WorkerPool ack integration (EXEC-13).
-    pub fn queue_manager(&self) -> Arc<QueueManager> {
+    pub(crate) fn queue_manager(&self) -> Arc<QueueManager> {
         Arc::new(self.dispatcher.queue_manager.clone())
     }
 }

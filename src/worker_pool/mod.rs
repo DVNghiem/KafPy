@@ -1002,7 +1002,6 @@ pub struct WorkerPool {
     /// Exposed publicly so Consumer::stop() can cancel via Arc<WorkerPool>.
     pub(crate) shutdown_token: CancellationToken,
     offset_coordinator: Arc<dyn OffsetCoordinator>,
-    retry_coordinator: Arc<RetryCoordinator>,
     dlq_producer: Arc<SharedDlqProducer>,
     dlq_router: Arc<dyn DlqRouter>,
     /// Shared state for runtime introspection (OBS-31).
@@ -1016,7 +1015,7 @@ impl WorkerPool {
     /// shared across all workers via `Arc`. Uses `DefaultExecutor` (EXEC-04).
     /// The `shutdown_token` is supplied by the owner (Consumer) so that
     /// `stop()` can cancel all workers by cancelling the shared token.
-    pub fn new(
+    pub(crate) fn new(
         n_workers: usize,
         receivers: Vec<mpsc::Receiver<OwnedMessage>>,
         handler: Arc<PythonHandler>,
@@ -1089,7 +1088,6 @@ impl WorkerPool {
             join_set,
             shutdown_token,
             offset_coordinator,
-            retry_coordinator,
             dlq_producer,
             dlq_router,
             worker_pool_state,
@@ -1126,31 +1124,13 @@ mod tests {
     use super::*;
     use crate::dispatcher::queue_manager::QueueManager;
     use crate::dispatcher::OwnedMessage;
+    use crate::dlq::DefaultDlqRouter;
+    use crate::failure::FailureReason;
+    use crate::python::DefaultExecutor;
     use crate::python::context::ExecutionContext;
     use crate::python::execution_result::ExecutionResult;
     use pyo3::prelude::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-
-    /// Spy executor that records whether result was Ok.
-    #[derive(Debug, Default)]
-    struct SpyExecutor {
-        pub ack_called: AtomicBool,
-    }
-
-    impl Executor for SpyExecutor {
-        fn execute(
-            &self,
-            _ctx: &ExecutionContext,
-            _message: &OwnedMessage,
-            result: &ExecutionResult,
-        ) -> crate::python::executor::ExecutorOutcome {
-            if result.is_ok() {
-                self.ack_called.store(true, Ordering::SeqCst);
-            }
-            crate::python::executor::ExecutorOutcome::Ack
-        }
-    }
 
     fn make_test_msg() -> OwnedMessage {
         OwnedMessage {
@@ -1165,8 +1145,8 @@ mod tests {
     }
 
     fn dummy_handler() -> Arc<PythonHandler> {
-        use crate::python::handler::{BatchPolicy, HandlerMode};
-        Python::with_gil(|py| {
+        use crate::python::handler::HandlerMode;
+        Python::attach(|py| {
             let py_none = py.None();
             Arc::new(PythonHandler::new(
                 py_none.into(),

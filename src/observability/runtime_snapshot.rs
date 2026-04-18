@@ -259,7 +259,6 @@ pub struct RuntimeSnapshotTask {
     queue_manager: Option<Arc<crate::dispatcher::queue_manager::QueueManager>>,
     offset_tracker: Option<Arc<crate::coordinator::OffsetTracker>>,
     worker_pool_state: Option<Arc<WorkerPoolState>>,
-    kafka_metrics: Option<Arc<crate::observability::KafkaMetrics>>,
     poll_interval: Duration,
     shutdown_token: CancellationToken,
 }
@@ -278,11 +277,10 @@ impl Default for RuntimeSnapshot {
 
 impl RuntimeSnapshotTask {
     /// Spawn the background polling task and store as global singleton.
-    pub fn spawn(
+    pub(crate) fn spawn(
         queue_manager: Option<Arc<crate::dispatcher::queue_manager::QueueManager>>,
         offset_tracker: Option<Arc<crate::coordinator::OffsetTracker>>,
         worker_pool_state: Option<Arc<WorkerPoolState>>,
-        kafka_metrics: Option<Arc<crate::observability::KafkaMetrics>>,
         poll_interval: Duration,
     ) -> Arc<Self> {
         let task = Arc::new(Self {
@@ -290,7 +288,6 @@ impl RuntimeSnapshotTask {
             queue_manager,
             offset_tracker,
             worker_pool_state,
-            kafka_metrics,
             poll_interval,
             shutdown_token: CancellationToken::new(),
         });

@@ -30,7 +30,6 @@ struct DLQMessage {
 /// mpsc channel. The worker loop sends to the channel without awaiting;
 /// a background task drains the channel and produces to Kafka.
 pub struct SharedDlqProducer {
-    producer: Arc<FutureProducer>,
     send_tx: mpsc::Sender<DLQMessage>,
 }
 
@@ -53,7 +52,7 @@ impl SharedDlqProducer {
             }
         });
 
-        Ok(Self { producer, send_tx })
+        Ok(Self { send_tx })
     }
 
     fn create_producer(

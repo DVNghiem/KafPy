@@ -328,7 +328,7 @@ impl PythonHandler {
 
         // Build the coroutine object inside with_gil — this is synchronous,
         // but the returned PythonAsyncFuture handles GIL release on each poll.
-        let coro: Py<PyAny> = Python::with_gil(|py| {
+        let coro: Py<PyAny> = Python::attach(|py| {
             let py_msg = PyDict::new(py);
             let _ = py_msg.set_item("topic", &topic);
             let _ = py_msg.set_item("partition", partition);
@@ -371,7 +371,7 @@ impl PythonHandler {
         let _worker_id = ctx.worker_id;
 
         // Build the coroutine object inside with_gil
-        let coro: Py<PyAny> = Python::with_gil(|py| {
+        let coro: Py<PyAny> = Python::attach(|py| {
             // Build Vec<Py<PyAny>> of message dicts — one dict per message
             let py_batch: Vec<Py<PyAny>> = messages
                 .iter()

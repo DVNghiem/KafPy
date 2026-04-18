@@ -72,10 +72,6 @@ impl CommitterState {
         interval_ready || batch_ready
     }
 
-    fn record_message(&mut self) {
-        self.message_count += 1;
-    }
-
     fn reset(&mut self) {
         self.last_commit = Some(Instant::now());
         self.message_count = 0;

@@ -17,14 +17,10 @@ use crate::python::handler::PythonHandler;
 use crate::python::{DefaultExecutor, Executor};
 use crate::worker_pool::WorkerPool;
 
-use tokio_stream::StreamExt;
-
 /// Python-callable consumer. Use `add_handler` to register a topic → callback
 /// mapping, then `start()` to begin consumption.
 #[pyclass]
 pub struct Consumer {
-    /// Effective config for the Rust core (built from the pyclass fields).
-    runner: Option<ConsumerRunner>,
     config: ConsumerConfig,
     /// Stores Arc<Py<PyAny>> so handlers can be cloned for PythonHandler::new.
     handlers: Arc<Mutex<HashMap<String, Arc<Py<PyAny>>>>>,
@@ -37,7 +33,6 @@ impl Consumer {
     #[new]
     pub fn new(config: ConsumerConfig) -> Self {
         Self {
-            runner: None,
             config,
             handlers: Arc::new(Mutex::new(HashMap::new())),
             shutdown_token: tokio_util::sync::CancellationToken::new(),
@@ -152,7 +147,6 @@ impl Consumer {
                 Some(queue_manager_arc.clone()),
                 Some(offset_tracker.clone()),
                 Some(std::sync::Arc::clone(&pool.worker_pool_state)),
-                None, // kafka_metrics not available here
                 std::time::Duration::from_secs(10),
             );
 
@@ -242,7 +236,7 @@ pub fn register_status_callback(callback: Py<PyAny>) -> PyResult<()> {
 }
 
 fn snapshot_to_pydict(snapshot: RuntimeSnapshot) -> PyResult<Py<PyAny>> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let dict = PyDict::new(py);
 
         // timestamp

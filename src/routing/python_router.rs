@@ -42,7 +42,7 @@ impl PythonRouter {
 
         // Use block_in_place so route() (sync) can call into async spawn_blocking
         let handle = tokio::task::spawn_blocking(move || {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let py_dict = PyDict::new(py);
                 let _ = py_dict.set_item("topic", topic);
                 let _ = py_dict.set_item("partition", partition);
@@ -144,7 +144,7 @@ mod tests {
     fn construction_accepts_arc_py_any() {
         // Verifies PythonRouter::new compiles with Arc<Py<PyAny>>
         // Use a lambda that returns "defer" since we just need a valid Arc<Py<PyAny>>
-        pyo3::Python::with_gil(|py| {
+        pyo3::Python::attach(|py| {
             let callback = make_callback(py, "defer");
             PythonRouter::new(callback);
         });
@@ -153,7 +153,7 @@ mod tests {
     #[tokio::test]
     async fn returns_drop_when_python_returns_drop() {
         let decision = tokio::task::spawn_blocking(|| {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let callback = make_callback(py, "drop");
                 let router = PythonRouter::new(callback);
                 router.route(&routing_ctx())
@@ -168,7 +168,7 @@ mod tests {
     #[tokio::test]
     async fn returns_route_when_python_returns_route_handler_id() {
         let decision = tokio::task::spawn_blocking(|| {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let callback = make_callback(py, "route:my-handler");
                 let router = PythonRouter::new(callback);
                 router.route(&routing_ctx())
@@ -186,7 +186,7 @@ mod tests {
     #[tokio::test]
     async fn returns_reject_when_python_returns_reject_reason() {
         let decision = tokio::task::spawn_blocking(|| {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let callback = make_callback(py, "reject:no_match");
                 let router = PythonRouter::new(callback);
                 router.route(&routing_ctx())
@@ -204,7 +204,7 @@ mod tests {
     #[tokio::test]
     async fn returns_defer_when_python_returns_defer() {
         let decision = tokio::task::spawn_blocking(|| {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let callback = make_callback(py, "defer");
                 let router = PythonRouter::new(callback);
                 router.route(&routing_ctx())
