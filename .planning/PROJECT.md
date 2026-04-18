@@ -68,19 +68,19 @@ Current status (after Milestone v1.4):
 
 **v1.5 shipped:** Phase 21 (RoutingCore), Phase 22 (PythonRouter), Phase 23 (DispatcherIntegration). RoutingChain wired into ConsumerDispatcher with all 4 RoutingDecision variants handled (Route→handler queue, Drop→offset advance, Reject→DLQ, Defer→default).
 
-## Current Milestone: v1.6 Execution Modes
+**v1.6 shipped:** Phase 24 (HandlerMode foundation), Phase 25 (BatchAccumulator), Phase 26 (Async Python handlers), Phase 27 (Shutdown drain verification). HandlerMode enum with 4 variants, BatchAccumulator with fixed-window flush, PythonAsyncFuture with custom CFFI bridge, all 4 execution modes working.
 
-**Goal:** Improve throughput by supporting batch and async Python handlers while preserving delivery guarantees.
+**Current milestone (v1.7): Observability Layer**
+
+**Goal:** Provide structured logging, metrics, and runtime introspection for KafPy without coupling to a specific observability backend.
 
 **Target features:**
-- Batch-capable handler registration (max batch size, max batch wait time, per-handler config)
-- Execution layer accumulates messages until batch size OR batch timeout
-- Sync Python handlers (regular callables)
-- Async Python handlers (coroutines via pyo3-async-runtimes)
-- Handler execution mode abstraction: single-sync, single-async, batch-sync, batch-async
-- GIL minimal usage — no GIL held across Rust-side orchestration
-- Batch result modeling: full success, full failure (per-message outcomes deferred to future)
-- Preserved semantics: success → offset ack, failure → retry/DLQ, commit eligibility unchanged
+- Structured logging facade with pluggable backend (e.g., loguru, standard logging)
+- Per-handler metrics: invocation count, latency histogram, error count, batch size distribution
+- Kafka-level metrics: consumer lag per topic-partition, assignment size, committed offset vs. high watermark
+- OpenTelemetry integration points (trace/span hooks) with zero-cost opt-in
+- Runtime introspection: WorkerPool status (idle/active/busy workers), accumulator depths, in-flight message counts
+- Facade/abstraction layer so users can wire their own observability backend
 
 ## Validated Requirements
 
