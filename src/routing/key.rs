@@ -86,8 +86,8 @@ impl Router for KeyRouter {
                 KeyMatchMode::Prefix => key.starts_with(&rule.pattern),
                 KeyMatchMode::ExactStr => std::str::from_utf8(key)
                     .ok()
-                    .map_or(false, |s| s.as_bytes() == rule.pattern.as_slice()),
-                KeyMatchMode::PrefixStr => std::str::from_utf8(key).ok().map_or(false, |s| {
+                    .is_some_and(|s| s.as_bytes() == rule.pattern.as_slice()),
+                KeyMatchMode::PrefixStr => std::str::from_utf8(key).ok().is_some_and(|s| {
                     let pat = std::str::from_utf8(&rule.pattern).unwrap_or("");
                     s.starts_with(pat)
                 }),

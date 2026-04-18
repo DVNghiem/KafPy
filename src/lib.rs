@@ -45,7 +45,9 @@ use pyconsumer::Consumer;
 
 #[pymodule]
 fn _kafpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    Logger::init();
+    // Initialize logging with default observability config (OBS-38)
+    let observability_config = crate::observability::ObservabilityConfig::default();
+    Logger::init(&observability_config);
 
     m.add_class::<KafkaMessage>()?;
     m.add_class::<Consumer>()?;

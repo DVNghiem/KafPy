@@ -22,39 +22,27 @@ impl Logger {
                 .into()
             });
 
+        // Build fmt subscriber with common settings
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_line_number(true)
+            .with_thread_ids(true)
+            .with_file(true)
+            .with_span_events(FmtSpan::CLOSE);
+
         match config.log_format {
             crate::observability::LogFormat::Json => {
-                tracing_subscriber::fmt()
-                    .with_env_filter(env_filter)
-                    .with_line_number(true)
-                    .with_thread_ids(true)
-                    .with_file(true)
-                    .with_span_events(FmtSpan::CLOSE)
-                    .json()
-                    .init();
+                subscriber.json().init();
             }
             crate::observability::LogFormat::Pretty => {
-                tracing_subscriber::fmt()
-                    .with_env_filter(env_filter)
-                    .with_line_number(true)
-                    .with_thread_ids(true)
-                    .with_file(true)
-                    .with_span_events(FmtSpan::CLOSE)
-                    .pretty()
-                    .init();
+                subscriber.pretty().init();
             }
-            crate::observability::LogFormat::Simple | crate::observability::LogFormat::Default => {
-                tracing_subscriber::fmt()
-                    .with_env_filter(env_filter)
-                    .with_line_number(true)
-                    .with_thread_ids(true)
-                    .with_file(true)
-                    .with_span_events(FmtSpan::CLOSE)
-                    .init();
+            crate::observability::LogFormat::Simple => {
+                subscriber.init();
             }
         }
 
         // Wire Python logging to tracing via LogTracer (OBS-38)
-        let _ = tracing_log::LogTracer::init();
+        let _ = tracing_log::LogTracer::init().expect("LogTracer init must be called once");
     }
 }
