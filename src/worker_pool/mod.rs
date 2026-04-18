@@ -21,6 +21,7 @@ use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
 use crate::failure::FailureCategory;
 use crate::observability::metrics::{HandlerMetrics, MetricLabels};
+use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
 use crate::python::context::ExecutionContext;
 use crate::python::execution_result::{BatchExecutionResult, ExecutionResult};
@@ -208,6 +209,7 @@ async fn worker_loop(
     dlq_router: Arc<dyn DlqRouter>,
     worker_id: usize,
     shutdown_token: CancellationToken,
+    worker_pool_state: Arc<WorkerPoolState>,
 ) {
     tracing::info!(worker_id = worker_id, "worker started");
 
@@ -445,8 +447,12 @@ async fn worker_loop(
                     worker_id = worker_id,
                     "worker stopped (cancelled after message)"
                 );
+                // Mark worker as idle before exiting
+                worker_pool_state.set_idle(worker_id);
                 break;
             }
+            // Mark worker as idle after processing completes (OBS-31)
+            worker_pool_state.set_idle(worker_id);
             continue;
         }
 
@@ -459,6 +465,15 @@ async fn worker_loop(
                     partition = msg.partition,
                     offset = msg.offset,
                     "worker picked up message"
+                );
+                // Mark worker as active for runtime introspection (OBS-31)
+                // handler_id is "shared" since PythonHandler is shared across topics
+                worker_pool_state.set_active(
+                    worker_id,
+                    "shared".to_string(),
+                    msg.topic.clone(),
+                    msg.partition,
+                    msg.offset,
                 );
                 active_message = Some(msg);
             }
@@ -494,6 +509,7 @@ async fn batch_worker_loop(
     dlq_router: Arc<dyn DlqRouter>,
     worker_id: usize,
     shutdown_token: CancellationToken,
+    worker_pool_state: Arc<WorkerPoolState>,
 ) {
     tracing::info!(worker_id = worker_id, "batch worker started");
 
@@ -522,6 +538,9 @@ async fn batch_worker_loop(
             } => {
                 // Deadline expired — flush all
                 if !accumulator.is_empty() {
+                    // Mark worker as busy for runtime introspection (OBS-31)
+                    // handler_id is "shared" since PythonHandler is shared across topics
+                    worker_pool_state.set_busy(worker_id, "shared".to_string());
                     let partitions = accumulator.flush_all();
                     if !partitions.is_empty() {
                         for (partition, batch) in partitions {
@@ -560,6 +579,8 @@ async fn batch_worker_loop(
                             }
                         }
                     }
+                    // Mark worker as idle after batch processing (OBS-31)
+                    worker_pool_state.set_idle(worker_id);
                 }
             }
 
@@ -958,6 +979,8 @@ pub struct WorkerPool {
     retry_coordinator: Arc<RetryCoordinator>,
     dlq_producer: Arc<SharedDlqProducer>,
     dlq_router: Arc<dyn DlqRouter>,
+    /// Shared state for runtime introspection (OBS-31).
+    pub(crate) worker_pool_state: Arc<WorkerPoolState>,
 }
 
 impl WorkerPool {
@@ -981,6 +1004,9 @@ impl WorkerPool {
     ) -> Self {
         let mut join_set = JoinSet::new();
 
+        // Create shared worker pool state for runtime introspection (OBS-31)
+        let worker_pool_state = Arc::new(WorkerPoolState::new(n_workers));
+
         // Route to batch_worker_loop for BatchSync and BatchAsync, worker_loop for others
         let mode = handler.mode();
         let use_batch = matches!(
@@ -999,6 +1025,7 @@ impl WorkerPool {
             let retry_coordinator = retry_coordinator.clone();
             let dlq_producer = dlq_producer.clone();
             let dlq_router = dlq_router.clone();
+            let worker_pool_state = Arc::clone(&worker_pool_state);
 
             if use_batch {
                 join_set.spawn(batch_worker_loop(
@@ -1012,6 +1039,7 @@ impl WorkerPool {
                     dlq_router,
                     worker_id,
                     token,
+                    worker_pool_state,
                 ));
             } else {
                 join_set.spawn(worker_loop(
@@ -1025,6 +1053,7 @@ impl WorkerPool {
                     dlq_router,
                     worker_id,
                     token,
+                    worker_pool_state,
                 ));
             }
         }
@@ -1037,7 +1066,13 @@ impl WorkerPool {
             retry_coordinator,
             dlq_producer,
             dlq_router,
+            worker_pool_state,
         }
+    }
+
+    /// Returns current worker states for RuntimeSnapshot (OBS-31).
+    pub fn worker_states(&self) -> std::collections::HashMap<usize, crate::observability::runtime_snapshot::WorkerStatus> {
+        self.worker_pool_state.get_states()
     }
 
     /// Run the worker pool — awaits all workers until shutdown.
@@ -1174,6 +1209,7 @@ mod tests {
                 dummy_dlq_router(),
                 0,
                 token,
+                Arc::new(WorkerPoolState::new(1)),
             ),
         )
         .await;
@@ -1229,6 +1265,7 @@ mod tests {
             dummy_dlq_router(),
             0,
             token.clone(),
+            Arc::new(WorkerPoolState::new(1)),
         ));
 
         let _ = tx.blocking_send(make_test_msg());
