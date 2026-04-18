@@ -240,6 +240,9 @@ impl Default for Dispatcher {
 
 // NOTE: ConsumerRunner import moved to lib.rs to avoid circular deps
 use crate::consumer::runner::ConsumerRunner;
+use crate::routing::chain::RoutingChain;
+use crate::routing::context::RoutingContext;
+use crate::routing::decision::RoutingDecision;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
@@ -256,6 +259,9 @@ pub struct ConsumerDispatcher {
     paused_topics: parking_lot::Mutex<HashSet<String>>,
     /// Backpressure threshold ratio for resume (0.0 to 1.0).
     resume_threshold: f64,
+    /// Optional routing chain for handler-based routing.
+    /// When set, messages are routed by handler_id instead of topic.
+    routing_chain: Option<Arc<RoutingChain>>,
 }
 
 impl ConsumerDispatcher {
@@ -267,7 +273,15 @@ impl ConsumerDispatcher {
             partition_handles: parking_lot::Mutex::new(std::collections::HashMap::new()),
             paused_topics: parking_lot::Mutex::new(HashSet::new()),
             resume_threshold: 0.5,
+            routing_chain: None,
         }
+    }
+
+    /// Sets the routing chain for handler-based routing.
+    /// When set, messages are routed using the chain instead of by topic.
+    pub fn with_routing_chain(mut self, chain: Arc<RoutingChain>) -> Self {
+        self.routing_chain = Some(chain);
+        self
     }
 
     /// Registers a handler for `topic` with bounded queue of `capacity`.
@@ -283,17 +297,38 @@ impl ConsumerDispatcher {
             .register_handler_with_semaphore(topic, capacity, semaphore)
     }
 
+    /// Registers a handler by handler ID (for routing-based dispatch).
+    /// Optionally limits concurrency with `max_concurrency` semaphore permits.
+    pub fn register_handler_by_id(
+        &self,
+        handler_id: impl Into<String>,
+        capacity: usize,
+        max_concurrency: Option<usize>,
+    ) -> mpsc::Receiver<OwnedMessage> {
+        let semaphore = max_concurrency.map(|n| Arc::new(tokio::sync::Semaphore::new(n)));
+        let handler_id_str = handler_id.into();
+        self.dispatcher
+            .register_handler_with_semaphore(handler_id_str, capacity, semaphore)
+    }
+
     /// Runs the dispatch loop, polling the consumer stream and
     /// dispatching each message through the dispatcher.
     /// Uses the provided backpressure policy.
+    ///
+    /// When a routing chain is configured, messages are first evaluated through
+    /// the chain to determine the target handler_id, then dispatched to that handler.
+    /// When no routing chain is set, messages are dispatched by topic (backward compat).
     pub async fn run(&self, policy: &dyn BackpressurePolicy) {
         let mut stream = self.runner.stream();
         while let Some(result) = stream.next().await {
             match result {
                 Ok(msg) => {
                     let topic = msg.topic.clone();
-                    let (outcome, pause_signal) =
-                        self.dispatcher.send_with_policy_and_signal(msg, policy);
+                    let (outcome, pause_signal) = if let Some(ref chain) = self.routing_chain {
+                        self.route_with_chain(msg, chain, policy)
+                    } else {
+                        self.dispatcher.send_with_policy_and_signal(msg, policy)
+                    };
                     match outcome {
                         Ok(outcome) => {
                             self.check_resume(&topic, outcome.queue_depth);
@@ -331,6 +366,50 @@ impl ConsumerDispatcher {
                 Err(e) => {
                     tracing::error!("consumer error: {}", e);
                 }
+            }
+        }
+    }
+
+    /// Routes a message through the routing chain and dispatches to the resulting handler.
+    fn route_with_chain(
+        &self,
+        msg: OwnedMessage,
+        chain: &Arc<RoutingChain>,
+        policy: &dyn BackpressurePolicy,
+    ) -> (Result<DispatchOutcome, DispatchError>, Option<BackpressureAction>) {
+        let ctx = RoutingContext::from_message(&msg);
+        match chain.route(&ctx) {
+            RoutingDecision::Route(handler_id) => {
+                // Dispatch to handler by ID
+                let qm = &self.dispatcher.queue_manager;
+                match qm.send_to_handler_by_id(&handler_id, msg) {
+                    Ok(outcome) => (Ok(outcome), None),
+                    Err(DispatchError::Backpressure(_)) => {
+                        let action = policy.on_queue_full(&handler_id, &qm.handlers.lock().get(&handler_id).map(|e| &e.metadata).unwrap_or_else(|| panic!("handler '{}' not found", handler_id)));
+                        match action {
+                            BackpressureAction::Drop | BackpressureAction::Wait => {
+                                (Err(DispatchError::Backpressure(handler_id)), None)
+                            }
+                            BackpressureAction::FuturePausePartition(t) => {
+                                (Err(DispatchError::Backpressure(handler_id)), Some(BackpressureAction::FuturePausePartition(t)))
+                            }
+                        }
+                    }
+                    Err(e) => (Err(e), None),
+                }
+            }
+            RoutingDecision::Drop => {
+                tracing::debug!("message dropped by routing chain");
+                (Err(DispatchError::HandlerNotRegistered("routing-drop".into())), None)
+            }
+            RoutingDecision::Reject(reason) => {
+                tracing::warn!("message rejected by routing chain: {}", reason);
+                (Err(DispatchError::HandlerNotRegistered("routing-reject".into())), None)
+            }
+            RoutingDecision::Defer => {
+                // Should not happen with properly configured chain, but handle gracefully
+                tracing::warn!("routing chain returned Defer with no fallback");
+                (Err(DispatchError::HandlerNotRegistered("routing-defer".into())), None)
             }
         }
     }
