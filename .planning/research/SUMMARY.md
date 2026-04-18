@@ -1,165 +1,188 @@
 # Project Research Summary
 
-**Project:** KafPy v1.3 Offset Commit Coordinator
-**Domain:** Kafka at-least-once delivery via per-topic-partition highest-contiguous-offset tracking
-**Researched:** 2026-04-16
+**Project:** KafPy - PyO3 Kafka Consumer Framework
+**Domain:** Kafka message processing with batch and async Python handler execution
+**Researched:** 2026-04-18
 **Confidence:** MEDIUM
 
 ## Executive Summary
 
-KafPy v1.3 adds an offset commit coordinator to enable at-least-once delivery semantics. The core mechanism tracks per-topic-partition acknowledged offsets, buffers out-of-order acks using a BTreeSet, and computes the highest contiguous offset for batch commit via rdkafka's `store_offset()` + `commit_consumer_state()` API. This is a well-understood pattern in the Kafka ecosystem; the key insight is that committing must happen only after confirmed successful processing of offset N (not N+1), and out-of-order processing requires buffering until gaps fill.
+KafPy is a Rust-backed Kafka consumer framework where the Rust core handles protocol (rdkafka + Tokio) and Python holds business logic via PyO3 bindings. Adding batch and async handler support requires: (1) a `HandlerMode` enum to represent execution variants (single-sync, single-async, batch-sync, batch-async), (2) a `BatchAccumulator` that collects messages until `max_batch_size` OR `max_batch_wait_ms` timeout, (3) async handler support via `pyo3-async-runtimes` `GILRef` pattern that releases GIL during await, and (4) a `BatchResult` type to model all-or-nothing or partial-success batch outcomes.
 
-The recommended architecture introduces a new `src/coordinator/` module with two components: `OffsetTracker` (per-partition ack state machine) and `OffsetCommitter` (background Tokio task managing rdkafka commits). Integration with WorkerPool happens via a new `OffsetCoordinator` trait, keeping offset tracking separate from `Executor` policy concerns. No new crate dependencies are required -- the existing stack (rdkafka 0.38, Tokio 1.40, parking_lot 0.12) is sufficient.
+The core challenge is GIL management: sync handlers use `spawn_blocking` (GIL held for brief window), while async handlers use `into_future` (GIL released during await). Both achieve the EXEC-06 minimal-GIL principle, but the paths are architecturally distinct. Batch handlers risk holding GIL for entire batch duration if implemented naively -- mitigation requires either per-message invocation within batch or conservative `max_batch_size` configuration.
 
-Key risks center on PyO3 lifetime management (GIL hold window, raw pointer double-free) rather than Kafka semantics. The most critical correctness guarantee is the highest-contiguous-offset algorithm: committing beyond the highest contiguous processed offset causes message loss. The most critical production risk is Tokio thread pool exhaustion from synchronous Python calls without `spawn_blocking`.
+Key pitfalls: (1) GIL held for entire batch duration, (2) batch result ambiguity losing per-message outcomes, (3) offset commit at wrong granularity, (4) async coroutine incorrectly invoked via `spawn_blocking` instead of `into_future`, (5) batch timeout + retry interaction corrupting retry state, (6) parallel batch execution breaking per-partition ordering, (7) `CancellationToken` not draining accumulated batch on shutdown.
 
 ## Key Findings
 
 ### Recommended Stack
 
-The v1.3 offset commit coordinator uses existing infrastructure. No new dependencies required.
+The stack is already largely in place. The primary addition is `pyo3-async-runtimes` 0.27.0 which provides `into_future` to convert Python coroutines into Tokio-compatible Futures. The key technology choices:
 
 **Core technologies:**
-- **rdkafka 0.38** -- Kafka protocol, `store_offset()`, and `commit_consumer_state()`. Verified via existing `ConsumerRunner::commit()` pattern in `src/consumer/runner.rs:116-122`. Two-phase model: `store_offset()` is fast/in-memory, `commit_consumer_state()` is the network round-trip.
-- **parking_lot 0.12** -- Fast mutex for the tracker HashMap. Existing stack, avoids poison semantics.
-- **tokio 1.40** -- Async runtime and channels. `OffsetCommitter` runs as a background Tokio task using a `watch` channel for commit signalling.
+- `pyo3` 0.27.2 -- already in use; stable GIL API with `Bound<PyAny>` and `Python::with_gil`
+- `pyo3-async-runtimes` 0.27.0 -- provides `into_future` for async Python handlers; GIL released during await
+- `tokio` 1.40 -- already in use; native rdkafka compat, mpsc channels, `spawn_blocking`
 
-**Configuration required:**
-- `enable.auto.commit=false` -- disable automatic commit (we control commit manually)
-- `enable.auto.offset.store=false` -- disable auto-store (we call `store_offset()` explicitly after successful processing)
+**What IS needed:**
+- `pyo3_async_runtimes::tokio::into_future` -- converts Python coroutine to Tokio Future, GIL released during await
+- Coroutine detection via Python stdlib `inspect` module (`inspect.iscoroutinefunction`)
+- `HandlerMode` enum (SingleSync, SingleAsync, BatchSync, BatchAsync) unified execution interface
+- `BatchResult` type (AllSuccess, AllFailure, PartialFailure) -- NOT reuse of existing `ExecutionResult`
 
-**New module structure:**
-```
-src/coordinator/
-  mod.rs              # Module init, public exports
-  offset_tracker.rs   # Per-topic-partition ack state machine
-  commit_task.rs      # Background Tokio task managing rdkafka commits
-  error.rs            # CoordinatorError
-```
+**What NOT to use:**
+- `async-std` runtime -- would conflict with Tokio
+- `pyo3-asyncio` -- deprecated, merged into `pyo3-async-runtimes`
+- `futures::executor::block_on` -- wrong executor for PyO3
+- `spawn_blocking` for async handlers -- defeats async purpose; blocks Tokio thread
 
 ### Expected Features
 
 **Must have (table stakes):**
-- **Per-topic-partition offset tracking** -- Key by `(topic, partition)`, not just topic. Kafka assigns offsets independently per partition.
-- **Highest contiguous offset calculation** -- Only commit when all offsets up to N are confirmed. Using `BTreeSet<i64>` for efficient range queries. Gap detection prevents message loss.
-- **Out-of-order ack buffering** -- Workers ack concurrently; buffering handles non-deterministic order. Advance cursor when gap fills.
-- **store_offset() before commit()** -- Two-phase rdkafka pattern: store in-memory, then flush to broker.
-- **No duplicate commit guard** -- Only call `commit()` if `highest_contiguous > committed_offset`.
-- **Configuration: commit_interval_ms, commit_max_messages** -- Batching amortizes network cost.
+- `HandlerMode` enum -- core abstraction gating all work; represents 4 execution variants
+- Batch accumulation logic -- `BatchAccumulator` struct holding messages with size and time limits
+- Batch handler invoke (sync) -- `PythonHandler.invoke` receives `Vec<OwnedMessage>`, Python callable receives `List[Dict]`
+- `WorkerPool` mode dispatch -- selects appropriate invoke path based on handler mode
+- GIL minimal usage (verified) -- GIL only inside Python execution blocks; confirmed via tokio-console
 
-**Should have (differentiators):**
-- **CommitExecutor plug-in** -- Wraps `DefaultExecutor` with offset commit policy. Satisfies pluggable executor requirement from v1.2.
-- **Graceful shutdown commit** -- Before worker pool drains, commit highest contiguous so no messages are re-delivered on restart.
-- **Automatic offset tracking per ExecutionResult** -- User does not manually call store/commit; WorkerPool/Executor integration handles it transparently.
+**Should have (competitive):**
+- Async Python handler invoke via `pyo3-async-runtimes` `into_future`/`future_into_py`
+- `BatchResult` with partial failure tracking (succeeded/failed per message)
+- Python-side unified registration API -- `consumer.on_topic("events", handler, mode="batch", batch_size=100)`
 
 **Defer (v2+):**
-- **RetryExecutor integration with offset tracking** -- When retry exhausts, offset should NOT advance.
-- **DLQ routing with offset tracking** -- Rejected messages should not prevent commit of earlier offsets.
-- **Backpressure-aware commit pacing** -- When dispatcher is under backpressure, commit more aggressively.
+- Streaming windowed batches (sliding/session windows) -- very high complexity
+- Schema validation at batch boundary -- orthogonal concern
 
 ### Architecture Approach
 
-The coordinator introduces a new `src/coordinator/` module that orchestrates cross-cutting commit concerns spanning `WorkerPool` (ack source) and `ConsumerRunner` (commit sink). `OffsetTracker` implements an `OffsetCoordinator` trait that WorkerPool calls on each `ExecutionResult::Ok`. `OffsetCommitter` runs as a background Tokio task, decoupled from the hot worker path, using a `watch` channel to receive commit signals. Key design decision: `OffsetCoordinator` is a separate trait from `Executor`, keeping two distinct concerns (executor policy vs. offset tracking) properly separated.
+The architecture introduces batch accumulation at the worker level (not dispatcher level), keeping dispatcher infrastructure unchanged. Batch accumulation uses `tokio::select!` racing `rx.recv()` against a timeout. Async handlers are invoked as `async fn` inside the worker loop, awaiting directly rather than via `spawn_blocking`.
 
 **Major components:**
-1. **OffsetTracker** -- Per-partition ack state machine. Maintains `committed_offset`, `pending_offsets` (BTreeSet), `failed_offsets` (BTreeSet). Implements highest-contiguous-offset algorithm with gap detection.
-2. **OffsetCommitter** -- Background Tokio task. Receives commit signals via watch channel, throttles via `min_commit_interval`, calls `runner.store_offset()` + `runner.commit()`.
-3. **OffsetCoordinator trait** -- `record_ack(topic, partition, offset)` interface. `WorkerPool` holds `Arc<dyn OffsetCoordinator>`. Keeps offset tracking decoupled from `Executor`.
+1. `BatchAccumulator` -- accumulates messages per-worker; triggers on size OR timeout; respects `CancellationToken`
+2. `BatchHandler` / `AsyncPythonHandler` -- invokes Python callable on accumulated batch via `spawn_blocking` or `into_future`
+3. `HandlerMode` enum -- unified interface across 4 execution modes; construction-time decision (not runtime dispatch)
+4. `BatchExecutionResult` enum -- `AllSuccess { count }`, `AllFailure { count, results }`, `PartialFailure { successes, failures }`
+
+**Integration points:**
+- `WorkerPool::worker_loop` -- add `batch_worker_loop` variant; mode enum dispatch
+- `PythonHandler::invoke` -- add `invoke_async` using `GILRef` from `pyo3-async-runtimes`
+- `OffsetTracker` -- unchanged; batch acks call `record_ack` per message
+- `QueueManager` -- add `ack_batch(topic, N)` for batch-level inflight decrement
 
 ### Critical Pitfalls
 
-1. **Raw pointer double-free with `Py<PyAny>`** -- Cloning a `Py<PyAny>` via `as_ptr()` + `from_owned_ptr` doubles the reference count. Fix: use `Py::clone(&handler)` for any cross-boundary copy.
-2. **GIL hold window creep** -- Calling Python directly in the async message loop blocks the Tokio thread while holding the GIL. Fix: always route Python execution through `tokio::task::spawn_blocking`.
-3. **Storing `Bound<'_, PyAny>` instead of `Py<PyAny>`** -- `Bound` carries a lifetime tied to a specific `Python` token. Cannot be stored across async boundaries. Fix: use `callback.unbind()` at the boundary to convert to `Py<PyAny>`.
-4. **Fake parallelism from Tokio tasks** -- Spawning multiple `tokio::spawn` tasks that all call Python creates GIL serialization. Throughput does not improve. Fix: use a `Semaphore` to limit concurrent Python executions.
-5. **Python exceptions escaping async context** -- If a Python exception propagates out of a `Python::with` block across an async boundary, the exception state is lost. Fix: always handle `PyErr` within the `Python::with` scope.
+1. **GIL held for entire batch duration** -- If batch invokes Python holding GIL for entire batch (e.g., 100 msgs x 10ms = 1 second), all Python code blocked. Mitigation: per-message invocation within batch, or conservative `max_batch_size` config (<50 for CPU-bound).
+
+2. **Batch result ambiguity** -- Reusing `ExecutionResult` for batch loses per-message outcomes. Mitigation: define `BatchExecutionResult` enum with `AllSuccess`, `AllFailure`, `PartialFailure` variants. Never return single `ExecutionResult` from batch handler.
+
+3. **Offset commit at wrong granularity** -- Committing per-message inside batch breaks all-or-nothing semantics. Mitigation: only call `offset_coordinator.record_ack` after batch handler returns `AllOk`.
+
+4. **Async coroutine via `spawn_blocking`** -- Using `spawn_blocking` for async Python coroutine runs it synchronously, defeating async. Mitigation: use `into_future` which returns a Tokio-compatible Future; `await` it directly in worker loop.
+
+5. **`CancellationToken` not draining accumulated batch** -- On shutdown, batch accumulator may drop messages if cancellation fires during timeout wait. Mitigation: use `tokio::select!` with biased cancellation branch that drains before exiting.
 
 ## Implications for Roadmap
 
 Based on research, suggested phase structure:
 
-### Phase 1: OffsetTracker Core
-**Rationale:** Pure data structure with no dependencies on other new components. Can be built and unit-tested independently. The highest-contiguous-offset algorithm is the core correctness invariant.
-**Delivers:** `src/coordinator/offset_tracker.rs` with `PartitionState`, `OffsetTracker`, `ack()`, `highest_contiguous()`, `should_commit()`. BTreeSet-based pending buffer with gap detection.
-**Implements:** Architecture component `OffsetTracker`
-**Avoids:** Risk of building on a flawed foundation -- the contiguous algorithm must be correct before any commit wiring.
+### Phase 1: HandlerMode Enum and Base Infrastructure
+**Rationale:** The `HandlerMode` enum is the core abstraction that gates all other work. No batch or async functionality is possible without it. This phase establishes the foundation.
 
-### Phase 2: OffsetCommitter Background Task
-**Rationale:** Depends on Phase 1 (OffsetTracker) and ConsumerRunner (existing). The committer task wraps rdkafka's commit API with interval throttling. Single-producer/single-consumer watch channel is the correct pattern here.
-**Delivers:** `src/coordinator/commit_task.rs` with `OffsetCommitter`, background Tokio task, watch channel integration, `min_commit_interval` throttle.
-**Implements:** Architecture component `OffsetCommitter`
+**Delivers:** `HandlerMode` enum (SingleSync, SingleAsync, BatchSync, BatchAsync), `BatchExecutionResult` type, `BatchAccumulator` struct (no dispatch yet).
 
-### Phase 3: ConsumerRunner store_offset Method
-**Rationale:** No dependencies. Adds `store_offset(topic, partition, offset)` method to ConsumerRunner. Required before manual commit can work. rdkafka requires explicit `store_offset()` before `commit_consumer_state()` for manual offset management.
-**Delivers:** `ConsumerRunner::store_offset()` method. Consumer config updated with `enable.auto.commit=false` and `enable.auto.offset.store=false`.
-**Uses:** Stack element `rdkafka 0.38` -- `store_offsets()` API
+**Implements:** Architecture component: `HandlerMode` enum, `BatchResult` type.
 
-### Phase 4: OffsetCoordinator Trait Integration
-**Rationale:** Depends on Phase 1. Adds `OffsetCoordinator` trait to `src/python/executor.rs`. Establishes the interface contract between WorkerPool and OffsetTracker.
-**Delivers:** `OffsetCoordinator` trait: `record_ack(topic, partition, offset)`. `OffsetTracker` implements the trait. `WorkerPool::new()` accepts `Arc<dyn OffsetCoordinator>`.
-**Avoids:** Mixing two separate concerns in `Executor` -- keeping offset tracking independent of executor policy.
+**Avoids:** Pitfall 2 (batch result ambiguity) -- `BatchExecutionResult` defined before any batch invocation.
 
-### Phase 5: WorkerPool Integration
-**Rationale:** Depends on Phase 1, 3, and 4. Wires the `OffsetCoordinator` into `WorkerPool::worker_loop()` on `ExecutionResult::Ok`. Minimal changes to existing worker_loop.
-**Delivers:** WorkerPool calls `offset_coordinator.record_ack()` alongside existing `queue_manager.ack()`. Graceful shutdown triggers final commit for each topic-partition.
-**Implements:** Architecture component `WorkerPool` modification
+### Phase 2: Sync Batch Handler Implementation
+**Rationale:** Sync batch is lower risk than async (existing `spawn_blocking` pattern). Establishes batch accumulation at worker level, per-partition ordering constraint enforcement, and offset commit-at-batch-boundary pattern.
 
-### Phase 6: PyO3 Bridge and End-to-End
-**Rationale:** Depends on Phase 5. Wires coordinator into PyConsumer, creates OffsetTracker and OffsetCommitter instances, spawns committer task.
-**Delivers:** `src/pyconsumer.rs` wiring. End-to-end integration test with real Kafka + Python callback.
-**Addresses:** Pitfall GIL hold window (verify `spawn_blocking` used), raw pointer double-free (verify `Py::clone()` used).
+**Delivers:** `BatchSyncHandler::invoke` via `spawn_blocking`, `batch_worker_loop` in `WorkerPool`, `QueueManager::ack_batch`, batch result processing (all-or-nothing).
+
+**Uses:** `pyo3` `Python::with_gil`, `tokio::spawn_blocking`.
+
+**Implements:** Architecture component: `BatchHandler`, `BatchAccumulator` integration.
+
+**Avoids:** Pitfall 1 (GIL held too long) -- configure conservative `max_batch_size`; Pitfall 6 (ordering) -- per-partition batch channels enforced here.
+
+### Phase 3: Async Python Handler Support
+**Rationale:** Async support requires `pyo3-async-runtimes` integration (new dependency) and is higher complexity. Defer until sync batch is proven.
+
+**Delivers:** `AsyncPythonHandler::invoke_async` via `into_future`, `AsyncExecutor` trait, async mode dispatch in worker loop.
+
+**Uses:** `pyo3-async-runtimes::tokio::into_future`, `GILRef` pattern.
+
+**Implements:** Architecture component: `AsyncPythonHandler`, `AsyncExecutor` trait.
+
+**Avoids:** Pitfall 4 (spawn_blocking for async) -- correctly uses `into_future`; verify async handler yields during Python-side await.
+
+### Phase 4: Partial Failure and Retry Integration
+**Rationale:** Partial batch failure tracking adds significant complexity (per-message outcome mapping to offsets). Only after all-or-nothing batch is working.
+
+**Delivers:** `BatchExecutionResult::PartialFailure` with per-message tracking, retry/DLQ integration for batch, retry messages bypass accumulator.
+
+**Avoids:** Pitfall 5 (batch timeout + retry interaction) -- retry stream separated from batch accumulation.
+
+### Phase 5: Shutdown Drain and Integration Testing
+**Rationale:** Graceful shutdown correctness must be verified. End-to-end tests for batch + async + retry + offset commit scenarios.
+
+**Delivers:** `CancellationToken` draining batch accumulator, integration tests for all scenarios in "Looks Done But Isn't" checklist.
+
+**Avoids:** Pitfall 7 (cancellation loses accumulated messages) -- `tokio::select!` with biased cancellation branch.
 
 ### Phase Ordering Rationale
 
-- Phase 1-2 build the coordinator components in isolation (pure Rust, no Kafka/Python needed for unit tests). This lets the algorithm be validated before integration.
-- Phase 3 (ConsumerRunner store_offset) is independent but needed for Phase 6.
-- Phase 4 establishes the interface before Phase 5 uses it.
-- Phase 6 is the integration phase -- by this point all components are individually tested.
-- PyO3 pitfalls (GIL, raw pointers, lifetime) are addressed during Phase 6 integration, not in earlier phases (those are existing issues, not new to v1.3).
+1. **HandlerMode first** -- Without it, no way to distinguish sync/async or single/batch execution paths. All other phases depend on this enum.
+2. **Sync batch before async** -- Sync batch uses existing `spawn_blocking` pattern (known good). Async introduces new dependency and GIL-release-during-await complexity.
+3. **Batch before partial failure** -- All-or-nothing semantics are simpler to implement and verify. Partial failure tracking is optional enhancement.
+4. **Partial failure before shutdown drain** -- Shutdown drain needs to correctly handle all result types including partial failure outcomes.
+5. **Integration testing last** -- Unit tests can verify components in isolation, but offset commit semantics and ordering guarantees require end-to-end tests.
 
 ### Research Flags
 
-**Phases needing deeper research during planning:**
-- **Phase 6 (PyO3 Bridge):** The PyO3 integration patterns (GIL management, lifetime handling) are well-documented but must be verified with integration tests. Plan to use `tokio-console` to observe GIL hold behavior under load.
-- **Phase 2 (OffsetCommitter):** Watch channel throttle behavior under high offset throughput -- may need tuning of `min_commit_interval`. Recommend load test at 10K msg/s.
+Phases likely needing deeper research during planning:
+- **Phase 2 (Sync Batch):** `BatchAccumulator` timing details need implementation verification. `tokio::select!` race behavior with high-throughput message arrival not fully characterized.
+- **Phase 3 (Async):** `pyo3-async-runtimes` GILRef API exact version compatibility with KafPy's Tokio version -- needs Context7 verification.
 
-**Phases with standard patterns (skip research-phase):**
-- **Phase 1 (OffsetTracker):** BTreeSet contiguous algorithm is standard ecosystem practice, well-documented in FEATURES.md anti-patterns section.
-- **Phase 3 (ConsumerRunner store_offset):** Verified via existing `ConsumerRunner::commit()` pattern in codebase.
+Phases with standard patterns (skip research-phase):
+- **Phase 1 (HandlerMode):** Enum definition is straightforward pattern matching on existing code.
+- **Phase 5 (Shutdown):** `CancellationToken` + `tokio::select!` is well-documented Tokio pattern.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | MEDIUM | rdkafka 0.38 API verified via existing codebase patterns; offset-store async patterns lack published code examples but are consistent with rdkafka architecture |
-| Features | MEDIUM | Kafka offset semantics well-documented in protocol docs; highest-contiguous algorithm is standard; out-of-order buffering logic is standard ecosystem practice |
-| Architecture | HIGH | Clear component boundaries; `OffsetCoordinator` separation from `Executor` is a sound design; watch channel pattern is standard Tokio |
-| Pitfalls | MEDIUM | Based on PyO3 internals, Rust async patterns, and analysis of existing `pyconsumer.rs` -- no new pitfalls specific to v1.3 beyond existing PyO3 issues |
+| Stack | HIGH | Based on Context7 verified docs.rs for pyo3-async-runtimes 0.27.0 and confirmed existing dependencies |
+| Features | MEDIUM | Based on analysis of rdkafka, aiokafka, Faust competitors; not validated against actual user feedback |
+| Architecture | MEDIUM | Structural recommendations sound; BatchAccumulator timing details need implementation verification |
+| Pitfalls | MEDIUM | Based on PyO3 0.27, pyo3-async-runtimes, Tokio patterns, and codebase analysis; some pitfalls (e.g., GIL hold duration) require empirical verification |
 
 **Overall confidence:** MEDIUM
 
 ### Gaps to Address
 
-- **OffsetTracker restart behavior:** When a consumer restarts, it resumes from the last committed offset. The initial `committed_offset` value on startup (before any commit) needs to be validated against Kafka's "earliest" vs "latest" semantics. Recommend: start at -1, let Kafka handle initial positioning.
-- **Commit interval tuning:** `min_commit_interval` default (100ms) may need tuning. Recommend adding a metric for commit frequency and tuning in production-like environment.
-- **Integration test coverage:** The highest-contiguous algorithm needs an integration test with real Kafka to verify no message loss under concurrent worker ack patterns.
+- **BatchAccumulator timing:** The `tokio::select!` loop with timer vs. message arrival race behavior under high throughput not fully characterized. May need simulation or prototyping.
+- **Async handler GILRef API:** Exact API for `GILRef::acquire()` pattern needs Context7 verification against pyo3-async-runtimes docs.
+- **Partial failure efficiency:** Per-message outcome tracking overhead vs. simple all-or-nothing needs benchmarking.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- Existing `ConsumerRunner::commit()` implementation in `src/consumer/runner.rs:116-122` -- verified `store_offset` and `commit_consumer_state` API usage
-- Existing codebase patterns -- confirmed rdkafka 0.38, parking_lot, tokio versions from `Cargo.toml`
-- rdkafka `Consumer` trait documentation via Context7 -- `store_offset` and `commit_consumer_state` API verified
+- [docs.rs: pyo3-async-runtimes 0.27.0](https://docs.rs/pyo3-async-runtimes/0.27.0/pyo3_async_runtimes/tokio/) -- `into_future` API, GIL behavior during await
+- [KafPy Cargo.toml](file:///home/nghiem/project/KafPy/Cargo.toml) -- existing stack confirmed
+- [KafPy src/python/handler.rs](file:///home/nghiem/project/KafPy/src/python/handler.rs) -- existing `invoke` pattern confirmed
+- [KafPy src/worker_pool/mod.rs](file:///home/nghiem/project/KafPy/src/worker_pool/mod.rs) -- worker loop pattern confirmed
 
 ### Secondary (MEDIUM confidence)
-- PyO3 documentation -- Python boundary and GIL management patterns
-- Kafka protocol docs -- `OffsetCommitRequest` semantics, offset = "next expected offset"
-- Tokio documentation -- `spawn_blocking` contract and `watch` channel patterns
+- [Faust streaming/faust](https://github.com/faust/faust) -- `@app.agent` with `batch=True` decorator; Python streaming framework patterns
+- [aiokafka batch API](https://github.com/aio-libs/aiokafka) -- application-level batch accumulation patterns
+- [Tokio select! documentation](https://tokio.rs/tokio/tutorial/select) -- batch accumulation timing patterns
+- [rdkafka StreamConsumer API](https://docs.confluent.io/kafka-clients/python/current/) -- message yield one-at-a-time confirmed
 
 ### Tertiary (LOW confidence)
-- Confluent blog on exactly-once semantics -- covers at-least-once vs exactly-once tradeoffs, needs validation against specific use case
-- Community patterns for BTreeSet contiguous offset calculation -- widely used but few published examples specific to this exact algorithm
+- [PyO3 GitHub issues: GIL release during Python await](https://github.com/PyO3/pyo3) -- needs specific version verification
 
 ---
-*Research completed: 2026-04-16*
+*Research completed: 2026-04-18*
 *Ready for roadmap: yes*
