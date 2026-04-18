@@ -110,10 +110,12 @@ impl BatchAccumulator {
     pub fn add(&self, msg: OwnedMessage) {
         let partition = msg.partition;
         let mut guard = self.partition_accumulators.lock();
-        let acc = guard.entry(partition).or_insert_with(|| PartitionAccumulator {
-            messages: Vec::new(),
-            deadline: None,
-        });
+        let acc = guard
+            .entry(partition)
+            .or_insert_with(|| PartitionAccumulator {
+                messages: Vec::new(),
+                deadline: None,
+            });
         acc.add(msg, self.max_batch_wait);
     }
 
@@ -446,7 +448,9 @@ async fn batch_worker_loop(
 ) {
     tracing::info!(worker_id = worker_id, "batch worker started");
 
-    let batch_policy = handler.batch_policy().expect("BatchSync requires batch_policy");
+    let batch_policy = handler
+        .batch_policy()
+        .expect("BatchSync requires batch_policy");
     let accumulator =
         BatchAccumulator::new(batch_policy.max_batch_size, batch_policy.max_batch_wait_ms);
 
@@ -480,19 +484,19 @@ async fn batch_worker_loop(
                                     batch[0].offset,
                                     worker_id,
                                 );
-                                let result = handler.invoke_batch(&ctx, batch).await;
+                                let result = handler.invoke_mode_batch(&ctx, batch.clone()).await;
                                 handle_batch_result_inline(
                                     result,
                                     batch,
                                     &topic,
                                     partition,
                                     &ctx,
-                                    executor.as_ref(),
-                                    queue_manager.as_ref(),
-                                    offset_coordinator.as_ref(),
-                                    retry_coordinator.as_ref(),
-                                    dlq_producer.as_ref(),
-                                    dlq_router.as_ref(),
+                                    executor.clone(),
+                                    queue_manager.clone(),
+                                    offset_coordinator.clone(),
+                                    retry_coordinator.clone(),
+                                    dlq_producer.clone(),
+                                    dlq_router.clone(),
                                 )
                                 .await;
                             }
@@ -522,19 +526,19 @@ async fn batch_worker_loop(
                                                     batch[0].offset,
                                                     worker_id,
                                                 );
-                                                let result = handler.invoke_batch(&ctx, batch).await;
+                                                let result = handler.invoke_mode_batch(&ctx, batch.clone()).await;
                                                 handle_batch_result_inline(
                                                     result,
                                                     batch,
                                                     &topic,
                                                     partition,
                                                     &ctx,
-                                                    executor.as_ref(),
-                                                    queue_manager.as_ref(),
-                                                    offset_coordinator.as_ref(),
-                                                    retry_coordinator.as_ref(),
-                                                    dlq_producer.as_ref(),
-                                                    dlq_router.as_ref(),
+                                                    executor.clone(),
+                                                    queue_manager.clone(),
+                                                    offset_coordinator.clone(),
+                                                    retry_coordinator.clone(),
+                                                    dlq_producer.clone(),
+                                                    dlq_router.clone(),
                                                 )
                                                 .await;
                                             }
@@ -556,19 +560,19 @@ async fn batch_worker_loop(
                                         batch[0].offset,
                                         worker_id,
                                     );
-                                    let result = handler.invoke_batch(&ctx, batch).await;
+                                    let result = handler.invoke_mode_batch(&ctx, batch.clone()).await;
                                     handle_batch_result_inline(
                                         result,
                                         batch,
                                         &topic,
                                         partition,
                                         &ctx,
-                                        executor.as_ref(),
-                                        queue_manager.as_ref(),
-                                        offset_coordinator.as_ref(),
-                                        retry_coordinator.as_ref(),
-                                        dlq_producer.as_ref(),
-                                        dlq_router.as_ref(),
+                                        executor.clone(),
+                                        queue_manager.clone(),
+                                        offset_coordinator.clone(),
+                                        retry_coordinator.clone(),
+                                        dlq_producer.clone(),
+                                        dlq_router.clone(),
                                     )
                                     .await;
                                 }
@@ -576,11 +580,12 @@ async fn batch_worker_loop(
                         }
 
                         // Add the message to accumulator
+                        let msg_partition = msg.partition;
                         accumulator.add(msg);
 
                         // If we just hit max_batch_size after adding, flush immediately
-                        if accumulator.would_fill_partition(msg.partition) {
-                            if let Some(batch) = accumulator.flush_partition(msg.partition) {
+                        if accumulator.would_fill_partition(msg_partition) {
+                            if let Some(batch) = accumulator.flush_partition(msg_partition) {
                                 if !batch.is_empty() {
                                     let topic = batch[0].topic.clone();
                                     let partition = batch[0].partition;
@@ -590,19 +595,19 @@ async fn batch_worker_loop(
                                         batch[0].offset,
                                         worker_id,
                                     );
-                                    let result = handler.invoke_batch(&ctx, batch).await;
+                                    let result = handler.invoke_mode_batch(&ctx, batch.clone()).await;
                                     handle_batch_result_inline(
                                         result,
                                         batch,
                                         &topic,
                                         partition,
                                         &ctx,
-                                        executor.as_ref(),
-                                        queue_manager.as_ref(),
-                                        offset_coordinator.as_ref(),
-                                        retry_coordinator.as_ref(),
-                                        dlq_producer.as_ref(),
-                                        dlq_router.as_ref(),
+                                        executor.clone(),
+                                        queue_manager.clone(),
+                                        offset_coordinator.clone(),
+                                        retry_coordinator.clone(),
+                                        dlq_producer.clone(),
+                                        dlq_router.clone(),
                                     )
                                     .await;
                                 }
@@ -625,19 +630,19 @@ async fn batch_worker_loop(
                                     batch[0].offset,
                                     worker_id,
                                 );
-                                let result = handler.invoke_batch(&ctx, batch).await;
+                                let result = handler.invoke_mode_batch(&ctx, batch.clone()).await;
                                 handle_batch_result_inline(
                                     result,
                                     batch,
                                     &topic,
                                     partition,
                                     &ctx,
-                                    executor.as_ref(),
-                                    queue_manager.as_ref(),
-                                    offset_coordinator.as_ref(),
-                                    retry_coordinator.as_ref(),
-                                    dlq_producer.as_ref(),
-                                    dlq_router.as_ref(),
+                                    executor.clone(),
+                                    queue_manager.clone(),
+                                    offset_coordinator.clone(),
+                                    retry_coordinator.clone(),
+                                    dlq_producer.clone(),
+                                    dlq_router.clone(),
                                 )
                                 .await;
                             }
@@ -663,19 +668,19 @@ async fn batch_worker_loop(
                             batch[0].offset,
                             worker_id,
                         );
-                        let result = handler.invoke_batch(&ctx, batch).await;
+                        let result = handler.invoke_mode_batch(&ctx, batch.clone()).await;
                         handle_batch_result_inline(
                             result,
                             batch,
                             &topic,
                             partition,
                             &ctx,
-                            executor.as_ref(),
-                            queue_manager.as_ref(),
-                            offset_coordinator.as_ref(),
-                            retry_coordinator.as_ref(),
-                            dlq_producer.as_ref(),
-                            dlq_router.as_ref(),
+                            executor.clone(),
+                            queue_manager.clone(),
+                            offset_coordinator.clone(),
+                            retry_coordinator.clone(),
+                            dlq_producer.clone(),
+                            dlq_router.clone(),
                         )
                         .await;
                     }
@@ -699,12 +704,12 @@ async fn handle_batch_result_inline(
     topic: &str,
     partition: i32,
     ctx: &ExecutionContext,
-    executor: &Arc<dyn Executor>,
-    queue_manager: &Arc<QueueManager>,
-    offset_coordinator: &Arc<dyn OffsetCoordinator>,
-    retry_coordinator: &Arc<RetryCoordinator>,
-    _dlq_producer: &Arc<SharedDlqProducer>,
-    _dlq_router: &Arc<dyn DlqRouter>,
+    executor: Arc<dyn Executor>,
+    queue_manager: Arc<QueueManager>,
+    offset_coordinator: Arc<dyn OffsetCoordinator>,
+    retry_coordinator: Arc<RetryCoordinator>,
+    _dlq_producer: Arc<SharedDlqProducer>,
+    _dlq_router: Arc<dyn DlqRouter>,
 ) {
     match result {
         BatchExecutionResult::AllSuccess(offsets) => {
@@ -733,12 +738,8 @@ async fn handle_batch_result_inline(
             );
 
             for msg in batch {
-                let (should_retry, should_dlq, delay) = retry_coordinator.record_failure(
-                    topic,
-                    partition,
-                    msg.offset,
-                    &reason,
-                );
+                let (should_retry, should_dlq, delay) =
+                    retry_coordinator.record_failure(topic, partition, msg.offset, &reason);
 
                 offset_coordinator.mark_failed(topic, partition, msg.offset, &reason);
 
@@ -851,9 +852,13 @@ impl WorkerPool {
     ) -> Self {
         let mut join_set = JoinSet::new();
 
-        // Route to batch_worker_loop for BatchSync, worker_loop for others
+        // Route to batch_worker_loop for BatchSync and BatchAsync, worker_loop for others
         let mode = handler.mode();
-        let use_batch = mode == crate::python::handler::HandlerMode::BatchSync;
+        let use_batch = matches!(
+            mode,
+            crate::python::handler::HandlerMode::BatchSync
+                | crate::python::handler::HandlerMode::BatchAsync
+        );
 
         // Zip workers with receivers — receivers is consumed here
         for (worker_id, rx) in receivers.into_iter().enumerate().take(n_workers) {

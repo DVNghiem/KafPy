@@ -5,6 +5,7 @@ use crate::dispatcher::OwnedMessage;
 use crate::failure::classifier::DefaultFailureClassifier;
 use crate::failure::FailureClassifier;
 use crate::failure::FailureReason;
+use crate::python::async_bridge::PythonAsyncFuture;
 use crate::python::context::ExecutionContext;
 use crate::python::execution_result::{BatchExecutionResult, ExecutionResult};
 use crate::retry::RetryPolicy;
@@ -98,10 +99,7 @@ impl PythonHandler {
     ) -> ExecutionResult {
         match self.mode() {
             HandlerMode::SingleSync => self.invoke(ctx, message).await,
-            HandlerMode::SingleAsync => {
-                // Phase 26: into_future bridge
-                unimplemented!("SingleAsync (Phase 26)")
-            }
+            HandlerMode::SingleAsync => self.invoke_async(ctx, message).await,
             HandlerMode::BatchSync => {
                 // Phase 25: batch invoke with single message (treat as batch of 1)
                 let result = self.invoke_batch(ctx, vec![message]).await;
@@ -126,8 +124,20 @@ impl PythonHandler {
                 }
             }
             HandlerMode::BatchAsync => {
-                // Phase 26: batch async invoke
-                unimplemented!("BatchAsync (Phase 26)")
+                let result = self.invoke_batch_async(ctx, vec![message]).await;
+                match result {
+                    BatchExecutionResult::AllSuccess(_) => ExecutionResult::Ok,
+                    BatchExecutionResult::AllFailure(reason) => ExecutionResult::Error {
+                        reason,
+                        exception: "BatchHandlerError".to_string(),
+                        traceback: "Batch handler failed".to_string(),
+                    },
+                    BatchExecutionResult::PartialFailure { .. } => ExecutionResult::Error {
+                        reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
+                        exception: "PartialFailureNotImplemented".to_string(),
+                        traceback: "PartialFailure not implemented in v1.6".to_string(),
+                    },
+                }
             }
         }
     }
@@ -257,6 +267,135 @@ impl PythonHandler {
             Err(_) => BatchExecutionResult::AllFailure(FailureReason::Terminal(
                 crate::failure::TerminalKind::HandlerPanic,
             )),
+        }
+    }
+
+    /// Invokes the Python callable asynchronously via PythonAsyncFuture.
+    ///
+    /// Used for HandlerMode::SingleAsync. Creates a coroutine object inside
+    /// Python::with_gil, then wraps it in PythonAsyncFuture which handles
+    /// GIL release on each poll. The GIL is held only during coroutine.send(None).
+    pub async fn invoke_async(
+        &self,
+        ctx: &ExecutionContext,
+        message: OwnedMessage,
+    ) -> ExecutionResult {
+        let callback = Arc::clone(&self.callback);
+        let topic = ctx.topic.clone();
+        let partition = ctx.partition;
+        let offset = ctx.offset;
+        let _worker_id = ctx.worker_id;
+        let key = message.key.clone();
+        let payload = message.payload.clone();
+        let headers = message.headers.clone();
+        let timestamp = message.timestamp;
+
+        // Build the coroutine object inside with_gil — this is synchronous,
+        // but the returned PythonAsyncFuture handles GIL release on each poll.
+        let coro: Py<PyAny> = Python::with_gil(|py| {
+            let py_msg = PyDict::new(py);
+            let _ = py_msg.set_item("topic", &topic);
+            let _ = py_msg.set_item("partition", partition);
+            let _ = py_msg.set_item("offset", offset);
+            let _ = py_msg.set_item("key", key.as_deref());
+            let _ = py_msg.set_item("payload", payload.as_deref());
+            let ts: i64 = match timestamp {
+                MessageTimestamp::NotAvailable => 0,
+                MessageTimestamp::CreateTime(ts) => ts,
+                MessageTimestamp::LogAppendTime(ts) => ts,
+            };
+            let _ = py_msg.set_item("timestamp", ts);
+            let _ = py_msg.set_item("headers", &headers);
+
+            // Call the async function — returns a coroutine object.
+            // The callback IS the coroutine function, calling it returns the coroutine object.
+            callback
+                .call1(py, (py_msg,))
+                .expect("callback must be a coroutine function")
+                .into()
+        });
+
+        // Drive the coroutine as a Future — GIL released during await.
+        PythonAsyncFuture::from(coro).await
+    }
+
+    /// Invokes the Python callable asynchronously with a batch of messages via PythonAsyncFuture.
+    ///
+    /// Used for HandlerMode::BatchAsync. Builds Vec<Py<PyAny>> of message dicts inside
+    /// Python::with_gil, then wraps the resulting coroutine in PythonAsyncFuture.
+    /// Returns BatchExecutionResult instead of ExecutionResult.
+    pub async fn invoke_batch_async(
+        &self,
+        ctx: &ExecutionContext,
+        messages: Vec<OwnedMessage>,
+    ) -> BatchExecutionResult {
+        let callback = Arc::clone(&self.callback);
+        let topic = ctx.topic.clone();
+        let partition = ctx.partition;
+        let worker_id = ctx.worker_id;
+
+        // Build the coroutine object inside with_gil
+        let coro: Py<PyAny> = Python::with_gil(|py| {
+            // Build Vec<Py<PyAny>> of message dicts — one dict per message
+            let py_batch: Vec<Py<PyAny>> = messages
+                .iter()
+                .map(|msg| {
+                    let py_msg = PyDict::new(py);
+                    let _ = py_msg.set_item("topic", &msg.topic);
+                    let _ = py_msg.set_item("partition", msg.partition);
+                    let _ = py_msg.set_item("offset", msg.offset);
+                    let _ = py_msg.set_item("key", msg.key.as_deref());
+                    let _ = py_msg.set_item("payload", msg.payload.as_deref());
+                    let ts: i64 = match msg.timestamp {
+                        MessageTimestamp::NotAvailable => 0,
+                        MessageTimestamp::CreateTime(ts) => ts,
+                        MessageTimestamp::LogAppendTime(ts) => ts,
+                    };
+                    let _ = py_msg.set_item("timestamp", ts);
+                    let _ = py_msg.set_item("headers", &msg.headers);
+                    py_msg.into()
+                })
+                .collect();
+
+            // Call the async batch function — returns a coroutine object.
+            callback
+                .call1(py, (py_batch,))
+                .expect("callback must be a coroutine function")
+                .into()
+        });
+
+        // Drive the coroutine as a Future
+        let result = PythonAsyncFuture::from(coro).await;
+
+        // Convert ExecutionResult to BatchExecutionResult
+        match result {
+            ExecutionResult::Ok => {
+                let offsets: Vec<i64> = messages.iter().map(|m| m.offset).collect();
+                BatchExecutionResult::AllSuccess(offsets)
+            }
+            ExecutionResult::Error { reason, .. } => BatchExecutionResult::AllFailure(reason),
+            ExecutionResult::Rejected { reason, .. } => {
+                // Treat rejected as failure with Terminal kind
+                BatchExecutionResult::AllFailure(FailureReason::Terminal(
+                    crate::failure::TerminalKind::HandlerPanic,
+                ))
+            }
+        }
+    }
+
+    /// Dispatches to the appropriate batch invoke based on HandlerMode.
+    ///
+    /// Used by batch_worker_loop to route to either invoke_batch (BatchSync) or
+    /// invoke_batch_async (BatchAsync) without duplicating the dispatch logic.
+    pub async fn invoke_mode_batch(
+        &self,
+        ctx: &ExecutionContext,
+        messages: Vec<OwnedMessage>,
+    ) -> BatchExecutionResult {
+        match self.mode() {
+            HandlerMode::BatchSync => self.invoke_batch(ctx, messages).await,
+            HandlerMode::BatchAsync => self.invoke_batch_async(ctx, messages).await,
+            _ => unreachable!("invoke_mode_batch only valid for batch modes"),
         }
     }
 }
