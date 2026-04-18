@@ -8,7 +8,7 @@ pub mod prometheus;
 pub mod runtime_snapshot;
 pub mod tracing;
 
-pub use config::{LogFormat, ObservabilityConfig};
+pub use config::{ComponentLogLevels, LogFormat, ObservabilityConfig};
 pub use kafka_metrics::{KafkaMetrics, KafkaMetricsSnapshot, KafkaMetricsTask, OffsetCommitLatencyTracker};
 pub use metrics::{HandlerMetrics, MetricLabels, MetricsSink, QueueSnapshot};
 pub use prometheus::PrometheusMetricsSink;

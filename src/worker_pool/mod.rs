@@ -233,15 +233,42 @@ async fn worker_loop(
                 ctx.offset,
                 handler.mode().as_str(),
             );
+            // OBS-36: Structured log at invoke start with consistent field names
+            tracing::info!(
+                handler_id = %ctx.topic,
+                topic = %ctx.topic,
+                partition = ctx.partition,
+                offset = ctx.offset,
+                mode = handler.mode().as_str(),
+                "handler invoke start"
+            );
             let result = span.in_scope(|| async {
                 handler.invoke_mode(&ctx, msg.clone()).await
             }).await;
             let elapsed = start.elapsed();
+            // OBS-36: Structured log at invoke completion
+            tracing::info!(
+                handler_id = %ctx.topic,
+                topic = %ctx.topic,
+                partition = ctx.partition,
+                offset = ctx.offset,
+                elapsed_ms = elapsed.as_millis() as u64,
+                "handler invoke complete"
+            );
             // Record invocation and latency after invoke returns
             HANDLER_METRICS.record_invocation(&NoopSink, &invocation_labels);
             HANDLER_METRICS.record_latency(&NoopSink, &invocation_labels, elapsed);
             // Record error counter on non-ok results
             if !result.is_ok() {
+                // OBS-36: Structured log at invoke error with consistent field names
+                tracing::error!(
+                    handler_id = %ctx.topic,
+                    topic = %ctx.topic,
+                    partition = ctx.partition,
+                    offset = ctx.offset,
+                    error_type = result.error_type_label(),
+                    "handler invoke error"
+                );
                 let error_labels = MetricLabels::new()
                     .insert("handler_id", ctx.topic.as_str())
                     .insert("error_type", result.error_type_label());

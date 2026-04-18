@@ -18,25 +18,25 @@ const LATENCY_BUCKETS: &[f64] = &[0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0];
 pub struct PrometheusMetricsSink {
     registry: Arc<RwLock<Registry>>,
     // Per-metric handles registered with the registry
-    invocation_counter: Counter<u64, Arc<RwLock<u64>>>,
+    invocation_counter: Counter,
     latency_histogram: Histogram,
-    error_counter: Counter<u64, Arc<RwLock<u64>>>,
+    error_counter: Counter,
     batch_size_histogram: Histogram,
-    queue_depth_gauge: Gauge<f64, Arc<RwLock<f64>>>,
-    inflight_gauge: Gauge<f64, Arc<RwLock<f64>>>,
+    queue_depth_gauge: Gauge,
+    inflight_gauge: Gauge,
 }
 
 impl PrometheusMetricsSink {
     pub fn new() -> Self {
-        let registry = Arc::new(RwLock::new(Registry::new()));
+        let registry = Arc::new(RwLock::new(Registry::default()));
         Self {
             registry: Arc::clone(&registry),
-            invocation_counter: Counter::new(),
-            latency_histogram: Histogram::new(LATENCY_BUCKETS.into()),
-            error_counter: Counter::new(),
-            batch_size_histogram: Histogram::new(LATENCY_BUCKETS.into()),
-            queue_depth_gauge: Gauge::new(),
-            inflight_gauge: Gauge::new(),
+            invocation_counter: Counter::default(),
+            latency_histogram: Histogram::new(LATENCY_BUCKETS.iter().copied()),
+            error_counter: Counter::default(),
+            batch_size_histogram: Histogram::new(LATENCY_BUCKETS.iter().copied()),
+            queue_depth_gauge: Gauge::default(),
+            inflight_gauge: Gauge::default(),
         }
     }
 
@@ -96,10 +96,10 @@ impl MetricsSink for PrometheusMetricsSink {
     fn record_gauge(&self, name: &str, value: f64, _labels: &[(&str, &str)]) {
         match name {
             "kafpy.queue.depth" => {
-                self.queue_depth_gauge.set(value);
+                self.queue_depth_gauge.set(value as i64);
             }
             "kafpy.queue.inflight" => {
-                self.inflight_gauge.set(value);
+                self.inflight_gauge.set(value as i64);
             }
             _ => {}
         }

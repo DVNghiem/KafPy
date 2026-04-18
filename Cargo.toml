@@ -30,6 +30,7 @@ prometheus-client = "0.24"
 opentelemetry = "0.26"
 opentelemetry-otlp = "0.17"
 tracing-opentelemetry = "0.31"
+tracing-log = "0.2"
 opentelemetry_sdk = { version = "0.26", features = ["trace"] }
 num_cpus = "1.16"
 rand = "0.8"
