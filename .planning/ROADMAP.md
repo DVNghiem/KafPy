@@ -14,7 +14,7 @@
 
 - [ ] **Phase 24:** HandlerMode & Execution Foundation — HandlerMode enum, BatchPolicy, WorkerPool dispatch, routing integration
 - [ ] **Phase 25:** Batch Accumulation & Flush — BatchAccumulator, flush on size/timeout, backpressure per-batch, result modeling
-- [ ] **Phase 26:** Async Python Handlers — pyo3-async-runtimes into_future bridge, coroutine detection
+- [ ] **Phase 26:** Async Python Handlers — custom CFFI Future bridge, coroutine detection, GIL release during await
 - [ ] **Phase 27:** Shutdown Drain & Polish — batch drain on shutdown, GIL verification, async batch path
 
 ---
@@ -67,20 +67,24 @@ Plans:
 
 ### Phase 26: Async Python Handlers
 
-**Goal:** Python coroutines executed as Rust Futures via pyo3-async-runtimes, releasing GIL during await
+**Goal:** Python coroutines executed as Rust Futures via custom CFFI bridge (Python C API), releasing GIL during await
 
 **Depends on:** Phase 25
 
 **Requirements:** EXEC-07, EXEC-08, EXEC-13 (partial)
 
 **Success Criteria** (what must be TRUE):
-1. inspect.iscoroutinefunction() or __code__.co_flags & CO_COROUTINE used at Python registration time to detect async handlers
+1. inspect.iscoroutinefunction() used at Python registration time to detect async handlers
 2. HandlerMode::SingleAsync stored for detected async handlers
-3. pyo3-async-runtimes tokio::into_future converts Python coroutine to Tokio-compatible Future
+3. Custom CFFI Future bridge converts Python coroutine to Tokio-compatible Future
 4. GIL released during await in async path (not held across Rust-side orchestration)
-5. Async batch handlers (BatchAsync) use into_future with Vec<OwnedMessage> batch invocation
+5. BatchAsync handlers use custom Future bridge with Vec<OwnedMessage> batch invocation
 
-**Plans:** TBD
+**Plans:** 2 plans
+
+Plans:
+- [ ] 26-01-PLAN.md — Custom CFFI Future bridge (PythonAsyncFuture struct, coroutine polling, GIL management)
+- [ ] 26-02-PLAN.md — Async invoke integration (invoke_mode branches, invoke_async, batch async)
 
 ### Phase 27: Shutdown Drain & Polish
 
@@ -114,7 +118,7 @@ Plans:
 | 23. Dispatcher Integration | v1.5 | 1/1 | Complete | 2026-04-18 |
 | 24. HandlerMode & Execution Foundation | v1.6 | 1/- | In progress | - |
 | 25. Batch Accumulation & Flush | v1.6 | 3/3 | In progress | - |
-| 26. Async Python Handlers | v1.6 | 0/- | Not started | - |
+| 26. Async Python Handlers | v1.6 | 0/2 | Not started | - |
 | 27. Shutdown Drain & Polish | v1.6 | 0/- | Not started | - |
 
 ---
