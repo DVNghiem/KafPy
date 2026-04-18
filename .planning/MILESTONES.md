@@ -1,5 +1,19 @@
 # Milestones
 
+## v1.7 Observability Layer (Shipped: 2026-04-18)
+
+**Phases completed:** 5 phases, 7 plans, 7 tasks
+
+**Key accomplishments:**
+
+- src/dispatcher/queue_manager.rs
+- Plan:
+- src/observability/tracing.rs
+- KafkaMetrics struct with consumer_lag/assignment_size/committed_offset gauges per TP, background polling task every 10s, and offset_commit_latency histogram
+- File:
+
+---
+
 ## v1.5 Extensible Routing (Shipped: 2026-04-18)
 
 **Phases completed:** 3 phases, 5 plans, 3 tasks
