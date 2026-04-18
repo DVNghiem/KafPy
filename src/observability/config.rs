@@ -25,6 +25,9 @@ pub struct ObservabilityConfig {
     pub sampling_ratio: f64,
     /// Log format for tracing-subscriber fmt layer.
     pub log_format: LogFormat,
+    /// Polling interval for Kafka metrics (consumer_lag, highwater, etc.).
+    /// Default: 10 seconds.
+    pub kafka_poll_interval: std::time::Duration,
 }
 
 impl Default for ObservabilityConfig {
@@ -34,6 +37,7 @@ impl Default for ObservabilityConfig {
             service_name: "kafpy".to_string(),
             sampling_ratio: 1.0,
             log_format: LogFormat::Pretty,
+            kafka_poll_interval: std::time::Duration::from_secs(10),
         }
     }
 }

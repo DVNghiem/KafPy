@@ -216,6 +216,23 @@ impl OffsetTracker {
             })
             .collect()
     }
+
+    /// Returns a snapshot of committed offsets for all registered topic-partitions.
+    ///
+    /// Used by KafkaMetricsTask to report `committed_offset` gauge per topic-partition.
+    /// Returns empty map if no partitions are registered.
+    ///
+    /// Thread-safe via existing Mutex guard.
+    pub fn offset_snapshots(&self) -> HashMap<(String, i32), i64> {
+        let guard = self.partitions.lock();
+        guard
+            .iter()
+            .map(|(key, state)| {
+                let TopicPartitionKey(t, p) = key;
+                ((t.clone(), *p), state.committed_offset)
+            })
+            .collect()
+    }
 }
 
 use super::OffsetCoordinator;
