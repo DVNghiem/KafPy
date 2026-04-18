@@ -13,6 +13,7 @@ use tokio::sync::Semaphore;
 
 pub use crate::consumer::OwnedMessage;
 use crate::dispatcher::error::DispatchError;
+use crate::routing::context::HandlerId;
 
 /// Metadata for a registered handler — tracks queue depth and inflight counts.
 pub(crate) struct HandlerMetadata {
@@ -164,6 +165,18 @@ impl QueueManager {
         self.register_handler_with_semaphore(topic, capacity, None)
     }
 
+    /// Registers a handler by HandlerId instead of topic name.
+    ///
+    /// This allows routing to dispatch to named handlers rather than topic names.
+    /// The handler ID is used as the queue key in QueueManager.
+    pub fn register_handler_by_id(
+        &self,
+        handler_id: impl Into<String>,
+        capacity: usize,
+    ) -> mpsc::Receiver<OwnedMessage> {
+        self.register_handler_with_semaphore(handler_id, capacity, None)
+    }
+
     /// Registers a handler with optional semaphore for concurrency limiting.
     pub(crate) fn register_handler_with_semaphore(
         &self,
@@ -250,6 +263,41 @@ impl QueueManager {
             }
             Err(TrySendError::Full(_)) => Err(DispatchError::QueueFull(topic)),
             Err(TrySendError::Closed(_)) => Err(DispatchError::QueueClosed(topic)),
+        }
+    }
+
+    /// Internal: sends `message` to the handler registered for `handler_id`.
+    ///
+    /// Used by routing integration when a RoutingChain determines the target handler.
+    /// Increments `queue_depth` (message buffered) and `inflight` (dispatched).
+    /// Returns `DispatchOutcome` on success, `DispatchError` on failure.
+    pub(crate) fn send_to_handler_by_id(
+        &self,
+        handler_id: &HandlerId,
+        message: OwnedMessage,
+    ) -> Result<crate::dispatcher::DispatchOutcome, DispatchError> {
+        let topic = message.topic.clone();
+        let partition = message.partition;
+        let offset = message.offset;
+
+        let guard = self.handlers.lock();
+        let entry = guard
+            .get(handler_id)
+            .ok_or_else(|| DispatchError::HandlerNotRegistered(handler_id.clone()))?;
+
+        match entry.sender.try_send(message) {
+            Ok(()) => {
+                entry.metadata.inc_queue_depth();
+                entry.metadata.inc_inflight();
+                Ok(crate::dispatcher::DispatchOutcome {
+                    topic,
+                    partition,
+                    offset,
+                    queue_depth: entry.metadata.get_queue_depth(),
+                })
+            }
+            Err(TrySendError::Full(_)) => Err(DispatchError::QueueFull(handler_id.clone())),
+            Err(TrySendError::Closed(_)) => Err(DispatchError::QueueClosed(handler_id.clone())),
         }
     }
 }
