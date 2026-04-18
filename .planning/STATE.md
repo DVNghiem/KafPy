@@ -18,17 +18,17 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-17)
+See: .planning/PROJECT.md (updated 2026-04-18)
 
 **Core value:** High-performance Rust Kafka client with idiomatic Python API
-**Current focus:** Phase 22 — python-integration
+**Current focus:** Defining requirements for v1.6 Execution Modes
 
 ## Current Position
 
-Phase: 23
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-04-18
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-18 — Milestone v1.6 started
 
 ## Performance Metrics
 

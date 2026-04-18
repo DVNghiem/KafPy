@@ -68,6 +68,20 @@ Current status (after Milestone v1.4):
 
 **v1.5 shipped:** Phase 21 (RoutingCore), Phase 22 (PythonRouter), Phase 23 (DispatcherIntegration). RoutingChain wired into ConsumerDispatcher with all 4 RoutingDecision variants handled (Route→handler queue, Drop→offset advance, Reject→DLQ, Defer→default).
 
+## Current Milestone: v1.6 Execution Modes
+
+**Goal:** Improve throughput by supporting batch and async Python handlers while preserving delivery guarantees.
+
+**Target features:**
+- Batch-capable handler registration (max batch size, max batch wait time, per-handler config)
+- Execution layer accumulates messages until batch size OR batch timeout
+- Sync Python handlers (regular callables)
+- Async Python handlers (coroutines via pyo3-async-runtimes)
+- Handler execution mode abstraction: single-sync, single-async, batch-sync, batch-async
+- GIL minimal usage — no GIL held across Rust-side orchestration
+- Batch result modeling: full success, full failure (per-message outcomes deferred to future)
+- Preserved semantics: success → offset ack, failure → retry/DLQ, commit eligibility unchanged
+
 ## Validated Requirements
 
 - ✓ Per-topic bounded Tokio mpsc channel dispatch — v1.1
@@ -112,7 +126,13 @@ Current status (after Milestone v1.4):
 
 ## Active Requirements
 
-(None yet — plan next milestone)
+- Batch-capable handler registration (EXEC-01)
+- Batch accumulation until size or timeout (EXEC-02)
+- Sync Python handlers (EXEC-03)
+- Async Python handlers via pyo3-async-runtimes (EXEC-04)
+- Handler execution mode abstraction (EXEC-05)
+- GIL minimal usage across Rust orchestration (EXEC-06)
+- Batch result: full success / full failure model (EXEC-07)
 
 ## Out of Scope
 
