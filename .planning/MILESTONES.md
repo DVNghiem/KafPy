@@ -1,5 +1,19 @@
 # Milestones
 
+## v1.5 Extensible Routing (Shipped: 2026-04-18)
+
+**Phases completed:** 3 phases, 5 plans, 3 tasks
+
+**Key accomplishments:**
+
+- One-liner:
+- Plan:
+- Plan:
+- PythonRouter implementing Router trait with Arc<Py<PyAny>> callback via tokio::spawn_blocking, bridging sync route() to async Python GIL calls
+- DISPATCH-01
+
+---
+
 ## v1.4 Failure Handling & DLQ (Shipped: 2026-04-17)
 
 **Phases completed:** 4 phases, 8 plans, 6 tasks
