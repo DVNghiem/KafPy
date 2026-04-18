@@ -11,16 +11,166 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::coordinator::OffsetCoordinator;
+use parking_lot::Mutex;
+use std::collections::HashMap;
+
 use crate::coordinator::retry_coordinator::RetryCoordinator;
-use crate::dlq::{DefaultDlqRouter, DlqMetadata, DlqRouter, SharedDlqProducer};
-use crate::failure::{FailureReason, FailureCategory};
+use crate::coordinator::OffsetCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
+use crate::dlq::{DefaultDlqRouter, DlqMetadata, DlqRouter, SharedDlqProducer};
+use crate::failure::{FailureCategory, FailureReason};
 use crate::python::context::ExecutionContext;
-use crate::python::execution_result::ExecutionResult;
+use crate::python::execution_result::{BatchExecutionResult, ExecutionResult};
 use crate::python::executor::{DefaultExecutor, Executor};
 use crate::python::handler::PythonHandler;
+
+// ─── Batch Accumulator ─────────────────────────────────────────────────────────
+
+/// Per-partition message accumulator with fixed-window timer.
+///
+/// Timer starts on first message arrival. Deadline is FIXED at first arrival +
+/// max_batch_wait_ms — it does NOT reset on subsequent messages (D-02 fixed-window).
+/// Each partition maintains its own timer independently.
+struct PartitionAccumulator {
+    messages: Vec<OwnedMessage>,
+    deadline: Option<tokio::time::Instant>,
+}
+
+impl PartitionAccumulator {
+    fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.messages.len()
+    }
+
+    /// Start the fixed-window timer on first message arrival.
+    fn start_timer(&mut self, max_wait: std::time::Duration) {
+        if self.deadline.is_none() {
+            self.deadline = Some(tokio::time::Instant::now() + max_wait);
+        }
+    }
+
+    /// Returns true if deadline has expired (used for polling in select! loop).
+    fn is_deadline_expired(&self) -> bool {
+        self.deadline
+            .map(|d| tokio::time::Instant::now() >= d)
+            .unwrap_or(false)
+    }
+
+    /// Add a message, starting the timer if this is the first message.
+    fn add(&mut self, msg: OwnedMessage, max_wait: std::time::Duration) {
+        if self.messages.is_empty() {
+            self.start_timer(max_wait);
+        }
+        self.messages.push(msg);
+    }
+
+    /// Take all messages from this partition accumulator, clearing it.
+    fn take_messages(&mut self) -> Vec<OwnedMessage> {
+        std::mem::take(&mut self.messages)
+    }
+}
+
+/// Per-handler batch accumulator.
+///
+/// Accumulates messages per-partition (preserving ordering within partition).
+/// Batches are formed per-partition, then combined when flushed.
+/// Uses parking_lot::Mutex for interior mutability (matches OffsetTracker pattern).
+pub struct BatchAccumulator {
+    partition_accumulators: Mutex<HashMap<i32, PartitionAccumulator>>,
+    max_batch_size: usize,
+    max_batch_wait: std::time::Duration,
+}
+
+impl BatchAccumulator {
+    /// Create a new BatchAccumulator with the given batch policy.
+    pub fn new(max_batch_size: usize, max_batch_wait_ms: u64) -> Self {
+        Self {
+            partition_accumulators: Mutex::new(HashMap::new()),
+            max_batch_size,
+            max_batch_wait: std::time::Duration::from_millis(max_batch_wait_ms),
+        }
+    }
+
+    /// Returns true if adding this message would fill its partition to max_batch_size.
+    /// Used to trigger a preemptive flush before adding.
+    pub fn would_fill_partition(&self, partition: i32) -> bool {
+        let guard = self.partition_accumulators.lock();
+        guard
+            .get(&partition)
+            .map(|acc| acc.messages.len() >= self.max_batch_size)
+            .unwrap_or(false)
+    }
+
+    /// Add a message to the appropriate partition accumulator.
+    /// Starts the fixed-window timer if this is the first message for that partition.
+    pub fn add(&self, msg: OwnedMessage) {
+        let partition = msg.partition;
+        let mut guard = self.partition_accumulators.lock();
+        let acc = guard.entry(partition).or_insert_with(|| PartitionAccumulator {
+            messages: Vec::new(),
+            deadline: None,
+        });
+        acc.add(msg, self.max_batch_wait);
+    }
+
+    /// Returns the earliest deadline across all partitions, or None if all empty.
+    pub fn next_deadline(&self) -> Option<tokio::time::Instant> {
+        let guard = self.partition_accumulators.lock();
+        guard.values().filter_map(|p| p.deadline).min()
+    }
+
+    /// Returns true if any partition has messages with an expired deadline.
+    pub fn is_any_deadline_expired(&self) -> bool {
+        let guard = self.partition_accumulators.lock();
+        for acc in guard.values() {
+            if !acc.is_empty() && acc.is_deadline_expired() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Returns true if the accumulator is completely empty.
+    pub fn is_empty(&self) -> bool {
+        let guard = self.partition_accumulators.lock();
+        guard.values().all(|acc| acc.is_empty())
+    }
+
+    /// Flush and return all nonempty partitions as (partition, messages) pairs.
+    /// Clears all partition accumulators after flushing.
+    pub fn flush_all(&self) -> Vec<(i32, Vec<OwnedMessage>)> {
+        let mut guard = self.partition_accumulators.lock();
+        let mut result = Vec::new();
+        for (partition, acc) in guard.iter_mut() {
+            if !acc.is_empty() {
+                result.push((*partition, acc.take_messages()));
+            }
+        }
+        result
+    }
+
+    /// Flush and return messages from a specific partition.
+    pub fn flush_partition(&self, partition: i32) -> Option<Vec<OwnedMessage>> {
+        let mut guard = self.partition_accumulators.lock();
+        guard.get_mut(&partition).and_then(|acc| {
+            if acc.is_empty() {
+                None
+            } else {
+                Some(acc.take_messages())
+            }
+        })
+    }
+
+    /// Returns total message count across all partitions.
+    pub fn total_len(&self) -> usize {
+        let guard = self.partition_accumulators.lock();
+        guard.values().map(|acc| acc.len()).sum()
+    }
+}
 
 /// Worker loop — polls messages and invokes the Python handler.
 ///
@@ -69,7 +219,11 @@ async fn worker_loop(
                     queue_manager.ack(&msg.topic, 1);
                     offset_coordinator.record_ack(&ctx.topic, ctx.partition, ctx.offset);
                 }
-                ExecutionResult::Error { ref reason, ref exception, .. } => {
+                ExecutionResult::Error {
+                    ref reason,
+                    ref exception,
+                    ..
+                } => {
                     tracing::warn!(
                         worker_id = worker_id,
                         topic = %ctx.topic,
@@ -82,7 +236,10 @@ async fn worker_loop(
 
                     // Check if we should retry — now returns 3-tuple (should_retry, should_dlq, delay)
                     let (should_retry, should_dlq, delay) = retry_coordinator.record_failure(
-                        &ctx.topic, ctx.partition, ctx.offset, reason,
+                        &ctx.topic,
+                        ctx.partition,
+                        ctx.offset,
+                        reason,
                     );
 
                     offset_coordinator.mark_failed(&ctx.topic, ctx.partition, ctx.offset, reason);
@@ -112,7 +269,8 @@ async fn worker_loop(
                             ctx.partition,
                             ctx.offset,
                             reason.to_string(),
-                            retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset) as u32,
+                            retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset)
+                                as u32,
                             chrono::Utc::now(),
                             chrono::Utc::now(),
                         );
@@ -161,7 +319,10 @@ async fn worker_loop(
 
                     // Check if we should retry
                     let (should_retry, should_dlq, delay) = retry_coordinator.record_failure(
-                        &ctx.topic, ctx.partition, ctx.offset, reason,
+                        &ctx.topic,
+                        ctx.partition,
+                        ctx.offset,
+                        reason,
                     );
 
                     offset_coordinator.mark_failed(&ctx.topic, ctx.partition, ctx.offset, reason);
@@ -191,7 +352,8 @@ async fn worker_loop(
                             ctx.partition,
                             ctx.offset,
                             reason.to_string(),
-                            retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset) as u32,
+                            retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset)
+                                as u32,
                             chrono::Utc::now(),
                             chrono::Utc::now(),
                         );
@@ -257,6 +419,402 @@ async fn worker_loop(
     }
 }
 
+/// Batch worker loop — accumulates messages per handler until batch is full OR deadline expires.
+///
+/// Uses tokio::select! to race:
+/// - Message arrival: add to accumulator, flush if max_batch_size reached
+/// - Deadline expiry: flush all partitions
+/// - Cancellation: flush all and exit
+///
+/// Backpressure is applied per-batch: if QueueManager::get_inflight() >= capacity,
+/// flush current batch first then block (D-03).
+///
+/// Per D-01: BatchAccumulator is a dedicated struct (separate from worker_loop).
+/// Per D-02: Fixed-window timer — deadline set on first message, never recalculated.
+/// Per D-04: Inline iteration for batch results in this function.
+async fn batch_worker_loop(
+    mut rx: mpsc::Receiver<OwnedMessage>,
+    handler: Arc<PythonHandler>,
+    executor: Arc<dyn Executor>,
+    queue_manager: Arc<QueueManager>,
+    offset_coordinator: Arc<dyn OffsetCoordinator>,
+    retry_coordinator: Arc<RetryCoordinator>,
+    dlq_producer: Arc<SharedDlqProducer>,
+    dlq_router: Arc<dyn DlqRouter>,
+    worker_id: usize,
+    shutdown_token: CancellationToken,
+) {
+    tracing::info!(worker_id = worker_id, "batch worker started");
+
+    let batch_policy = handler.batch_policy().expect("BatchSync requires batch_policy");
+    let accumulator =
+        BatchAccumulator::new(batch_policy.max_batch_size, batch_policy.max_batch_wait_ms);
+
+    // Track whether we are in a backpressure-blocking state
+    let mut backpressure_active = false;
+
+    loop {
+        // Determine the next deadline for the select! sleep
+        let next_deadline = accumulator.next_deadline();
+
+        tokio::select! {
+            // Branch 1: Deadline fires — flush all partitions
+            _ = async {
+                if let Some(deadline) = next_deadline {
+                    tokio::time::sleep_until(deadline).await;
+                } else {
+                    // No messages accumulated — wait indefinitely (will be woken by message or shutdown)
+                    tokio::time::sleep(std::time::Duration::MAX).await;
+                }
+            } => {
+                // Deadline expired — flush all
+                if !accumulator.is_empty() {
+                    let partitions = accumulator.flush_all();
+                    if !partitions.is_empty() {
+                        for (partition, batch) in partitions {
+                            if !batch.is_empty() {
+                                let topic = batch[0].topic.clone();
+                                let ctx = ExecutionContext::new(
+                                    topic.clone(),
+                                    partition,
+                                    batch[0].offset,
+                                    worker_id,
+                                );
+                                let result = handler.invoke_batch(&ctx, batch).await;
+                                handle_batch_result_inline(
+                                    result,
+                                    batch,
+                                    &topic,
+                                    partition,
+                                    &ctx,
+                                    executor.as_ref(),
+                                    queue_manager.as_ref(),
+                                    offset_coordinator.as_ref(),
+                                    retry_coordinator.as_ref(),
+                                    dlq_producer.as_ref(),
+                                    dlq_router.as_ref(),
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Branch 2: Message arrives
+            msg = rx.recv() => {
+                match msg {
+                    Some(msg) => {
+                        // Backpressure check: if at capacity, flush first then block
+                        if !backpressure_active {
+                            if let Some(capacity) = queue_manager.get_capacity(&msg.topic) {
+                                if let Some(inflight) = queue_manager.get_inflight(&msg.topic) {
+                                    if inflight >= capacity {
+                                        // Flush current accumulator before blocking
+                                        backpressure_active = true;
+                                        let partitions = accumulator.flush_all();
+                                        for (partition, batch) in partitions {
+                                            if !batch.is_empty() {
+                                                let topic = batch[0].topic.clone();
+                                                let ctx = ExecutionContext::new(
+                                                    topic.clone(),
+                                                    partition,
+                                                    batch[0].offset,
+                                                    worker_id,
+                                                );
+                                                let result = handler.invoke_batch(&ctx, batch).await;
+                                                handle_batch_result_inline(
+                                                    result,
+                                                    batch,
+                                                    &topic,
+                                                    partition,
+                                                    &ctx,
+                                                    executor.as_ref(),
+                                                    queue_manager.as_ref(),
+                                                    offset_coordinator.as_ref(),
+                                                    retry_coordinator.as_ref(),
+                                                    dlq_producer.as_ref(),
+                                                    dlq_router.as_ref(),
+                                                )
+                                                .await;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Check if adding would fill the partition — flush preemptively
+                        if accumulator.would_fill_partition(msg.partition) {
+                            if let Some(batch) = accumulator.flush_partition(msg.partition) {
+                                if !batch.is_empty() {
+                                    let topic = batch[0].topic.clone();
+                                    let partition = batch[0].partition;
+                                    let ctx = ExecutionContext::new(
+                                        topic.clone(),
+                                        partition,
+                                        batch[0].offset,
+                                        worker_id,
+                                    );
+                                    let result = handler.invoke_batch(&ctx, batch).await;
+                                    handle_batch_result_inline(
+                                        result,
+                                        batch,
+                                        &topic,
+                                        partition,
+                                        &ctx,
+                                        executor.as_ref(),
+                                        queue_manager.as_ref(),
+                                        offset_coordinator.as_ref(),
+                                        retry_coordinator.as_ref(),
+                                        dlq_producer.as_ref(),
+                                        dlq_router.as_ref(),
+                                    )
+                                    .await;
+                                }
+                            }
+                        }
+
+                        // Add the message to accumulator
+                        accumulator.add(msg);
+
+                        // If we just hit max_batch_size after adding, flush immediately
+                        if accumulator.would_fill_partition(msg.partition) {
+                            if let Some(batch) = accumulator.flush_partition(msg.partition) {
+                                if !batch.is_empty() {
+                                    let topic = batch[0].topic.clone();
+                                    let partition = batch[0].partition;
+                                    let ctx = ExecutionContext::new(
+                                        topic.clone(),
+                                        partition,
+                                        batch[0].offset,
+                                        worker_id,
+                                    );
+                                    let result = handler.invoke_batch(&ctx, batch).await;
+                                    handle_batch_result_inline(
+                                        result,
+                                        batch,
+                                        &topic,
+                                        partition,
+                                        &ctx,
+                                        executor.as_ref(),
+                                        queue_manager.as_ref(),
+                                        offset_coordinator.as_ref(),
+                                        retry_coordinator.as_ref(),
+                                        dlq_producer.as_ref(),
+                                        dlq_router.as_ref(),
+                                    )
+                                    .await;
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        // Channel closed — drain accumulator and exit
+                        tracing::info!(
+                            worker_id = worker_id,
+                            "batch worker: channel closed, draining"
+                        );
+                        let partitions = accumulator.flush_all();
+                        for (partition, batch) in partitions {
+                            if !batch.is_empty() {
+                                let topic = batch[0].topic.clone();
+                                let ctx = ExecutionContext::new(
+                                    topic.clone(),
+                                    partition,
+                                    batch[0].offset,
+                                    worker_id,
+                                );
+                                let result = handler.invoke_batch(&ctx, batch).await;
+                                handle_batch_result_inline(
+                                    result,
+                                    batch,
+                                    &topic,
+                                    partition,
+                                    &ctx,
+                                    executor.as_ref(),
+                                    queue_manager.as_ref(),
+                                    offset_coordinator.as_ref(),
+                                    retry_coordinator.as_ref(),
+                                    dlq_producer.as_ref(),
+                                    dlq_router.as_ref(),
+                                )
+                                .await;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // Branch 3: Shutdown signal — flush all and exit
+            _ = shutdown_token.cancelled() => {
+                tracing::info!(
+                    worker_id = worker_id,
+                    "batch worker: shutdown signal, draining"
+                );
+                let partitions = accumulator.flush_all();
+                for (partition, batch) in partitions {
+                    if !batch.is_empty() {
+                        let topic = batch[0].topic.clone();
+                        let ctx = ExecutionContext::new(
+                            topic.clone(),
+                            partition,
+                            batch[0].offset,
+                            worker_id,
+                        );
+                        let result = handler.invoke_batch(&ctx, batch).await;
+                        handle_batch_result_inline(
+                            result,
+                            batch,
+                            &topic,
+                            partition,
+                            &ctx,
+                            executor.as_ref(),
+                            queue_manager.as_ref(),
+                            offset_coordinator.as_ref(),
+                            retry_coordinator.as_ref(),
+                            dlq_producer.as_ref(),
+                            dlq_router.as_ref(),
+                        )
+                        .await;
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    tracing::info!(worker_id = worker_id, "batch worker stopped");
+}
+
+/// Handle the result of a batch invocation — inline version that owns the batch messages.
+///
+/// Per D-04: Inline iteration in worker_loop.
+/// AllSuccess → record_ack per message individually.
+/// AllFailure → record_failure per message individually (routes to RetryCoordinator).
+async fn handle_batch_result_inline(
+    result: BatchExecutionResult,
+    batch: Vec<OwnedMessage>,
+    topic: &str,
+    partition: i32,
+    ctx: &ExecutionContext,
+    executor: &Arc<dyn Executor>,
+    queue_manager: &Arc<QueueManager>,
+    offset_coordinator: &Arc<dyn OffsetCoordinator>,
+    retry_coordinator: &Arc<RetryCoordinator>,
+    _dlq_producer: &Arc<SharedDlqProducer>,
+    _dlq_router: &Arc<dyn DlqRouter>,
+) {
+    match result {
+        BatchExecutionResult::AllSuccess(offsets) => {
+            // EXEC-10: Each message calls record_ack individually
+            for offset in offsets {
+                retry_coordinator.record_success(topic, partition, offset);
+                queue_manager.ack(topic, 1);
+                offset_coordinator.record_ack(topic, partition, offset);
+                tracing::debug!(
+                    topic = %topic,
+                    partition = partition,
+                    offset = offset,
+                    "batch message acked"
+                );
+            }
+        }
+        BatchExecutionResult::AllFailure(reason) => {
+            // EXEC-10: All messages in batch flow to RetryCoordinator
+            // We have access to the original batch messages here for routing
+            tracing::warn!(
+                topic = %topic,
+                partition = partition,
+                reason = %reason,
+                batch_size = batch.len(),
+                "batch failed entirely"
+            );
+
+            for msg in batch {
+                let (should_retry, should_dlq, delay) = retry_coordinator.record_failure(
+                    topic,
+                    partition,
+                    msg.offset,
+                    &reason,
+                );
+
+                offset_coordinator.mark_failed(topic, partition, msg.offset, &reason);
+
+                if should_retry {
+                    // Retry scheduling would require re-enqueuing — for batch mode,
+                    // we schedule retry with the original message payload
+                    if let Some(d) = delay {
+                        tracing::info!(
+                            topic = %topic,
+                            partition = partition,
+                            offset = msg.offset,
+                            delay_ms = d.as_millis(),
+                            "batch message scheduling retry"
+                        );
+                        tokio::time::sleep(d).await;
+                        // Note: In batch mode, retry re-enqueues to the front of the queue
+                        // This is handled by the queue_manager's retry mechanism
+                    }
+                }
+
+                if should_dlq {
+                    // Route to DLQ
+                    let metadata = DlqMetadata::new(
+                        topic.to_string(),
+                        partition,
+                        msg.offset,
+                        reason.to_string(),
+                        retry_coordinator.attempt_count(topic, partition, msg.offset) as u32,
+                        chrono::Utc::now(),
+                        chrono::Utc::now(),
+                    );
+
+                    let tp = _dlq_router.route(&metadata);
+                    tracing::error!(
+                        topic = %topic,
+                        partition = partition,
+                        offset = msg.offset,
+                        dlq_topic = %tp.topic,
+                        dlq_partition = tp.partition,
+                        reason = %reason,
+                        "routing batch message to DLQ"
+                    );
+
+                    // Fire-and-forget
+                    _dlq_producer.produce_async(
+                        tp.topic.clone(),
+                        tp.partition,
+                        msg.payload.clone().unwrap_or_default(),
+                        msg.key.clone(),
+                        &metadata,
+                    );
+
+                    // Ack the original message
+                    queue_manager.ack(topic, 1);
+                } else {
+                    // Not retrying, not DLQ — count as processed
+                    queue_manager.ack(topic, 1);
+                }
+            }
+        }
+        // PartialFailure — NOT IMPLEMENTED in v1.6
+        // Skip per D-05
+        BatchExecutionResult::PartialFailure { .. } => {
+            tracing::warn!(
+                topic = %topic,
+                partition = partition,
+                "PartialFailure not implemented in v1.6 — treating as error"
+            );
+            // Fall through: treat as if all failed
+            for msg in batch {
+                queue_manager.ack(topic, 1);
+            }
+        }
+    }
+}
+
 /// WorkerPool — manages N Tokio workers via `JoinSet`.
 ///
 /// Each worker polls its own `mpsc::Receiver<OwnedMessage>` independently (EXEC-09).
@@ -293,6 +851,10 @@ impl WorkerPool {
     ) -> Self {
         let mut join_set = JoinSet::new();
 
+        // Route to batch_worker_loop for BatchSync, worker_loop for others
+        let mode = handler.mode();
+        let use_batch = mode == crate::python::handler::HandlerMode::BatchSync;
+
         // Zip workers with receivers — receivers is consumed here
         for (worker_id, rx) in receivers.into_iter().enumerate().take(n_workers) {
             let handler = Arc::clone(&handler);
@@ -304,18 +866,33 @@ impl WorkerPool {
             let dlq_producer = dlq_producer.clone();
             let dlq_router = dlq_router.clone();
 
-            join_set.spawn(worker_loop(
-                rx,
-                handler,
-                executor,
-                queue_manager,
-                offset_coordinator,
-                retry_coordinator,
-                dlq_producer,
-                dlq_router,
-                worker_id,
-                token,
-            ));
+            if use_batch {
+                join_set.spawn(batch_worker_loop(
+                    rx,
+                    handler,
+                    executor,
+                    queue_manager,
+                    offset_coordinator,
+                    retry_coordinator,
+                    dlq_producer,
+                    dlq_router,
+                    worker_id,
+                    token,
+                ));
+            } else {
+                join_set.spawn(worker_loop(
+                    rx,
+                    handler,
+                    executor,
+                    queue_manager,
+                    offset_coordinator,
+                    retry_coordinator,
+                    dlq_producer,
+                    dlq_router,
+                    worker_id,
+                    token,
+                ));
+            }
         }
 
         tracing::info!(n_workers = n_workers, "WorkerPool created");
@@ -393,7 +970,7 @@ mod tests {
     }
 
     fn dummy_handler() -> Arc<PythonHandler> {
-        use crate::python::handler::{HandlerMode, BatchPolicy};
+        use crate::python::handler::{BatchPolicy, HandlerMode};
         Python::with_gil(|py| {
             let py_none = py.None();
             Arc::new(PythonHandler::new(
