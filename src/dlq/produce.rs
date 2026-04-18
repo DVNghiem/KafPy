@@ -4,8 +4,7 @@
 //! the slow-path broker produce. When the channel is full, messages are
 //! dropped (don't block the main consumer pipeline).
 
-use chrono::{DateTime, Utc};
-use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
+use rdkafka::producer::{FutureProducer, FutureRecord};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;

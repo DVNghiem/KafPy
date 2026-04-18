@@ -7,9 +7,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tokio::time::interval;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
-use crate::consumer::error::ConsumerError;
 use crate::consumer::runner::ConsumerRunner;
 use crate::coordinator::offset_tracker::OffsetTracker;
 
@@ -126,7 +125,7 @@ impl OffsetCommitter {
     ///
     /// This method is intended to be called inside `tokio::spawn`. It blocks
     /// until the watch channel is closed or the task is cancelled.
-    pub async fn run(mut self, mut rx: watch::Receiver<TopicPartition>) {
+    pub async fn run(self, mut rx: watch::Receiver<TopicPartition>) {
         let mut ticker = interval(Duration::from_millis(self.config.commit_interval_ms));
 
         loop {

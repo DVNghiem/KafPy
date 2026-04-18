@@ -12,8 +12,7 @@ use crate::retry::RetryPolicy;
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Per-message retry state
 #[derive(Debug, Clone)]

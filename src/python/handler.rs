@@ -366,9 +366,9 @@ impl PythonHandler {
         messages: Vec<OwnedMessage>,
     ) -> BatchExecutionResult {
         let callback = Arc::clone(&self.callback);
-        let topic = ctx.topic.clone();
-        let partition = ctx.partition;
-        let worker_id = ctx.worker_id;
+        let _topic = ctx.topic.clone();
+        let _partition = ctx.partition;
+        let _worker_id = ctx.worker_id;
 
         // Build the coroutine object inside with_gil
         let coro: Py<PyAny> = Python::with_gil(|py| {
@@ -410,7 +410,7 @@ impl PythonHandler {
                 BatchExecutionResult::AllSuccess(offsets)
             }
             ExecutionResult::Error { reason, .. } => BatchExecutionResult::AllFailure(reason),
-            ExecutionResult::Rejected { reason, .. } => {
+            ExecutionResult::Rejected { reason: _, .. } => {
                 // Treat rejected as failure with Terminal kind
                 BatchExecutionResult::AllFailure(FailureReason::Terminal(
                     crate::failure::TerminalKind::HandlerPanic,

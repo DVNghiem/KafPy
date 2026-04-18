@@ -67,8 +67,8 @@ impl Default for PrometheusMetricsSink {
 }
 
 impl MetricsSink for PrometheusMetricsSink {
-    fn record_counter(&self, name: &str, labels: &[(&str, &str)]) {
-        let reg = self.registry.read();
+    fn record_counter(&self, name: &str, _labels: &[(&str, &str)]) {
+        let _reg = self.registry.read();
         // Match on name to update correct metric
         match name {
             "kafpy.handler.invocation" => {

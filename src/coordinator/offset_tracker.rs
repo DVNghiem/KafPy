@@ -15,7 +15,7 @@ use crate::failure::{FailureCategory, FailureReason};
 use parking_lot::Mutex;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 /// Key type for topic-partition lookup.
 /// Using a tuple struct for type safety over raw (String, i32) pairs.

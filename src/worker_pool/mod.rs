@@ -19,7 +19,6 @@ use crate::coordinator::OffsetCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
-use crate::failure::FailureCategory;
 use crate::observability::metrics::{HandlerMetrics, MetricLabels};
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
@@ -854,8 +853,8 @@ async fn handle_batch_result_inline(
     batch: Vec<OwnedMessage>,
     topic: &str,
     partition: i32,
-    ctx: &ExecutionContext,
-    executor: Arc<dyn Executor>,
+    _ctx: &ExecutionContext,
+    _executor: Arc<dyn Executor>,
     queue_manager: Arc<QueueManager>,
     offset_coordinator: Arc<dyn OffsetCoordinator>,
     retry_coordinator: Arc<RetryCoordinator>,
@@ -986,7 +985,7 @@ async fn handle_batch_result_inline(
                 "PartialFailure not implemented in v1.6 — treating as error"
             );
             // Fall through: treat as if all failed
-            for msg in batch {
+            for _msg in batch {
                 queue_manager.ack(topic, 1);
             }
         }

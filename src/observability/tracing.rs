@@ -6,9 +6,7 @@
 
 use std::collections::HashMap;
 use tracing::Span;
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use opentelemetry::KeyValue;
 
 /// Span extension trait for KafPy spans.
 ///

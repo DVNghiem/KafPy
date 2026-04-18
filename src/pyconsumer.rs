@@ -13,7 +13,6 @@ use crate::config::ConsumerConfig;
 use crate::consumer::{ConsumerConfigBuilder, ConsumerRunner};
 use crate::dispatcher::ConsumerDispatcher;
 use crate::dlq::{DefaultDlqRouter, DlqRouter, SharedDlqProducer};
-use crate::kafka_message::KafkaMessage;
 use crate::python::handler::PythonHandler;
 use crate::python::{DefaultExecutor, Executor};
 use crate::worker_pool::WorkerPool;
@@ -211,7 +210,6 @@ impl Consumer {
 use crate::observability::runtime_snapshot::{
     get_current_snapshot, get_callback_registry, RuntimeSnapshot,
     WorkerState as ObsWorkerState,
-    ConsumerLagSummary,
 };
 
 /// Returns the current runtime snapshot as a Python dict.

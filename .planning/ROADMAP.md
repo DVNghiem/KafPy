@@ -9,7 +9,7 @@
 - [x] **v1.4 Failure Handling & DLQ** — Phases 17-20 (shipped 2026-04-17)
 - [x] **v1.5 Extensible Routing** — Phases 21-23 (shipped 2026-04-18)
 - [x] **v1.6 Execution Modes** — Phases 24-27 (shipped 2026-04-18)
-- [ ] **v1.7 Observability Layer** — Phases 28-32
+- [x] **v1.7 Observability Layer** — Phases 28-32 (shipped 2026-04-18)
 
 ## Phases
 
@@ -113,11 +113,11 @@
 | 25. Batch Accumulation & Flush | v1.6 | 3/3 | Complete | 2026-04-18 |
 | 26. Async Python Handlers | v1.6 | 2/2 | Complete | 2026-04-18 |
 | 27. Shutdown Drain & Polish | v1.6 | 1/1 | Complete | 2026-04-18 |
-| 28. Metrics Infrastructure | v1.7 | 0/TBD | Not started | - |
-| 29. Tracing Infrastructure | v1.7 | 0/TBD | Not started | - |
-| 30. Kafka-Level Metrics | v1.7 | 0/TBD | Not started | - |
-| 31. Runtime Introspection | v1.7 | 0/TBD | Not started | - |
-| 32. Structured Logging | v1.7 | 0/TBD | Not started | - |
+| 28. Metrics Infrastructure | v1.7 | 1/1 | Complete | 2026-04-18 |
+| 29. Tracing Infrastructure | v1.7 | 1/1 | Complete | 2026-04-18 |
+| 30. Kafka-Level Metrics | v1.7 | 1/1 | Complete | 2026-04-18 |
+| 31. Runtime Introspection | v1.7 | 1/1 | Complete | 2026-04-18 |
+| 32. Structured Logging | v1.7 | 1/1 | Complete | 2026-04-18 |
 
 ---
 
