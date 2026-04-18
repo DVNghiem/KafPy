@@ -100,7 +100,10 @@ Plans:
 3. GIL never held across Rust-side orchestration for any execution mode
 4. All 4 HandlerMode paths (SingleSync, SingleAsync, BatchSync, BatchAsync) execute end-to-end with correct offset commit semantics
 
-**Plans:** TBD
+**Plans:** 1 plan
+
+Plans:
+- [ ] 27-01-PLAN.md — Verification: shutdown drain, 4-mode routing, GIL invariant, cargo check
 
 ---
 
@@ -119,7 +122,7 @@ Plans:
 | 24. HandlerMode & Execution Foundation | v1.6 | 1/- | In progress | - |
 | 25. Batch Accumulation & Flush | v1.6 | 3/3 | In progress | - |
 | 26. Async Python Handlers | v1.6 | 0/2 | Not started | - |
-| 27. Shutdown Drain & Polish | v1.6 | 0/- | Not started | - |
+| 27. Shutdown Drain & Polish | v1.6 | 1/1 | In progress | - |
 
 ---
 
