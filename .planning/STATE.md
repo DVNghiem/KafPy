@@ -4,10 +4,10 @@ milestone: v1.7
 milestone_name: Observability Layer
 status: planning
 stopped_at: Milestone v1.7 just started
-last_updated: "2026-04-18T12:40:00.000Z"
+last_updated: "2026-04-18"
 last_activity: 2026-04-18 -- Starting v1.7 observability layer
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -21,21 +21,21 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-18)
 
 **Core value:** High-performance Rust Kafka client with idiomatic Python API
-**Current focus:** Planning v1.6 Execution Modes (batch + async Python handlers)
+**Current focus:** Phase 28 (Metrics Infrastructure)
 
 ## Current Position
 
-Phase: 24 (not yet started)
+Phase: 28 of 32 (Metrics Infrastructure)
 Plan: —
-Status: Ready to execute
-Last activity: 2026-04-18 -- Phase 27 planning complete
+Status: Ready to plan
+Last activity: 2026-04-18 -- Starting v1.7 observability layer
 
 ## Performance Metrics
 
 **Velocity:**
 
 - Total plans completed: 23
-- Total milestones: 6 (including v1.6)
+- Total milestones: 7 (including v1.7)
 
 **By Milestone:**
 
@@ -47,9 +47,8 @@ Last activity: 2026-04-18 -- Phase 27 planning complete
 | v1.3 | 6 | — |
 | v1.4 | 4 | 8 |
 | v1.5 | 3 | 5 |
-| v1.6 | 4 | TBD |
-| Phase 25 P01 | 32 | 1 tasks | 1 files |
-| Phase 26 P01 | 10 | 2 tasks | 2 files |
+| v1.6 | 4 | 7 |
+| v1.7 | 5 | TBD |
 
 ## Accumulated Context
 
@@ -69,13 +68,20 @@ Last activity: 2026-04-18 -- Phase 27 planning complete
 - **v1.6**: pyo3-async-runtimes into_future for async Python handlers
 - **v1.6**: BatchExecutionResult::AllSuccess/AllFailure/PartialFailure
 - **v1.6**: GIL never held across Rust-side orchestration
+- **v1.7**: metrics crate facade (zero-cost when no recorder installed)
+- **v1.7**: KafPy never calls set_global_default() or set_global_recorder()
+- **v1.7**: MetricLabels enforces lexicographically sorted label ordering
+- **v1.7**: Span context propagates via W3C tracecontext headers at spawn_blocking boundary
+- **v1.7**: Kafka metrics polling-based (not per-message) to avoid hot-path overhead
+- **v1.7**: RuntimeSnapshot zero-cost when not called (no atomic updates on hot path)
 
 ### Pending Todos
 
-- Phase 24: HandlerMode enum, BatchPolicy, WorkerPool dispatch, routing integration
-- Phase 25: BatchAccumulator, flush on size/timeout, backpressure, result modeling
-- Phase 26: Async handler support (into_future, coroutine detection)
-- Phase 27: Shutdown drain, GIL verification
+- Phase 28: MetricsSink trait, HandlerMetrics, Prometheus adapter, MetricLabels, zero-cost facade
+- Phase 29: OTLP exporter, span wrapping, W3C context propagation, ObservabilityConfig
+- Phase 30: Consumer lag, assignment size, committed offset gauges via rdkafka stats
+- Phase 31: RuntimeSnapshot, get_runtime_snapshot() PyO3, Consumer.status() Python method
+- Phase 32: Consistent field names, log format config, per-component log levels, LogTracer
 
 ### Blockers/Concerns
 
@@ -85,7 +91,6 @@ Last activity: 2026-04-18 -- Phase 27 planning complete
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| RetryExecutor integration | Offset tracking on retry | Pending v1.5+ | v1.3 planning |
 | Advanced rebalance | Rebalance interfaces | Deferred | v1.0 |
 | Schema registry | Avro support | Deferred | v1.0 |
 | Content-based routing | Payload parsing | Python fallback only | v1.5 |
@@ -95,9 +100,14 @@ Last activity: 2026-04-18 -- Phase 27 planning complete
 | Sliding window batch | Sliding window batch timeout | Deferred | v1.6 |
 | Async Python event loop | Event loop lifecycle management | Deferred | v1.6 |
 | Streaming batch | Batch handlers as generators | Deferred | v1.6 |
+| OTLP exporter sink | Full OTLP protocol metrics export | v1.8+ | v1.7 |
+| Alerting rules library | Pre-built Prometheus alerting rules | v1.8+ | v1.7 |
+| Trace context into Kafka headers | Cross-service correlation | v1.8+ | v1.7 |
+| Python-side tracing | Python tracing conventions differ | v1.8+ | v1.7 |
+| Sliding window latency | p50, p95, p99 percentiles | v1.8+ | v1.7 |
 
 ## Session Continuity
 
-Last session: 2026-04-18T05:23:38.211Z
-Stopped at: Phase 27 complete, v1.6 milestone complete
+Last session: 2026-04-18
+Stopped at: v1.6 milestone complete
 Resume file: None

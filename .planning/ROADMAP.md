@@ -1,4 +1,4 @@
-# Roadmap: KafPy — v1.6 Execution Modes
+# Roadmap: KafPy — v1.7 Observability Layer
 
 ## Milestones
 
@@ -8,102 +8,92 @@
 - [x] **v1.3 Offset Commit Coordinator** — Phases 11-16 (shipped 2026-04-17)
 - [x] **v1.4 Failure Handling & DLQ** — Phases 17-20 (shipped 2026-04-17)
 - [x] **v1.5 Extensible Routing** — Phases 21-23 (shipped 2026-04-18)
-- [ ] **v1.6 Execution Modes** — Phases 24-27
+- [x] **v1.6 Execution Modes** — Phases 24-27 (shipped 2026-04-18)
+- [ ] **v1.7 Observability Layer** — Phases 28-32
 
 ## Phases
 
-- [ ] **Phase 24:** HandlerMode & Execution Foundation — HandlerMode enum, BatchPolicy, WorkerPool dispatch, routing integration
-- [ ] **Phase 25:** Batch Accumulation & Flush — BatchAccumulator, flush on size/timeout, backpressure per-batch, result modeling
-- [ ] **Phase 26:** Async Python Handlers — custom CFFI Future bridge, coroutine detection, GIL release during await
-- [ ] **Phase 27:** Shutdown Drain & Polish — batch drain on shutdown, GIL verification, async batch path
+- [ ] **Phase 28: Metrics Infrastructure** — MetricsSink trait, HandlerMetrics, Prometheus adapter, zero-cost facade
+- [ ] **Phase 29: Tracing Infrastructure** — OTLP exporter, span wrapping, W3C context propagation
+- [ ] **Phase 30: Kafka-Level Metrics** — Consumer lag, assignment size, committed offset gauges
+- [ ] **Phase 31: Runtime Introspection** — RuntimeSnapshot, Python status API, zero-cost when not called
+- [ ] **Phase 32: Structured Logging** — Consistent field names, log format config, per-component log levels
 
 ---
 
 ## Phase Details
 
-### Phase 24: HandlerMode & Execution Foundation
-
-**Goal:** HandlerMode enum gates all handler dispatch; WorkerPool dispatches by mode; batch handlers integrate with routing chain
-
-**Depends on:** Phase 23
-
-**Requirements:** EXEC-01, EXEC-02, EXEC-03, EXEC-11, EXEC-15
-
+### Phase 28: Metrics Infrastructure
+**Goal**: KafPy exposes metrics infrastructure via MetricsSink trait with zero-cost facade when no recorder installed
+**Depends on**: Nothing (first phase of milestone)
+**Requirements**: OBS-01, OBS-02, OBS-03, OBS-04, OBS-05, OBS-06, OBS-07, OBS-08, OBS-09, OBS-10
 **Success Criteria** (what must be TRUE):
-1. HandlerMode enum (SingleSync, SingleAsync, BatchSync, BatchAsync) exists and is stored on each PythonHandler
-2. BatchPolicy struct (max_batch_size, max_batch_wait_ms) is configurable per-handler with sensible defaults
-3. SingleSync handlers use existing spawn_blocking path unchanged
-4. WorkerPool::worker_loop dispatches to appropriate execution path based on HandlerMode
-5. RoutingDecision::Route(handler_id) queues messages to batch-capable handler if batch mode configured on that handler
+  1. User can implement MetricsSink trait and register a custom backend (Prometheus, DataDog, OTLP); default noop implementation provided
+  2. Handler invocation counter is recorded on every invoke_mode call with handler_id, topic, mode labels
+  3. Handler latency histogram records Duration from invoke start to ExecutionResult with configurable bucket boundaries
+  4. Error counter records on ExecutionResult::Error and RoutingDecision::Reject with handler_id, error_type labels
+  5. QueueManager.queue_snapshots() returns atomic queue_depth and inflight per handler for periodic gauge updates
+  6. BatchAccumulator records batch size histogram per-partition flush size distribution
+  7. PrometheusMetricsSink implements MetricsSink using prometheus-client crate, registered via builder pattern
+  8. MetricLabels type enforces lexicographically sorted label ordering to prevent cardinality explosion
+  9. Metrics are zero-cost when no recorder is installed — facade silently drops all recordings
+**Plans**: TBD
 
-**Plans:** 1 plan
-
-Plans:
-- [ ] 24-01-PLAN.md — HandlerMode enum, BatchPolicy struct, PythonHandler fields, WorkerPool dispatch
-
-### Phase 25: Batch Accumulation & Flush
-
-**Goal:** Messages accumulate per handler until max_batch_size OR max_batch_wait_ms; batches flush atomically with result handling
-
-**Depends on:** Phase 24
-
-**Requirements:** EXEC-04, EXEC-05, EXEC-06, EXEC-09, EXEC-10, EXEC-14
-
+### Phase 29: Tracing Infrastructure
+**Goal**: OpenTelemetry tracing integration with proper span context propagation across PyO3 GIL boundary
+**Depends on**: Phase 28
+**Requirements**: OBS-11, OBS-12, OBS-13, OBS-14, OBS-15, OBS-16, OBS-17, OBS-18, OBS-19
 **Success Criteria** (what must be TRUE):
-1. BatchAccumulator accumulates messages per handler, respecting per-partition ordering (batches formed per-partition then combined)
-2. Accumulator flushes immediately when max_batch_size is reached
-3. Accumulator flushes when max_batch_wait_ms expires for oldest message in accumulator
-4. tokio::select! races message arrival against timeout, with CancellationToken for shutdown responsiveness
-5. BackpressurePolicy applied per-batch during accumulation (no new messages pulled while backpressure active)
-6. BatchExecutionResult::AllSuccess triggers record_ack for each message individually
-7. BatchExecutionResult::AllFailure routes all messages in batch to RetryCoordinator
+  1. User can call enable_otel_tracing() to set up OTLP exporter and tracing-opentelemetry Layer, returning LayerHandle user owns
+  2. KafPy never calls set_global_default() or set_global_recorder() — user owns all global state
+  3. worker_loop wraps each invoke_mode call in span named "kafpy.handler.invoke" with handler_id, topic, partition, offset, mode fields
+  4. ConsumerDispatcher::run wraps dispatch in span named "kafpy.dispatch.process" with topic, partition, offset, routing_decision fields
+  5. DLQ routing emits span named "kafpy.dlq.route" with handler_id, reason, partition fields
+  6. Span context propagates across PyO3 GIL boundary via explicit W3C tracecontext header injection/extraction at spawn_blocking call sites
+  7. Async span patterns use #[instrument] or span.in_scope() — never Span::enter() across await points
+  8. ObservabilityConfig struct allows user to configure OTLP endpoint, service name, and sampling rate
+  9. Span naming follows kafpy.{component}.{operation} convention
+**Plans**: TBD
 
-**Plans:** 3 plans
-
-Plans:
-- [ ] 25-01-PLAN.md — BatchAccumulator struct, accumulator logic, backpressure integration
-- [ ] 25-02-PLAN.md — BatchAccumulator::flush, batch_worker_loop with timeout/size flush
-- [ ] 25-03-PLAN.md — WorkerPool spawn dispatch by HandlerMode, BatchExecutionResult routing
-
-### Phase 26: Async Python Handlers
-
-**Goal:** Python coroutines executed as Rust Futures via custom CFFI bridge (Python C API), releasing GIL during await
-
-**Depends on:** Phase 25
-
-**Requirements:** EXEC-07, EXEC-08, EXEC-13 (partial)
-
+### Phase 30: Kafka-Level Metrics
+**Goal**: Consumer lag, assignment size, committed offset metrics via rdkafka statistics callback
+**Depends on**: Phase 29
+**Requirements**: OBS-20, OBS-21, OBS-22, OBS-23, OBS-24, OBS-25, OBS-26
 **Success Criteria** (what must be TRUE):
-1. inspect.iscoroutinefunction() used at Python registration time to detect async handlers
-2. HandlerMode::SingleAsync stored for detected async handlers
-3. Custom CFFI Future bridge converts Python coroutine to Tokio-compatible Future
-4. GIL released during await in async path (not held across Rust-side orchestration)
-5. BatchAsync handlers use custom Future bridge with Vec<OwnedMessage> batch invocation
+  1. KafkaMetrics struct exposes consumer_lag gauge, assignment_size gauge, committed_offset gauge per topic-partition
+  2. Consumer lag calculated as highwater - position per partition using rdkafka TopicPartitionList API (no extra Kafka API calls)
+  3. Background polling task updates Kafka gauges every 10s (configurable) without adding per-message hot-path overhead
+  4. OffsetTracker::offset_snapshots() returns current committed offset per topic-partition for gauge reporting
+  5. rdkafka statistics callback thread-safe — stats shared between rdkafka internal thread and Tokio runtime via Arc<AtomicU64> snapshots
+  6. offset_commit_latency histogram records time from offset advancement to commit acknowledgment
+  7. Assignment change counter emits event when topic-partition assignment changes via rebalance callback
+**Plans**: TBD
 
-**Plans:** 2 plans
-
-Plans:
-- [ ] 26-01-PLAN.md — Custom CFFI Future bridge (PythonAsyncFuture struct, coroutine polling, GIL management)
-- [ ] 26-02-PLAN.md — Async invoke integration (invoke_mode branches, invoke_async, batch async)
-
-### Phase 27: Shutdown Drain & Polish
-
-**Goal:** Graceful shutdown drains accumulated batches; GIL usage verified minimal; all execution modes complete
-
-**Depends on:** Phase 26
-
-**Requirements:** EXEC-12, EXEC-13 (remaining), EXEC-14 (verification)
-
+### Phase 31: Runtime Introspection
+**Goal**: Python-accessible runtime introspection via RuntimeSnapshot without hot-path overhead
+**Depends on**: Phase 30
+**Requirements**: OBS-27, OBS-28, OBS-29, OBS-30, OBS-31, OBS-32
 **Success Criteria** (what must be TRUE):
-1. CancellationToken triggers accumulator flush before worker pool shutdown (no messages lost on graceful shutdown)
-2. tokio::select! with biased cancellation branch drains accumulator before worker exits
-3. GIL never held across Rust-side orchestration for any execution mode
-4. All 4 HandlerMode paths (SingleSync, SingleAsync, BatchSync, BatchAsync) execute end-to-end with correct offset commit semantics
+  1. RuntimeSnapshot struct holds worker_pool status (idle/active/busy worker counts), queue depths per handler, accumulator states, consumer_lag_summary
+  2. get_runtime_snapshot() PyO3 function returns RuntimeSnapshot as Python dict for use in Python-side dashboards
+  3. Consumer.status() Python method returns structured dict with worker_states, queue_depths, accumulator_info, consumer_lag_summary
+  4. Introspection API is zero-cost when not called — no atomic updates on hot path
+  5. worker_loop status includes current handler_id being processed and per-partition accumulator depth
+  6. Python can register a status_callback invoked on every status snapshot (opt-in, not default)
+**Plans**: TBD
 
-**Plans:** 1 plan
-
-Plans:
-- [ ] 27-01-PLAN.md — Verification: shutdown drain, 4-mode routing, GIL invariant, cargo check
+### Phase 32: Structured Logging
+**Goal**: Consistent structured log field names across logging, metrics, and tracing signals
+**Depends on**: Phase 31
+**Requirements**: OBS-33, OBS-34, OBS-35, OBS-36, OBS-37, OBS-38
+**Success Criteria** (what must be TRUE):
+  1. All structured log events use consistent field names across logging, metrics, and tracing signals
+  2. ObservabilityConfig accepts log format option (json / pretty / simple) used by tracing-subscriber
+  3. Log events include handler_id, topic, partition, offset as standard fields whenever applicable
+  4. worker_loop emits structured log::info! / log::error! events at handler invoke start, completion, and error with consistent field schema
+  5. Log level configurable per component (worker_loop, dispatcher, accumulator) independently via ObservabilityConfig
+  6. Python handler log messages (via Python logging module) forwarded to Rust tracing via tracing_log::LogTracer integration
+**Plans**: TBD
 
 ---
 
@@ -119,10 +109,15 @@ Plans:
 | 21. Routing Core | v1.5 | 3/3 | Complete | 2026-04-17 |
 | 22. Python Integration | v1.5 | 1/1 | Complete | 2026-04-18 |
 | 23. Dispatcher Integration | v1.5 | 1/1 | Complete | 2026-04-18 |
-| 24. HandlerMode & Execution Foundation | v1.6 | 1/- | In progress | - |
-| 25. Batch Accumulation & Flush | v1.6 | 3/3 | In progress | - |
-| 26. Async Python Handlers | v1.6 | 0/2 | Not started | - |
-| 27. Shutdown Drain & Polish | v1.6 | 1/1 | In progress | - |
+| 24. HandlerMode & Execution Foundation | v1.6 | 1/1 | Complete | 2026-04-18 |
+| 25. Batch Accumulation & Flush | v1.6 | 3/3 | Complete | 2026-04-18 |
+| 26. Async Python Handlers | v1.6 | 2/2 | Complete | 2026-04-18 |
+| 27. Shutdown Drain & Polish | v1.6 | 1/1 | Complete | 2026-04-18 |
+| 28. Metrics Infrastructure | v1.7 | 0/TBD | Not started | - |
+| 29. Tracing Infrastructure | v1.7 | 0/TBD | Not started | - |
+| 30. Kafka-Level Metrics | v1.7 | 0/TBD | Not started | - |
+| 31. Runtime Introspection | v1.7 | 0/TBD | Not started | - |
+| 32. Structured Logging | v1.7 | 0/TBD | Not started | - |
 
 ---
 

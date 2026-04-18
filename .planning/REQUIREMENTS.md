@@ -99,13 +99,13 @@
 
 ## Traceability
 
-| Requirement | Phase | Notes |
-|-------------|-------|-------|
-| OBS-01 — OBS-10 | Phase 1 | Metrics Infrastructure |
-| OBS-11 — OBS-19 | Phase 2 | Tracing Infrastructure |
-| OBS-20 — OBS-26 | Phase 3 | Kafka-Level Metrics |
-| OBS-27 — OBS-32 | Phase 4 | Runtime Introspection |
-| OBS-33 — OBS-38 | Phase 5 | Structured Logging |
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| OBS-01 — OBS-10 | Phase 28 | Pending |
+| OBS-11 — OBS-19 | Phase 29 | Pending |
+| OBS-20 — OBS-26 | Phase 30 | Pending |
+| OBS-27 — OBS-32 | Phase 31 | Pending |
+| OBS-33 — OBS-38 | Phase 32 | Pending |
 | OBS-F1 — OBS-F4 | v1.8+ | Future |
 
 ---
