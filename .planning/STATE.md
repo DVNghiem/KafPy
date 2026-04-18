@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.5
-milestone_name: Extensible Routing
-status: executing
-stopped_at: context exhaustion at 92% (2026-04-18)
-last_updated: "2026-04-18T02:35:55.055Z"
+milestone: v1.6
+milestone_name: Execution Modes
+status: defining
+stopped_at: roadmap created (2026-04-18)
+last_updated: "2026-04-18T03:00:00.000Z"
 last_activity: 2026-04-18
 progress:
-  total_phases: 3
-  completed_phases: 3
-  total_plans: 5
-  completed_plans: 5
-  percent: 100
+  total_phases: 4
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -21,21 +21,21 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-18)
 
 **Core value:** High-performance Rust Kafka client with idiomatic Python API
-**Current focus:** Defining requirements for v1.6 Execution Modes
+**Current focus:** Planning v1.6 Execution Modes (batch + async Python handlers)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 24 (not yet started)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-04-18 — Milestone v1.6 started
+Status: Roadmap created
+Last activity: 2026-04-18 — v1.6 roadmap defined
 
 ## Performance Metrics
 
 **Velocity:**
 
 - Total plans completed: 23
-- Total milestones: 5 (including v1.5)
+- Total milestones: 6 (including v1.6)
 
 **By Milestone:**
 
@@ -46,7 +46,8 @@ Last activity: 2026-04-18 — Milestone v1.6 started
 | v1.2 | 2 | — |
 | v1.3 | 6 | — |
 | v1.4 | 4 | 8 |
-| v1.5 | 3 | — |
+| v1.5 | 3 | 5 |
+| v1.6 | 4 | TBD |
 
 ## Accumulated Context
 
@@ -61,12 +62,18 @@ Last activity: 2026-04-18 — Milestone v1.6 started
 - **v1.5**: RoutingDecision: Route(handler_id), Drop, Reject(reason), Defer
 - **v1.5**: No payload copies in routing path
 - **v1.5**: RoutingChain chains routers with precedence enforcement
+- **v1.6**: HandlerMode enum (SingleSync, SingleAsync, BatchSync, BatchAsync) as gating abstraction
+- **v1.6**: BatchAccumulator with fixed-window timeout (not sliding)
+- **v1.6**: pyo3-async-runtimes into_future for async Python handlers
+- **v1.6**: BatchExecutionResult::AllSuccess/AllFailure/PartialFailure
+- **v1.6**: GIL never held across Rust-side orchestration
 
 ### Pending Todos
 
-- Phase 21: Routing Core (ROUTER-01 to ROUTER-07, CONFIG-01, CONFIG-02)
-- Phase 22: Python Integration (PYROUTER-01 to PYROUTER-03)
-- Phase 23: Dispatcher Integration (DISPATCH-01, DISPATCH-02)
+- Phase 24: HandlerMode enum, BatchPolicy, WorkerPool dispatch, routing integration
+- Phase 25: BatchAccumulator, flush on size/timeout, backpressure, result modeling
+- Phase 26: Async handler support (into_future, coroutine detection)
+- Phase 27: Shutdown drain, GIL verification
 
 ### Blockers/Concerns
 
@@ -81,9 +88,14 @@ Last activity: 2026-04-18 — Milestone v1.6 started
 | Schema registry | Avro support | Deferred | v1.0 |
 | Content-based routing | Payload parsing | Python fallback only | v1.5 |
 | Multi-handler fan-out | Single handler per message | Deferred | v1.5 |
+| PartialFailure tracking | Per-message outcome within batch | v1.7+ | v1.6 |
+| Cross-partition batch | Batch aggregation across partitions | Deferred | v1.6 |
+| Sliding window batch | Sliding window batch timeout | Deferred | v1.6 |
+| Async Python event loop | Event loop lifecycle management | Deferred | v1.6 |
+| Streaming batch | Batch handlers as generators | Deferred | v1.6 |
 
 ## Session Continuity
 
-Last session: 2026-04-18T02:21:40.043Z
-Stopped at: context exhaustion at 92% (2026-04-18)
+Last session: 2026-04-18T03:00:00.000Z
+Stopped at: Roadmap created for v1.6
 Resume file: None
