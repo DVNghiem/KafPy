@@ -112,7 +112,7 @@ impl Consumer {
                     .values()
                     .next()
                     .expect("at least one handler must be registered");
-                Arc::new(PythonHandler::new(first_handler.clone(), Some(default_retry_policy)))
+                Arc::new(PythonHandler::new(first_handler.clone(), Some(default_retry_policy), crate::python::handler::HandlerMode::SingleSync, None))
             };
 
             let executor_arc: Arc<dyn Executor> = Arc::new(DefaultExecutor::default());

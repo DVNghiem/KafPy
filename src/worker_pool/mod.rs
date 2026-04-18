@@ -53,7 +53,7 @@ async fn worker_loop(
         if let Some(msg) = active_message.take() {
             let ctx =
                 ExecutionContext::new(msg.topic.clone(), msg.partition, msg.offset, worker_id);
-            let result = handler.invoke(&ctx, msg.clone()).await;
+            let result = handler.invoke_mode(&ctx, msg.clone()).await;
             let _outcome = executor.execute(&ctx, &msg, &result);
 
             match result {
@@ -393,9 +393,15 @@ mod tests {
     }
 
     fn dummy_handler() -> Arc<PythonHandler> {
+        use crate::python::handler::{HandlerMode, BatchPolicy};
         Python::with_gil(|py| {
             let py_none = py.None();
-            Arc::new(PythonHandler::new(py_none.into(), None))
+            Arc::new(PythonHandler::new(
+                py_none.into(),
+                None,
+                HandlerMode::SingleSync,
+                None,
+            ))
         })
     }
 
