@@ -6,6 +6,7 @@ pub mod context;
 pub mod decision;
 pub mod header;
 pub mod key;
+pub mod python_router;
 pub mod router;
 pub mod topic_pattern;
 
