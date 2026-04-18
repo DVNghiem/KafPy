@@ -36,7 +36,10 @@
 4. WorkerPool::worker_loop dispatches to appropriate execution path based on HandlerMode
 5. RoutingDecision::Route(handler_id) queues messages to batch-capable handler if batch mode configured on that handler
 
-**Plans:** TBD
+**Plans:** 1 plan
+
+Plans:
+- [ ] 24-01-PLAN.md — HandlerMode enum, BatchPolicy struct, PythonHandler fields, WorkerPool dispatch
 
 ### Phase 25: Batch Accumulation & Flush
 
@@ -104,7 +107,7 @@
 | 21. Routing Core | v1.5 | 3/3 | Complete | 2026-04-17 |
 | 22. Python Integration | v1.5 | 1/1 | Complete | 2026-04-18 |
 | 23. Dispatcher Integration | v1.5 | 1/1 | Complete | 2026-04-18 |
-| 24. HandlerMode & Execution Foundation | v1.6 | 0/- | Not started | - |
+| 24. HandlerMode & Execution Foundation | v1.6 | 1/- | In progress | - |
 | 25. Batch Accumulation & Flush | v1.6 | 0/- | Not started | - |
 | 26. Async Python Handlers | v1.6 | 0/- | Not started | - |
 | 27. Shutdown Drain & Polish | v1.6 | 0/- | Not started | - |
