@@ -46,6 +46,11 @@ Current status (after Milestone v1.4):
 | has_terminal per-partition gating | Once terminal on a TP, that partition stops committing until restart | Active (v1.4) |
 | fire-and-forget DLQ produce | Bounded mpsc channel (~100), non-blocking, DLQ failures logged only | Active (v1.4) |
 | configurable DLQ topic naming | dlq_topic_prefix per consumer, default "dlq." | Active (v1.4) |
+| RoutingChain precedence | pattern→header→key→python→default with explicit default handler | Active (v1.5) |
+| RoutingDecision::Route(handler_id) | topic-based routing still determines queue; handler_id annotates | Active (v1.5) |
+| RoutingDecision::Drop | fast-path: drop + advance offset (no DLQ, no retry) | Active (v1.5) |
+| RoutingDecision::Reject | fast-path: direct to DLQ (no RetryCoordinator) | Active (v1.5) |
+| RoutingDecision::Defer | routing inconclusive → default handler dispatch | Active (v1.5) |
 
 ## Context
 
@@ -60,6 +65,8 @@ Current status (after Milestone v1.4):
 **Milestone v1.4:** Failure Handling & DLQ — Phases 17-20 complete. FailureReason taxonomy, RetryPolicy with exponential backoff, DLQ routing with metadata envelope, per-partition commit gating with terminal state tracking, graceful shutdown DLQ flush.
 
 **Current milestone (v1.5):** Extensible Routing — Pattern/header/key routing with optional Python fallback, Rust as fast-path owner.
+
+**v1.5 shipped:** Phase 21 (RoutingCore), Phase 22 (PythonRouter), Phase 23 (DispatcherIntegration). RoutingChain wired into ConsumerDispatcher with all 4 RoutingDecision variants handled (Route→handler queue, Drop→offset advance, Reject→DLQ, Defer→default).
 
 ## Validated Requirements
 
@@ -98,12 +105,14 @@ Current status (after Milestone v1.4):
 - ✓ flush_failed_to_dlq drains all failed (retryable + terminal) to DLQ — v1.4
 - ✓ WorkerPool::shutdown calls flush_failed_to_dlq before graceful_shutdown — v1.4
 
+- ✓ Pattern/header/key routing with Python fallback — v1.5
+- ✓ Routing precedence: pattern → header → key → python → default — v1.5
+- ✓ RoutingDecision trait: route, drop, reject, defer — v1.5
+- ✓ Integration with existing handler queues + backpressure — v1.5
+
 ## Active Requirements
 
-- Pattern/header/key routing with Python fallback — v1.5
-- Routing precedence: pattern → header → key → python → default — v1.5
-- RoutingDecision trait: route, drop, reject, defer — v1.5
-- Integration with existing handler queues + backpressure — v1.5
+(None yet — plan next milestone)
 
 ## Out of Scope
 
@@ -132,4 +141,4 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-*Last updated: 2026-04-17 after v1.4 milestone complete*
+*Last updated: 2026-04-18 after v1.5 milestone*
