@@ -85,7 +85,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 21. Routing Core | 0/3 | Not started | - |
-| 22. Python Integration | 0/- | Not started | - |
+| 22. Python Integration | 0/1 | Planned    |  |
 | 23. Dispatcher Integration | 0/- | Not started | - |
 
 ---
