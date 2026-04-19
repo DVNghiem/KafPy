@@ -6,11 +6,11 @@
 
 **Key accomplishments:**
 
-- src/dispatcher/queue_manager.rs
-- Plan:
-- src/observability/tracing.rs
-- KafkaMetrics struct with consumer_lag/assignment_size/committed_offset gauges per TP, background polling task every 10s, and offset_commit_latency histogram
-- File:
+- MetricsSink trait + PrometheusMetricsSink adapter with zero-cost facade (metrics 0.24, prometheus-client 0.24)
+- Tracing infrastructure: ObservabilityConfig, enable_otel_tracing(), W3C tracecontext propagation, OpenTelemetry spans (kafpy.handler.invoke, kafpy.dispatch.process, kafpy.dlq.route)
+- KafkaMetrics struct with consumer_lag/assignment_size/committed_offset gauges per TP, background polling task every 10s, offset_commit_latency histogram
+- RuntimeSnapshot with background poller, zero-cost when not called, providing get_runtime_snapshot() and status_callback registration via PyO3
+- Structured logging with consistent field names (handler_id, topic, partition, offset), per-component log levels, and Python log forwarding via LogTracer
 
 ---
 
