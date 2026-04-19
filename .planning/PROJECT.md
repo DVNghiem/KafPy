@@ -70,17 +70,7 @@ Current status (after Milestone v1.4):
 
 **v1.6 shipped:** Phase 24 (HandlerMode foundation), Phase 25 (BatchAccumulator), Phase 26 (Async Python handlers), Phase 27 (Shutdown drain verification). HandlerMode enum with 4 variants, BatchAccumulator with fixed-window flush, PythonAsyncFuture with custom CFFI bridge, all 4 execution modes working.
 
-**Current milestone (v1.7): Observability Layer**
-
-**Goal:** Provide structured logging, metrics, and runtime introspection for KafPy without coupling to a specific observability backend.
-
-**Target features:**
-- Structured logging facade with pluggable backend (e.g., loguru, standard logging)
-- Per-handler metrics: invocation count, latency histogram, error count, batch size distribution
-- Kafka-level metrics: consumer lag per topic-partition, assignment size, committed offset vs. high watermark
-- OpenTelemetry integration points (trace/span hooks) with zero-cost opt-in
-- Runtime introspection: WorkerPool status (idle/active/busy workers), accumulator depths, in-flight message counts
-- Facade/abstraction layer so users can wire their own observability backend
+**v1.7 shipped:** Phase 28 (Metrics Infrastructure), Phase 29 (Tracing Infrastructure), Phase 30 (Kafka-Level Metrics), Phase 31 (Runtime Introspection), Phase 32 (Structured Logging). MetricsSink trait, Prometheus adapter, OTLP tracing with W3C context propagation, KafkaMetrics with consumer lag gauges, RuntimeSnapshot with get_runtime_snapshot(), structured logging with LogTracer forwarding.
 
 ## Validated Requirements
 
@@ -123,16 +113,23 @@ Current status (after Milestone v1.4):
 - ✓ Routing precedence: pattern → header → key → python → default — v1.5
 - ✓ RoutingDecision trait: route, drop, reject, defer — v1.5
 - ✓ Integration with existing handler queues + backpressure — v1.5
+- ✓ HandlerMode enum with 4 variants (SingleSync, SingleAsync, BatchSync, BatchAsync) — v1.6
+- ✓ BatchAccumulator with fixed-window timeout flush — v1.6
+- ✓ Async Python handlers via pyo3-async-runtimes into_future — v1.6
+- ✓ GIL never held across Rust-side orchestration — v1.6
+- ✓ Batch result model: AllSuccess/AllFailure/PartialFailure — v1.6
+- ✓ MetricsSink trait + PrometheusMetricsSink adapter with zero-cost facade — v1.7
+- ✓ Tracing infrastructure: ObservabilityConfig, enable_otel_tracing(), W3C tracecontext propagation — v1.7
+- ✓ KafkaMetrics with consumer_lag/assignment_size/committed_offset gauges, background polling — v1.7
+- ✓ RuntimeSnapshot with get_runtime_snapshot() PyO3, Consumer.status() Python method — v1.7
+- ✓ Structured logging with consistent field names, per-component log levels, Python log forwarding — v1.7
 
 ## Active Requirements
 
-- Batch-capable handler registration (EXEC-01)
-- Batch accumulation until size or timeout (EXEC-02)
-- Sync Python handlers (EXEC-03)
-- Async Python handlers via pyo3-async-runtimes (EXEC-04)
-- Handler execution mode abstraction (EXEC-05)
-- GIL minimal usage across Rust orchestration (EXEC-06)
-- Batch result: full success / full failure model (EXEC-07)
+- [ ] OTLP exporter sink implementing MetricsSink for unified OTLP metrics+traces (OBS-F2)
+- [ ] Pre-built Prometheus alerting rules for consumer lag, error rate, batch size thresholds (OBS-F3)
+- [ ] Trace context injection into Kafka headers for cross-service correlation (OBS-F1)
+- [ ] Sliding window latency percentiles p50/p95/p99 (OBS-F4)
 
 ## Out of Scope
 
@@ -161,4 +158,4 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-*Last updated: 2026-04-18 after v1.5 milestone*
+*Last updated: 2026-04-19 after v1.7 milestone*
