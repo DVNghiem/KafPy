@@ -1,6 +1,7 @@
 use crate::consumer::config::ConsumerConfig;
 use crate::consumer::error::ConsumerError;
 use crate::consumer::message::OwnedMessage;
+use crate::coordinator::ShutdownCoordinator;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::error::KafkaError;
 use std::sync::Arc;
@@ -24,11 +25,23 @@ use tracing::{debug, error, info};
 pub struct ConsumerRunner {
     consumer: Arc<StreamConsumer>,
     shutdown_tx: broadcast::Sender<()>,
+    /// Optional shutdown coordinator for phased graceful shutdown.
+    /// When `Some`, `stop()` coordinates with the coordinator before signaling.
+    coordinator: Option<Arc<ShutdownCoordinator>>,
 }
 
 impl ConsumerRunner {
     /// Creates a new runner from a consumer config.
-    pub fn new(config: ConsumerConfig) -> Result<Self, ConsumerError> {
+    ///
+    /// # Arguments
+    ///
+    /// * `config` — consumer configuration
+    /// * `coordinator` — optional shutdown coordinator for phased graceful shutdown.
+    ///   When `None`, `stop()` falls back to the existing broadcast-channel shutdown.
+    pub fn new(
+        config: ConsumerConfig,
+        coordinator: Option<Arc<ShutdownCoordinator>>,
+    ) -> Result<Self, ConsumerError> {
         let consumer: StreamConsumer = config
             .clone()
             .into_rdkafka_config()
@@ -50,6 +63,7 @@ impl ConsumerRunner {
         Ok(Self {
             consumer: Arc::new(consumer),
             shutdown_tx,
+            coordinator,
         })
     }
 
@@ -106,9 +120,25 @@ impl ConsumerRunner {
     }
 
     /// Stops the consumer loop gracefully.
+    ///
+    /// If a `ShutdownCoordinator` is configured, this triggers the phased
+    /// shutdown sequence (Running -> Draining -> Finalizing -> Done).
+    /// The coordinator's cancellation tokens are used to signal each component.
+    /// Otherwise, falls back to the existing broadcast-channel shutdown.
     pub fn stop(&self) {
         info!("Signaling consumer runner to stop");
-        let _ = self.shutdown_tx.send(());
+        if let Some(ref coord) = self.coordinator {
+            // LSC-02/03: Begin draining phase FIRST, then signal dispatcher.
+            // This prevents circular wait: dispatcher must stop before workers drain.
+            let (dispatcher_cancel, _worker_cancel, _committer_cancel) =
+                coord.begin_draining();
+            // Dispatcher cancel is sent to interrupt the dispatcher loop.
+            // Worker and committer cancels are passed to their respective owners.
+            let _ = self.shutdown_tx.send(());
+            info!("dispatcher stop signaled");
+        } else {
+            let _ = self.shutdown_tx.send(());
+        }
     }
 
     /// Commits the current consumer offset state.

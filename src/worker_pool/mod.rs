@@ -15,6 +15,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 
 use crate::coordinator::retry_coordinator::RetryCoordinator;
+use crate::coordinator::shutdown::ShutdownCoordinator;
 use crate::coordinator::OffsetCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
@@ -1006,6 +1007,8 @@ pub struct WorkerPool {
     dlq_router: Arc<dyn DlqRouter>,
     /// Shared state for runtime introspection (OBS-31).
     pub(crate) worker_pool_state: Arc<WorkerPoolState>,
+    /// Shutdown coordinator for accessing drain timeout.
+    coordinator: Arc<ShutdownCoordinator>,
 }
 
 impl WorkerPool {
@@ -1026,6 +1029,7 @@ impl WorkerPool {
         dlq_producer: Arc<SharedDlqProducer>,
         dlq_router: Arc<dyn DlqRouter>,
         shutdown_token: CancellationToken,
+        coordinator: Arc<ShutdownCoordinator>,
     ) -> Self {
         let mut join_set = JoinSet::new();
 
@@ -1091,6 +1095,7 @@ impl WorkerPool {
             dlq_producer,
             dlq_router,
             worker_pool_state,
+            coordinator,
         }
     }
 
@@ -1105,14 +1110,30 @@ impl WorkerPool {
     }
 
     /// Trigger graceful shutdown and await completion (EXEC-12).
+    ///
+    /// Uses the drain timeout from ShutdownCoordinator. If drain exceeds the
+    /// timeout, forces abort of all remaining workers.
     pub async fn shutdown(&mut self) {
         tracing::info!("initiating worker pool shutdown");
         self.shutdown_token.cancel();
-        // D-02: Flush all failed (retryable + terminal) to DLQ before final commit
+        // LSC-03: Drain with timeout from coordinator
+        let drain_timeout = self.coordinator.drain_timeout();
+        match tokio::time::timeout(drain_timeout, self.join_set.shutdown()).await {
+            Ok(()) => {
+                tracing::info!("worker pool drained gracefully");
+            }
+            Err(_) => {
+                tracing::warn!(
+                    timeout_secs = drain_timeout.as_secs(),
+                    "drain timeout exceeded, forcing abort"
+                );
+                self.join_set.abort_all();
+            }
+        }
+        // LSC-03: Flush pending retries to DLQ before finalizing
         self.offset_coordinator
             .flush_failed_to_dlq(&self.dlq_router, &self.dlq_producer);
         self.offset_coordinator.graceful_shutdown();
-        self.join_set.shutdown().await;
         tracing::info!("worker pool shutdown complete");
     }
 }
@@ -1190,6 +1211,7 @@ mod tests {
             dummy_dlq_producer(),
             dummy_dlq_router(),
             CancellationToken::new(),
+            std::sync::Arc::new(crate::coordinator::ShutdownCoordinator::new(30)),
         );
         let _ = tx;
     }

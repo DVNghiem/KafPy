@@ -37,6 +37,7 @@ pub struct ConsumerConfig {
     pub retry_backoff_ms: u32,
     pub default_retry_policy: RetryPolicy,
     pub dlq_topic_prefix: String,
+    pub drain_timeout_secs: u64,
     pub routing_rules: Vec<RoutingRule>,
 }
 
@@ -95,6 +96,7 @@ pub struct ConsumerConfigBuilder {
     retry_backoff_ms: u32,
     default_retry_policy: RetryPolicy,
     dlq_topic_prefix: String,
+    drain_timeout_secs: u64,
     routing_rules: Vec<RoutingRule>,
 }
 
@@ -114,6 +116,7 @@ impl ConsumerConfigBuilder {
             retry_backoff_ms: 100,
             default_retry_policy: RetryPolicy::default(),
             dlq_topic_prefix: "dlq.".to_string(),
+            drain_timeout_secs: 30,
             routing_rules: Vec::new(),
             ..Default::default()
         }
@@ -216,6 +219,11 @@ impl ConsumerConfigBuilder {
         self
     }
 
+    pub fn drain_timeout(mut self, secs: u64) -> Self {
+        self.drain_timeout_secs = secs;
+        self
+    }
+
     /// Adds a routing rule. Rules are evaluated in priority order (lower first).
     ///
     /// # Example
@@ -265,6 +273,7 @@ impl ConsumerConfigBuilder {
             retry_backoff_ms: self.retry_backoff_ms,
             default_retry_policy: self.default_retry_policy,
             dlq_topic_prefix: self.dlq_topic_prefix,
+            drain_timeout_secs: self.drain_timeout_secs,
             routing_rules: self.routing_rules,
         })
     }

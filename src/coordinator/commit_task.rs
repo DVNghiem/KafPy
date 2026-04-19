@@ -11,6 +11,7 @@ use tracing::{debug, error};
 
 use crate::consumer::runner::ConsumerRunner;
 use crate::coordinator::offset_tracker::OffsetTracker;
+use crate::coordinator::shutdown::ShutdownCoordinator;
 
 /// Topic-partition pair used as the watch channel payload.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -100,6 +101,8 @@ pub struct OffsetCommitter {
     tracker: Arc<OffsetTracker>,
     config: CommitConfig,
     state: parking_lot::Mutex<CommitterState>,
+    /// Shutdown coordinator for detecting finalization phase.
+    coordinator: Arc<ShutdownCoordinator>,
 }
 
 impl OffsetCommitter {
@@ -108,12 +111,14 @@ impl OffsetCommitter {
         runner: Arc<ConsumerRunner>,
         tracker: Arc<OffsetTracker>,
         config: CommitConfig,
+        coordinator: Arc<ShutdownCoordinator>,
     ) -> Self {
         Self {
             runner,
             tracker,
             config,
             state: parking_lot::Mutex::new(CommitterState::new()),
+            coordinator,
         }
     }
 
@@ -121,11 +126,28 @@ impl OffsetCommitter {
     ///
     /// This method is intended to be called inside `tokio::spawn`. It blocks
     /// until the watch channel is closed or the task is cancelled.
+    ///
+    /// ## Shutdown Behavior
+    ///
+    /// When the `ShutdownCoordinator` enters the `Done` phase (via `begin_finalizing`),
+    /// the committer commits all pending offsets and exits cleanly.
     pub async fn run(self, mut rx: watch::Receiver<TopicPartition>) {
         let mut ticker = interval(Duration::from_millis(self.config.commit_interval_ms));
 
         loop {
             tokio::select! {
+                biased;
+                // LSC-03: Check if shutdown has entered finalization phase
+                _ = async {
+                    while !self.coordinator.is_done() {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                } => {
+                    tracing::info!("coordinator entering finalizing phase, committing final offsets");
+                    self.process_ready_partitions().await;
+                    tracing::info!("final offsets committed, committer shutting down");
+                    break;
+                }
                 // Watch channel signal — a topic-partition has new data ready
                 _ = rx.changed() => {
                     self.process_ready_partitions().await;

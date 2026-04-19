@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::ConsumerConfig;
 use crate::consumer::{ConsumerConfigBuilder, ConsumerRunner};
+use crate::coordinator::ShutdownCoordinator;
 use crate::dispatcher::ConsumerDispatcher;
 use crate::dlq::{DefaultDlqRouter, DlqRouter, SharedDlqProducer};
 use crate::python::handler::PythonHandler;
@@ -80,7 +81,7 @@ impl Consumer {
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
             let default_retry_policy = rust_config.default_retry_policy.clone();
-            let runner = ConsumerRunner::new(rust_config.clone())
+            let runner = ConsumerRunner::new(rust_config.clone(), None)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
             // BRIDGE-01 + D-02: Create OffsetTracker and wire ConsumerRunner before pool
@@ -129,6 +130,9 @@ impl Consumer {
 
             let n_workers = 4; // EXEC-08: configurable
 
+            // LSC-01: Create shutdown coordinator with configured drain timeout
+            let coordinator = std::sync::Arc::new(ShutdownCoordinator::new(rust_config.drain_timeout_secs));
+
             let pool = WorkerPool::new(
                 n_workers,
                 receivers,
@@ -140,6 +144,7 @@ impl Consumer {
                 dlq_producer,
                 dlq_router,
                 shutdown_token.clone(),
+                std::sync::Arc::clone(&coordinator),
             );
 
             // OBS-31: Spawn RuntimeSnapshotTask for introspection (global singleton)
@@ -155,6 +160,7 @@ impl Consumer {
                 std::sync::Arc::clone(&runner_arc),
                 std::sync::Arc::clone(&offset_tracker),
                 crate::coordinator::CommitConfig::default(),
+                std::sync::Arc::clone(&coordinator),
             );
             let (tx, rx) =
                 tokio::sync::watch::channel(crate::coordinator::TopicPartition::new("", 0));

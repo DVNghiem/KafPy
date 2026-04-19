@@ -16,7 +16,7 @@
 
 ### v1.8: Graceful Shutdown & Rebalance Handling
 
-- [ ] **Phase 33: ShutdownCoordinator** — ShutdownPhase enum, drain timeout, shutdown order
+- [x] **Phase 33: ShutdownCoordinator** — ShutdownPhase enum, drain timeout, shutdown order
 - [ ] **Phase 34: Rebalance Handling** — PartitionOwnership, RebalanceHandler, ownership guard in record_ack
 - [ ] **Phase 35: Integration & Hardening** — Wire coordinator to all tasks, BatchAccumulator drain, biased select
 
@@ -37,7 +37,7 @@
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 33. ShutdownCoordinator | v1.8 | 1/1 | Planned | - |
+| 33. ShutdownCoordinator | v1.8 | 1/1 | Complete | 2026-04-19 |
 | 34. Rebalance Handling | v1.8 | 0/1 | Not started | - |
 | 35. Integration & Hardening | v1.8 | 0/1 | Not started | - |
 

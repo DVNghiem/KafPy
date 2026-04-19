@@ -2,15 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.8
 milestone_name: Graceful Shutdown & Rebalance Handling
-status: planning
-last_updated: "2026-04-19T05:50:00.000Z"
-last_activity: 2026-04-19
+status: Ready for Phase 34 (Rebalance Handling)
+stopped_at: Phase 34 context gathered, ready for planning
+last_updated: "2026-04-19T16:17:01.375Z"
+last_activity: 2026-04-19 — Phase 33 complete
 progress:
-  total_phases: 0
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  total_phases: 1
+  completed_phases: 1
+  total_plans: 1
+  completed_plans: 1
+  percent: 100
 ---
 
 # Project State
@@ -24,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-04-19)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-04-19 — Milestone v1.8 started
+Phase: 33 complete (ShutdownCoordinator shipped)
+Plan: 33-01 complete
+Status: Ready for Phase 34 (Rebalance Handling)
+Last activity: 2026-04-19 — Phase 33 complete
 
 ## Performance Metrics
 
@@ -77,6 +78,10 @@ Last activity: 2026-04-19 — Milestone v1.8 started
 - **v1.8**: Explicit lifecycle states over boolean flags
 - **v1.8**: Close-and-drain over abrupt drops
 - **v1.8**: Partition ownership state: assigned / paused / draining / revoked
+- **v1.8**: ShutdownCoordinator owns ShutdownPhase enum (Running -> Draining -> Finalizing -> Done)
+- **v1.8**: Shutdown order: dispatcher stop -> worker drain (30s timeout) -> offset finalize -> consumer drop
+- **v1.8**: rd_kafka_consumer_close() auto-called by BaseConsumer::Drop, never explicit
+- **v1.8**: tokio::time::timeout(drain_timeout, join_set.shutdown()) with abort_all() on timeout
 
 ### Pending Todos
 
@@ -85,7 +90,7 @@ Last activity: 2026-04-19 — Milestone v1.8 started
 - Phase 30: Consumer lag, assignment size, committed offset gauges via rdkafka stats
 - Phase 31: RuntimeSnapshot, get_runtime_snapshot() PyO3, Consumer.status() Python method
 - Phase 32: Consistent field names, log format config, per-component log levels, LogTracer
-- Phase 33: Graceful Shutdown Coordinator, lifecycle state machine, shutdown signal handling
+- Phase 33: Graceful Shutdown Coordinator, lifecycle state machine, shutdown signal handling **[DONE]**
 - Phase 34: Rebalance Handling, partition ownership state, Assign/Revoke/Error events
 - Phase 35: Integration - offset manager, retry/DLQ, worker, batching, observability wired to lifecycle
 
@@ -118,6 +123,6 @@ Last activity: 2026-04-19 — Milestone v1.8 started
 
 ## Session Continuity
 
-Last session: 2026-04-19T05:39:55.233Z
-Stopped at: v1.7 milestone complete
-Resume file: None
+Last session: 2026-04-19T16:17:01.372Z
+Stopped at: Phase 34 context gathered, ready for planning
+Resume file: .planning/phases/34-rebalance-handling/34-CONTEXT.md

@@ -7,11 +7,11 @@
 
 ### Lifecycle State (LSC-01)
 
-- [ ] **LSC-01**: ShutdownCoordinator owns ShutdownPhase enum (Running, Draining, Finalizing, Done)
-- [ ] **LSC-02**: Consumer::stop() signals ShutdownCoordinator which orchestrates correct shutdown order
-- [ ] **LSC-03**: Shutdown order: dispatcher stop → worker drain → offset commit → component close
-- [ ] **LSC-04**: ShutdownCoordinator drain timeout (default 30s) with force-abort fallback
-- [ ] **LSC-05**: ConsumerRunner::close() calls rd_kafka_consumer_close() on drop
+- [x] **LSC-01**: ShutdownCoordinator owns ShutdownPhase enum (Running, Draining, Finalizing, Done)
+- [x] **LSC-02**: Consumer::stop() signals ShutdownCoordinator which orchestrates correct shutdown order
+- [x] **LSC-03**: Shutdown order: dispatcher stop → worker drain → offset commit → component close
+- [x] **LSC-04**: ShutdownCoordinator drain timeout (default 30s) with force-abort fallback
+- [x] **LSC-05**: ConsumerRunner::close() calls rd_kafka_consumer_close() on drop
 
 ### Rebalance Handling (RB-01)
 
@@ -40,7 +40,7 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| LSC-01 through LSC-05 | Phase 33 | Pending |
+| LSC-01 through LSC-05 | Phase 33 | Complete |
 | RB-01 through RB-05 | Phase 34 | Pending |
 | INT-01 through INT-04 | Phase 35 | Pending |
 

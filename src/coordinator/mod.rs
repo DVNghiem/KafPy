@@ -8,9 +8,11 @@ pub mod error;
 pub mod offset_coordinator;
 pub mod offset_tracker;
 pub mod retry_coordinator;
+pub mod shutdown;
 
 pub use commit_task::{CommitConfig, OffsetCommitter, TopicPartition};
 pub use error::CoordinatorError;
 pub use offset_coordinator::OffsetCoordinator;
 pub use offset_tracker::{OffsetTracker, PartitionState};
 pub use retry_coordinator::RetryCoordinator;
+pub use shutdown::{ShutdownCoordinator, ShutdownPhase};

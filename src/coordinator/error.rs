@@ -1,5 +1,6 @@
 //! Coordinator error types.
 
+use super::shutdown::ShutdownPhase;
 use thiserror::Error;
 
 /// Errors produced by the coordinator module.
@@ -10,4 +11,7 @@ pub enum CoordinatorError {
 
     #[error("offset {0} is invalid (must be >= 0)")]
     InvalidOffset(i64),
+
+    #[error("invalid phase transition from {0} to {1}")]
+    InvalidPhaseTransition(ShutdownPhase, ShutdownPhase),
 }
