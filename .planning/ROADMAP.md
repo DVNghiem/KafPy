@@ -20,6 +20,18 @@
 - [ ] **Phase 34: Rebalance Handling** — PartitionOwnership, RebalanceHandler, ownership guard in record_ack
 - [ ] **Phase 35: Integration & Hardening** — Wire coordinator to all tasks, BatchAccumulator drain, biased select
 
+### Phase 33: ShutdownCoordinator
+**Goal**: Create ShutdownCoordinator with ShutdownPhase enum, drain timeout, and correct shutdown order
+**Depends on**: Nothing (first phase of milestone)
+**Requirements**: LSC-01, LSC-02, LSC-03, LSC-04, LSC-05
+**Success Criteria:**
+1. ShutdownCoordinator owns ShutdownPhase enum (Running → Draining → Finalizing → Done)
+2. Consumer::stop() signals ShutdownCoordinator which orchestrates component shutdown
+3. Shutdown order prevents deadlock: dispatcher → workers → commit
+4. Drain timeout default 30s with force-abort fallback
+5. ConsumerRunner::close() calls rd_kafka_consumer_close() on drop
+**Plans**: 1 plan
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
