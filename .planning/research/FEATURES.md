@@ -1,163 +1,290 @@
-# Feature Research
+# Feature Research: Graceful Shutdown and Rebalance Handling
 
-**Domain:** Observability Layer for Rust/PyO3 Kafka Consumer Framework
-**Researched:** 2026-04-18
+**Domain:** Kafka Consumer Framework — Graceful Shutdown & Rebalance Lifecycle
+**Researched:** 2026-04-19
 **Confidence:** MEDIUM-HIGH
 
 ## Feature Landscape
 
 ### Table Stakes (Users Expect These)
 
-Features users assume exist in any production-grade Kafka framework. Missing these = product feels incomplete or unusable in production environments.
+Features users assume exist in any production-grade Kafka framework. Missing these = data loss risk, duplicate processing, or incorrect offset commits during planned and unplanned interruptions.
 
 | Feature | Why Expected | Complexity | Notes |
 |---------|--------------|------------|-------|
-| **Structured logging** | Debugging production issues requires log fields, not format strings | LOW | KafPy already uses `tracing` facade. Need field-rich events at key integration points. |
-| **Handler latency histogram** | Identify slow handlers, set SLAs, capacity planning | MEDIUM | Per-handler `Duration` from invoke start to result. Histogram with p50/p95/p99 percentiles. |
-| **Error count per handler** | Alert on error rates, track reliability | LOW | Increment on `ExecutionResult::Error` / `ExecutionResult::Rejected`. Counter with labels. |
-| **Invocation count per handler** | Throughput visibility, handler utilization | LOW | Increment on each handler call. Counter with topic/handler_id labels. |
-| **Kafka consumer lag metric** | Core Kafka health indicator -- lag means backlog | MEDIUM | rdkafka provides `consumer_lag` per partition via `assignment()` + `position()`. Expose as gauge. |
-| **Queue depth / inflight gauges** | Detect backpressure, identify queue buildup | LOW | `QueueManager` already tracks `queue_depth` and `inflight` via `AtomicUsize`. Expose as Prometheus gauges. |
-| **Offset commit latency** | Know when commits are slow or failing | MEDIUM | Measure `store_offset` + `commit` duration. Histogram with topic/partition labels. |
-| **Worker pool status introspection** | Runtime visibility: which workers are active/idle/busy | MEDIUM | `WorkerPool` already uses `JoinSet` + `CancellationToken`. Expose worker state via a status struct. |
+| **Graceful shutdown sequence** | Stop intake → drain queues → commit offsets → stop workers. Missing this = uncommitted offsets, duplicate messages on restart. | MEDIUM | KafPy currently has `stop()` + `WorkerPool::shutdown()` but missing `rd_kafka_consumer_close()` call to leave group properly. |
+| **Rebalance event handling** | Consumer group membership changes constantly in production. Without callbacks, partition revocation causes data loss or duplication. | MEDIUM | librdkafka provides `rebalance_cb` callback. KafPy does not implement this. |
+| **Partition ownership state machine** | Partitions transition through states: assigned → processing → draining → revoked. Each state requires different behavior. | MEDIUM | No explicit state machine in current implementation. |
+| **Safe offset progression** | Commit only highest-contiguous offsets. Gaps (failed/retryable messages) must not be committed. | LOW | KafPy already implements `OffsetTracker` with BTreeSet highest-contiguous algorithm. |
+| **Final offset commit on shutdown/rebalance** | Before leaving group or stopping, must commit current position. | MEDIUM | `graceful_shutdown()` exists in `OffsetCoordinator` but is only called from `WorkerPool::shutdown()`, not on rebalance. |
+| **DLQ flush before offset commit** | Failed messages should reach DLQ before their offsets are committed. | LOW | KafPy already flushes DLQ before final commit (D-02 pattern). |
 
 ### Differentiators (Competitive Advantage)
 
-Features that set KafPy apart from basic Kafka clients. These align with the Core Value: high-performance Rust with idiomatic Python API.
+Features that set KafPy apart. These go beyond basic consumer lifecycle handling.
 
 | Feature | Value Proposition | Complexity | Notes |
 |---------|-------------------|------------|-------|
-| **Pluggable metrics backend** | Users wire their own Prometheus, DataDog, OTLP. Not locked into one backend. | MEDIUM | Trait-based `MetricsSink` facade. Users provide `Arc<dyn MetricsSink>` at construction. |
-| **OpenTelemetry trace hooks** | Distributed tracing across services using Kafka as transport | MEDIUM | Emit spans on handler invoke, commit, DLQ route. Zero-cost opt-in via `enable_otel()`. |
-| **Per-partition batch size distribution** | Understand batching efficiency -- are batches forming as expected? | MEDIUM | Histogram of batch sizes per partition. Reveals if `max_batch_size` is too large for traffic pattern. |
-| **Facade/abstraction layer** | Observability does not pull in Prometheus OTEL crates unless user opts in | LOW | Core emits to trait. Prometheus adapter is separate feature gate. |
-| **Python-accessible introspection** | `consumer.status()` returns dict with worker states, queue depths, lag | LOW | Expose via PyO3 a status struct readable from Python for dashboarding. |
+| **Partition-state-aware backpressure** | During rebalance, backpressure signals can pause partitions mid-revocation, causing gaps. State machine prevents this. | HIGH | KafPy already has `pause_partition` / `resume_partition` via `ConsumerDispatcher` but no rebalance integration. |
+| **Graceful drain timeout** | Hard timeout on drain prevents infinite wait on slow handlers. Configurable per-partition deadline. | MEDIUM | No drain timeout currently. `WorkerPool::shutdown()` waits indefinitely for workers. |
+| **Incremental rebalance support (KIP-848)** | Next-gen protocol (Kafka 4.0+) uses incremental assign/unassign. Different from classic revoke-all-then-assign-all. | HIGH | KIP-848 is preview in librdkafka 2.4+. Classic protocol is current default. |
+| **Static group membership handling** | `group.instance.id` consumers retain partition ownership across restarts. Proper close is critical to avoid fencing. | MEDIUM | Not currently handled — `rd_kafka_consumer_close()` missing. |
+| **Rebalance-induced DLQ flush** | When partitions are revoked, any in-flight failed messages should be flushed to DLQ immediately rather than waiting for shutdown. | MEDIUM | Only happens on explicit `WorkerPool::shutdown()`, not on rebalance. |
+| **Python-visible rebalance callbacks** | Allow Python code to react to partition assignment changes (log, metrics, custom routing). | MEDIUM | No callback mechanism exposed to Python layer. |
 
 ### Anti-Features (Commonly Requested, Often Problematic)
 
-Features that seem good but create coupling or complexity problems.
-
-| Feature | Why Requested | Why Problematic | Alternative |
-|---------|---------------|-----------------|-------------|
-| **Auto-instrumentation with agent** | Java/Kafka-style JVM agent for zero-config tracing | Requires runtime bytecode injection, complex in Python native extensions | Explicit span hooks via OTel API -- opt-in, no agent |
-| **Builtin Prometheus exporter endpoint** | `/metrics` endpoint for Prometheus scraping | HTTP server lifecycle complexity, opinionated about deployment | Expose metrics via `Arc<dyn MetricsSink>` that users wire to their own HTTP server |
-| **Log aggregation in-process** | Centralized logging with buffering | Adds memory pressure, opinionated about log backend | Structured log facade outputs to `tracing`. Users configure their own subscriber (env-filter, Jaeger, etc.) |
-| **Metrics on every single message** | Maximum granularity for debugging | High cardinality explosion. Histogram per message is expensive. | Aggregate in-process: per-batch or per-second rollup before emitting to sink |
-| **Hardcoded DataDog/CloudWatch export** | "Just works" integration | Vendor lock-in, adds dependency weight | Adapter pattern: user provides `MetricsSink` implementation |
+| Anti-Feature | Why Problematic | Alternative |
+|--------------|-----------------|-------------|
+| **Auto-commit during shutdown** | Can commit offsets before processing completes, causing data loss. | Manual offset management with explicit `store_offset` + `commit` — KafPy already uses this. |
+| **Blocking shutdown with no timeout** | Slow Python handlers can cause shutdown to hang indefinitely. | Configurable drain timeout; graceful degradation after timeout. |
+| **Revoke-all then assign-all pattern** | Classic rebalance protocol revokes all partitions before assigning new ones. Forces complete drain cycle. | Incremental rebalance (KIP-848) minimizes churn; not yet implemented. |
+| **Global consumer close without per-partition state** | Closing consumer without tracking which partitions were owned causes commit to happen on wrong offsets. | Partition ownership state machine tracks which offsets belong to which partition ownership epoch. |
 
 ## Feature Dependencies
 
 ```
-[Structured Logging Facade]
-    └──requires──> [MetricsSink trait]
-                       └──requires──> [Metrics struct definitions]
+[Partition Ownership State Machine]
+    ├──requires──> [Rebalance Callback Registration]
+    └──requires──> [Partition Handle Registry]
 
-[Handler Latency Histogram]
-    └──requires──> [MetricsSink trait]
-    └──requires──> [Histogram bucket configuration]
+[Graceful Shutdown Sequence]
+    ├──requires──> [Stop Consumer Intake (close receiver)]
+    ├──requires──> [Drain In-Flight Messages]
+    ├──requires──> [Flush Failed to DLQ]
+    ├──requires──> [Commit Final Offsets]
+    └──requires──> [rd_kafka_consumer_close()]
 
-[Kafka Consumer Lag]
-    └──requires──> [ConsumerRunner::assignment() + position()]
+[Rebalance Event Handling]
+    ├──requires──> [librdkafka rebalance_cb]
+    ├──triggers──> [Partition State Transitions]
+    └──triggers──> [DLQ Flush on Revoke]
 
-[WorkerPool Status]
-    └──requires──> [Worker state tracking in worker_loop]
-
-[OpenTelemetry Hooks]
-    └──enhances──> [Structured Logging Facade]
-    └──conflicts──> [Metrics-only users who don't want OTel overhead]
+[Safety Guarantees]
+    ├──requires──> [Highest-Contiguous Offset Commit]
+    └──ensures──> [No Gaps Committed]
 ```
 
-### Dependency Notes
+## Feature Analysis
 
-- **Structured Logging facade requires MetricsSink trait:** The `tracing` facade is already in use. Observability hooks emit to `Arc<dyn MetricsSink>` so both logging and metrics share the same pluggable backend.
-- **Kafka Consumer Lag requires `ConsumerRunner::assignment()` + `position()`:** Already available on `ConsumerRunner`. rdkafka's `TopicPartitionList` provides offsets per partition.
-- **OpenTelemetry hooks enhance logging facade:** OTel spans can be emitted alongside structured log events. They are orthogonal but share the hook integration points.
-- **OTel conflicts with metrics-only users:** If user only wants Prometheus counters/histograms, they should not pay OTel crate cost. OTel is a feature-gated optional feature.
+### 1. Graceful Shutdown Flow
 
-## MVP Definition
+The canonical shutdown sequence for a Kafka consumer (from librdkafka INTRODUCTION.md):
 
-### Launch With (v1.7)
+```c
+// 1) Leave consumer group, commit final offsets
+rd_kafka_consumer_close(rk);
 
-Minimum viable observability -- enough for users to run KafPy in production with visibility.
+// 2) Destroy handle object
+rd_kafka_destroy(rk);
+```
 
-- [ ] **Structured logging via `tracing`** -- Enrich existing `tracing::info/warn/error` calls with fields (topic, partition, handler_id, worker_id, offset, queue_depth). Already uses `tracing-subscriber` with env-filter.
-- [ ] **`MetricsSink` trait** -- Define `pub trait MetricsSink: Send + Sync`. Methods: `record_counter(name, labels)`, `record_histogram(name, value, labels)`, `record_gauge(name, value, labels)`. Minimal interface.
-- [ ] **`noop` sink implementation** -- Default no-op sink that drops all metrics. Zero cost when observability disabled.
-- [ ] **Handler invocation counter** -- Increment on each `PythonHandler::invoke_mode` call. Labels: `handler_id`, `topic`, `mode` (SingleSync/BatchSync/etc).
-- [ ] **Handler latency histogram** -- Time from invoke start to `ExecutionResult` available. Buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s]. Labels: `handler_id`, `topic`, `mode`.
-- [ ] **Error counter per handler** -- Increment on `ExecutionResult::Error` and `ExecutionResult::Rejected`. Labels: `handler_id`, `topic`, `error_type` (Error/Rejected).
-- [ ] **Batch size histogram** -- Record batch size when `BatchAccumulator` flushes. Buckets: [1, 2, 5, 10, 25, 50, 100]. Labels: `handler_id`, `topic`.
-- [ ] **Queue depth gauges** -- Expose `queue_manager.get_queue_depth()` and `queue_manager.get_inflight()` per handler. Labels: `handler_id`, `topic`.
-- [ ] **Python `status()` method** -- `Consumer.status()` returns dict: `{handlers: {handler_id: {queue_depth, inflight, capacity}}, workers: {worker_id: state}}`. Enables Python-side dashboards.
+**KafPy's current flow:**
+1. `Consumer::stop()` → cancels `shutdown_token`
+2. `WorkerPool::shutdown()` → flushes DLQ → calls `graceful_shutdown()` → awaits worker completion
+3. `ConsumerDispatcher::run()` → exits when stream returns `None` (sender dropped)
+4. **MISSING**: No `rd_kafka_consumer_close()` call — consumer stays in group until `session.timeout.ms` expires
 
-### Add After Validation (v1.8)
+**What KafPy is missing for proper shutdown:**
+- `ConsumerRunner::close()` method that calls `rd_kafka_consumer_close()`
+- Coordination between `WorkerPool::shutdown()` and consumer close
+- The `OffsetCommitter` background task is not signalled to drain
 
-Features that add significant value once the observability foundation is stable.
+### 2. Rebalance Event Handling
 
-- [ ] **Prometheus sink adapter** -- `kafpy_observability::PrometheusSink` implementing `MetricsSink`. Uses `prometheus-client` crate. Users wire it via config.
-- [ ] **Kafka consumer lag gauge** -- Use rdkafka `consumer.position()` vs `consumer.highwater()` to compute lag. Expose as gauge per topic-partition.
-- [ ] **Offset commit latency histogram** -- Time `store_offset` + `commit` cycle. Labels: `topic`, `partition`.
-- [ ] **OpenTelemetry trace hooks** -- `enable_otel()` method on `ConsumerConfig`. Emits spans on: message received, handler invoked, execution result, offset committed, DLQ routed. Zero-cost when disabled.
-- [ ] **Worker state introspection** -- `Idle/Active/Busy` per worker. `Active` = currently processing a message. `Busy` = backpressure blocked. Exposed via Python `status()`.
+librdkafka provides a `rebalance_cb` callback that receives three event types:
+
+| Event | Meaning | Required Action |
+|-------|---------|-----------------|
+| `RD_KAFKA_EVENT_REBALANCE_ASSIGN` | Partitions assigned to this consumer | Register partitions, resume consumption |
+| `RD_KAFKA_EVENT_REBALANCE_REVOKE` | Partitions revoked from this consumer | Pause consumption, drain in-flight, commit offsets, unregister |
+| `RD_KAFKA_EVENT_REBALANCE_ERROR` | Rebalance failed | Log error, possibly wait for retry |
+
+**Current KafPy implementation:** None. `ConsumerRunner` does not register a rebalance callback.
+
+**What needs to be added:**
+1. `ConsumerRebalanceHandler` trait or struct to receive callbacks
+2. `ConsumerRunner::set_rebalance_callback()` to register with librdkafka
+3. On `ASSIGN`: call `populate_partitions()`, register with `OffsetTracker`
+4. On `REVOKE`: pause partition, flush in-flight to DLQ, commit offsets, unregister from `OffsetTracker`
+5. On `ERROR`: log, possibly trigger retry with backoff
+
+### 3. Partition Ownership State Machine
+
+A partition owned by this consumer should go through these states:
+
+```
+[Assigned] ──> [Processing] ──> [Draining] ──> [Revoked]
+                │                   │
+                │                   └──> [Paused] (backpressure)
+                │
+                └──> [Paused] (backpressure) ──> [Processing]
+```
+
+**State definitions:**
+- **Assigned**: Partition is in our assignment. We are responsible for committing offsets.
+- **Processing**: Actively fetching and processing messages from this partition.
+- **Draining**: Shutdown or rebalance signal received. No new messages fetched. In-flight being processed.
+- **Paused**: Consumption paused via `rd_kafka_pause()`. Offset not advancing.
+- **Revoked**: No longer in our assignment. Partition state should be cleared.
+
+**KafPy's current state tracking:**
+- `partition_handles` in `ConsumerDispatcher` tracks partition lists for pause/resume
+- `paused_topics` tracks which topics are paused
+- **Missing**: Per-partition state with explicit transitions, no rebalance integration
+
+### 4. Safe Offset Progression During Shutdown/Rebalance
+
+The key invariant: **never commit a gap**.
+
+librdkafka's `consumer_lag_stored` field in statistics shows the difference between `hi_offset` (latest offset in Kafka) and `stored_offset` (offset to be committed). This is the safe zone.
+
+**KafPy's existing protection:**
+- `OffsetTracker` uses BTreeSet to track pending offsets
+- `should_commit()` only returns true when `committed_offset + 1` is in `pending_offsets`
+- `graceful_shutdown()` only commits partitions where `should_commit()` is true
+- `has_terminal` flag blocks commit for a partition when terminal failure seen (D-01)
+
+**Additional needed protection during rebalance:**
+- When `REVOKE` event fires, must wait for in-flight to complete before committing
+- Must flush all retryable failures to DLQ before revoking (same as shutdown)
+- Partition that is draining should not accept new messages from the consumer
+
+### 5. Common Patterns in Other Libraries
+
+**Java Spring Kafka:**
+```java
+// Listener container lifecycle
+container.stop(() -> {
+    // Called on each listener thread — drain logic
+    kafkaTemplate.sendToDLQ(records);
+    committedOffsets.setOffset(topic, partition, offset);
+});
+
+// Rebalance listener
+container.getContainerProperties().setConsumerRebalanceListener(
+    new ConsumerRebalanceListener() {
+        public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
+            // Commit offsets before revoke
+        }
+        public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
+            // Seek to committed offset
+        }
+    }
+);
+```
+
+**Go segmentio/kafka-go:**
+```go
+// ConsumerGroup handling
+type ConsumerGroupHandler interface {
+    Setup(Session) error
+    Cleanup(Session) error
+    Consume(Session, Message) error
+}
+
+// OnRevoke: drain current assignments
+func (h *handler) Cleanup(session kafka.GroupSession) error {
+    for _, assignment := range session.Assignments() {
+        // Commit offsets for each topic-partition
+    }
+    return nil
+}
+```
+
+**Python confluent-kafka-python:**
+```python
+# Rebalance callback
+def rebalance_callback(consumer, partitions, event):
+    if event == KafkaRebalanceEvent.REVOKE:
+        # Commit offsets before partitions revoked
+        consumer.commit(partitions, async=False)
+    elif event == KafkaRebalanceEvent.ASSIGN:
+        # Seek to committed offset
+        for p in partitions:
+            consumer.seek(p)
+
+# Configuration
+conf['rebalance_cb'] = rebalance_callback
+```
+
+### 6. rdkafka Rebalance Callback Registration
+
+From rdkafka `rdkafka.h`, the rebalance callback is configured via `rd_kafka_conf_set_rebalance_cb()` or in C++ via `RdKafka::Conf::set_rebalance_cb()`.
+
+The callback signature:
+```c
+void rebalance_callback(rd_kafka_t *rk,
+                        rd_kafka_resp_err_t err,
+                        rd_kafka_topic_partition_list_t *partitions,
+                        void *opaque);
+```
+
+The librdkafka `INTRODUCTION.md` notes on rebalance (section "Consumer groups"):
+- Consumer group state flow is visualized in `src/librdkafka_cgrp_synch.png`
+- Static group membership (KIP-345) retains partition ownership across restarts
+- KIP-848 "next generation" protocol is incremental assign/unassign (preview in librdkafka 2.4+)
+
+## MVP Recommendation
+
+### Launch With (v1.8 — Shutdown & Rebalance)
+
+**Must have for production safety:**
+
+1. **`ConsumerRunner::close()` method** — calls `rd_kafka_consumer_close()` to leave group properly. Without this, consumer appears in group until `session.timeout.ms` expires.
+
+2. **Coordinated shutdown sequence:**
+   - `WorkerPool::shutdown()` signals drain
+   - Wait for in-flight completion (with timeout)
+   - Flush failed to DLQ
+   - Commit final offsets
+   - Call `ConsumerRunner::close()`
+   - Cancel all background tasks
+
+3. **Basic rebalance callback:**
+   - `RD_KAFKA_EVENT_REBALANCE_REVOKE`: pause partition, drain in-flight, commit offsets, unregister partition
+   - `RD_KAFKA_EVENT_REBALANCE_ASSIGN`: register partitions, populate partition handles
+
+4. **Partition ownership state enum:**
+   ```rust
+   enum PartitionOwnership {
+       Assigned,    // In our assignment
+       Processing, // Actively consuming
+       Paused,     // rd_kafka_pause() called
+       Draining,   // Revoke/shutdown in progress
+       Revoked,    // No longer ours
+   }
+   ```
+
+### Add After Validation (v1.9 — Production Hardening)
+
+- Drain timeout with graceful degradation
+- Python-visible rebalance callbacks (opt-in)
+- Incremental rebalance support (when Kafka 4.0+ widely deployed)
+- Rebalance-induced DLQ flush
 
 ### Future Consideration (v2+)
 
-Features to defer until product-market fit is established.
-
-- [ ] **OTLP exporter sink** -- Export metrics/traces via OpenTelemetry Protocol to Jaeger/Prometheus OTLP gateway.
-- [ ] **Alerting rules library** -- Pre-built Prometheus alerting rules for: high error rate, consumer lag exceeds threshold, queue depth approaching capacity.
-- [ ] **Trace context propagation** -- Inject trace context into Kafka message headers for cross-service tracing.
-- [ ] **Adaptive batch sizing hints** -- Based on observed batch sizes, suggest `max_batch_size` tuning.
-
-## Feature Prioritization Matrix
-
-| Feature | User Value | Implementation Cost | Priority |
-|---------|------------|---------------------|----------|
-| Structured logging (enrich existing) | HIGH | LOW | P1 |
-| `MetricsSink` trait + noop | HIGH | LOW | P1 |
-| Handler invocation counter | HIGH | LOW | P1 |
-| Handler latency histogram | HIGH | MEDIUM | P1 |
-| Error counter per handler | HIGH | LOW | P1 |
-| Python `status()` method | HIGH | LOW | P1 |
-| Queue depth gauges | MEDIUM | LOW | P1 |
-| Batch size histogram | MEDIUM | LOW | P1 |
-| Prometheus sink adapter | HIGH | MEDIUM | P2 |
-| Kafka consumer lag gauge | HIGH | MEDIUM | P2 |
-| Offset commit latency histogram | MEDIUM | MEDIUM | P2 |
-| OpenTelemetry trace hooks | MEDIUM | HIGH | P2 |
-| Worker state introspection | MEDIUM | MEDIUM | P2 |
-| OTLP exporter sink | LOW | HIGH | P3 |
-| Alerting rules library | LOW | MEDIUM | P3 |
-| Trace context propagation | LOW | HIGH | P3 |
-
-**Priority key:**
-- P1: Must have for launch -- observability foundation
-- P2: Should have, add when possible -- production hardening
-- P3: Nice to have, future consideration -- deferred
-
-## Competitor Feature Analysis
-
-| Feature | kafka-python | confluent-kafka-python | faust (Bytewax) | Our Approach |
-|---------|--------------|------------------------|-----------------|--------------|
-| Structured logging | `logging` module (stdlib) | `logging` module | `structlog` + `logging` | `tracing` facade with field-rich events |
-| Metrics | No builtin | Optional `confluent_kafka_monitoring` | Prometheus client | `MetricsSink` trait -- pluggable, zero-cost noop default |
-| Consumer lag | Manual calculation | Manual calculation | Via `consumer_group` metric | Built-in gauge via rdkafka `position()` |
-| Per-handler latency | No | No | Via Faust instrumentation | First-class histogram per registered handler |
-| OpenTelemetry | Third-party | Third-party | Built-in OTEL | Opt-in OTel hooks via `enable_otel()` |
-| Runtime introspection | No | No | `faust --inspect` | Python `status()` dict with worker + queue state |
-| Batch metrics | No | No | No | Batch size histogram on accumulator flush |
-
-**Key differentiation:** KafPy's observability layer is facade-based (not bound to a specific backend), first-class (not an afterthought), and Python-accessible (not only Rust-visible).
+- Static group membership fencing detection
+- KIP-848 incremental rebalance protocol support
+- Partition-level drain deadlines (per-partition timeout vs global)
 
 ## Sources
 
-- [rdkafka STATISTICS documentation](https://github.com/confluentinc/librdkafka/blob/master/STATISTICS.md) -- rdkafka exposes consumer lag and throughput metrics via JSON statistics callback
-- [tracing crate documentation](https://docs.rs/tracing/) -- structured logging facade, already in use in KafPy
-- [prometheus-client Rust crate](https://docs.rs/prometheus-client/) -- idiomatic Prometheus metrics in Rust
-- [OpenTelemetry Rust SDK](https://docs.rs/opentelemetry/) -- OTEL trace/span API, used for trace hook integration
-- KafPy existing implementation -- `src/worker_pool/mod.rs`, `src/dispatcher/queue_manager.rs`, `src/coordinator/offset_tracker.rs`
+### Primary (HIGH confidence)
+- [librdkafka INTRODUCTION.md](target/debug/build/rdkafka-sys-125b88b4db967997/out/INTRODUCTION.md) — termination sequence, consumer groups, static membership, KIP-848
+- [librdkafka STATISTICS.md](target/debug/build/rdkafka-sys-125b88b4db967997/out/STATISTICS.md) — `consumer_lag_stored`, `fetch_state`, `app_offset`, `committed_offset`
+- KafPy existing implementation: `src/consumer/runner.rs`, `src/worker_pool/mod.rs`, `src/coordinator/offset_tracker.rs`, `src/coordinator/offset_coordinator.rs`
+
+### Secondary (MEDIUM confidence)
+- [Spring Kafka ListenerContainer lifecycle](https://docs.spring.io/spring-kafka/reference/html/) — shutdown and rebalance patterns
+- [confluent-kafka-python rebalance_cb](https://github.com/confluent/confluent-kafka-python) — Python binding patterns
+- [segmentio/kafka-go ConsumerGroup](https://github.com/segmentio/kafka-go) — Go patterns
+
+### Tertiary (LOW confidence)
+- KIP-848 protocol details — still preview in librdkafka 2.4.0, may change
 
 ---
 
-*Feature research for: observability layer (structured logging, metrics, tracing, introspection)*
-*Researched: 2026-04-18*
+*Research for: graceful shutdown and rebalance handling (v1.8 candidate)*
+*Researched: 2026-04-19*

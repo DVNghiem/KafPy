@@ -1,555 +1,722 @@
-# Architecture Research: KafPy Observability Layer
+# Architecture Research: KafPy Lifecycle Management
 
-**Domain:** Rust/PyO3 Kafka Consumer Observability Integration
-**Researched:** 2026-04-18
-**Confidence:** HIGH
+**Domain:** Rust/PyO3 Kafka Consumer Lifecycle -- Shutdown, Rebalance, Partition Ownership
+**Researched:** 2026-04-19
+**Confidence:** MEDIUM-HIGH
 
 ## Executive Summary
 
-KafPy's observability layer integrates three complementary systems: structured logging via the existing `tracing` facade, metrics via the `metrics` crate facade, and OpenTelemetry tracing via `tracing-opentelemetry`. The architecture follows a facade/abstraction pattern so users can wire their own backends. Key integration points are the `worker_loop` (handler invocation), `BatchAccumulator` (batch-level metrics), `ConsumerDispatcher` (Kafka-level metrics), and `QueueManager` (queue introspection).
+KafPy's lifecycle management today is fragmented: `WorkerPool::shutdown()` handles worker drain, `OffsetTracker::graceful_shutdown()` handles final commits, `OffsetCommitter` runs independently without shutdown awareness, and there is no rebalance response infrastructure. The current `stop()` on `Consumer` only cancels the `CancellationToken` -- no coordination across components.
+
+This research recommends adding a `ShutdownCoordinator` that orchestrates a 3-phase shutdown (stop consuming, drain workers, commit final offsets) and a `RebalanceHandler` that responds to partition assignment changes by updating `PartitionOwnership` and signaling the `ShutdownCoordinator` when partitions are revoked.
+
+**Key finding:** `rdkafka` does not support native Rust callbacks for rebalance events. Rebalance detection requires either a polling approach (check assignment changes on an interval) or subscribing to the rdkafka consumer's assignment via the existing `StreamConsumer` loop. The recommended approach is to detect rebalance inside the existing `ConsumerRunner::run()` loop by comparing consecutive `assignment()` results, since the run loop already polls `consumer.recv()`.
+
+---
 
 ## Existing Architecture
 
 ```
-ConsumerDispatcher
-    └── ConsumerRunner (Kafka stream)
-    └── Dispatcher
-            └── QueueManager (queue_depth, inflight atomics)
-                    └── HandlerEntry { sender, metadata }
-    └── RoutingChain (optional)
+pyconsumer.rs (Consumer)
+    shutdown_token: CancellationToken
+    handlers: Arc<Mutex<HashMap<String, Arc<Py<PyAny>>>>>
 
-WorkerPool
-    └── worker_loop / batch_worker_loop
-            └── PythonHandler (invoke_mode dispatch)
-            └── Executor (post-execution policy)
-            └── OffsetCoordinator (ack tracking)
-            └── RetryCoordinator (retry state)
-            └── DlqRouter + SharedDlqProducer
-    └── CancellationToken (shutdown)
+start() {
+    runner_arc = Arc::new(ConsumerRunner::new(...))
+    offset_tracker = Arc::new(OffsetTracker::new())
+    offset_tracker.set_runner(runner_arc.clone())
+    dispatcher = ConsumerDispatcher::new(runner.clone())
+
+    receivers = dispatcher.register_handler(...)  // per-topic mpsc::Receiver
+
+    handler = Arc::new(PythonHandler::new(...))
+    pool = WorkerPool::new(n_workers, receivers, handler, ...,
+        offset_tracker.clone(), retry_coordinator, shutdown_token.clone())
+
+    committer = OffsetCommitter::new(runner_arc, offset_tracker, config)
+    spawn(committer.run(rx))
+
+    spawn(dispatcher.run(...))
+
+    pool.run().await  // blocks until shutdown
+    // dispatcher_handle and committer_handle dropped here
+}
 ```
 
-**Current logging:** `tracing` facade with `tracing-subscriber` fmt layer. Structured fields via `tracing::info!`, `tracing::warn!`, `tracing::error!` macros scattered throughout `worker_loop`, `ConsumerDispatcher::run`, and `OffsetTracker`.
+**Current shutdown flow:**
+1. `Consumer::stop()` -> `shutdown_token.cancel()` (only affects WorkerPool)
+2. `WorkerPool::shutdown()` -> cancels token, flushes failed to DLQ, calls `graceful_shutdown()`, awaits join_set
+3. `OffsetTracker::graceful_shutdown()` -> iterates all partitions, stores + commits highest contiguous
+4. `OffsetCommitter::run()` -> loops on watch channel + ticker; exits when channel closes (but nobody closes it on shutdown!)
+5. `ConsumerDispatcher::run()` -> async loop on `runner.stream()`; exits when stream returns `None` (sender dropped)
 
-**Current metrics:** None -- queue depth and inflight tracked via `AtomicUsize` but not exposed as metrics.
+**Current problems identified:**
+
+| Problem | Impact | Location |
+|---------|--------|----------|
+| `stop()` only cancels token, doesn't stop dispatcher | Dispatcher continues polling until ConsumerRunner stops | `pyconsumer.rs:184-186` |
+| `OffsetCommitter` has no shutdown signal | Committer task runs forever even after pool shutdown | `commit_task.rs:124-139` |
+| No rebalance response | Partitions revoked mid-processing leave worker in undefined state | `consumer/runner.rs` |
+| No partition ownership tracking | Dispatcher can't know which partitions it currently owns | `dispatcher/mod.rs:257-266` |
+| `BatchAccumulator` not drained on rebalance | In-flight batches for revoked partitions lost | `worker_pool/mod.rs:565-611` |
+| `retry_coordinator` not consulted on shutdown | In-flight retries not flushed before final commit | `worker_pool/mod.rs:1108-1117` |
 
 ---
 
-## Recommended Observability Architecture
+## Recommended Architecture
 
-### System Overview
+### Phase 1: ShutdownCoordinator
 
+A single orchestrator that drives the 3-phase shutdown sequence. Owned by `Consumer`, created in `start()`.
+
+```rust
+/// Orchestrates graceful shutdown across all KafPy components.
+///
+/// Phase 1: Signal all components to stop accepting new work
+/// Phase 2: Wait for in-flight work to complete (with timeout)
+/// Phase 3: Commit final offsets and drain remaining state
+///
+/// ## Shutdown Order
+///
+/// 1. ConsumerRunner -- stop producing messages
+/// 2. WorkerPool -- stop accepting new dispatches, wait for inflight
+/// 3. BatchAccumulator -- flush all pending batches
+/// 4. RetryCoordinator -- flush retry backlog
+/// 5. OffsetTracker -- commit highest contiguous offsets
+/// 6. OffsetCommitter -- stop accepting new commits
+pub struct ShutdownCoordinator {
+    phase: parking_lot::Mutex<ShutdownPhase>,
+    /// Notifies all components to enter drain mode.
+    drain_token: CancellationToken,
+    /// Signaled after Phase 2 (inflight complete) to trigger Phase 3.
+    drain_complete: broadcast::Sender<DrainComplete>,
+    /// JoinHandle for OffsetCommitter task (so we can cancel it in Phase 3).
+    committer_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// JoinHandle for Dispatcher task.
+    dispatcher_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownPhase {
+    /// Normal operation -- all components running.
+    Running,
+    /// Phase 1 -- drain signal sent, waiting for inflight to complete.
+    Draining,
+    /// Phase 3 -- final commits in progress.
+    Finalizing,
+    /// Shutdown complete.
+    Done,
+}
 ```
-+-------------------------------------------------------------------------+
-|                         KafPy Observability Layer                        |
-+-------------------------------------------------------------------------+
-|                                                                          |
-|  +-------------------------------------------------------------------+  |
-|  |                    Metrics Recorder (Facade)                      |  |
-|  |  +----------+  +----------+  +----------+  +----------+           |  |
-|  |  | Handler  |  |  Batch   |  |  Kafka   |  | Worker   |           |  |
-|  |  | Metrics  |  | Metrics  |  | Metrics  |  |  Pool    |           |  |
-|  |  +----+-----+  +----+-----+  +----+-----+  +----+-----+           |  |
-|  |       |             |             |             |                  |  |
-|  |  +----+-------------+-------------+-------------+----+             |  |
-|  |  |              Metrics Trait Objects                |             |  |
-|  |  |     (Counter, Histogram, Gauge per handler)      |             |  |
-|  |  +----------------------+--------------------------+             |  |
-|  +--------------------------+---------------------------------------+  |
-|                             |                                               |
-|  +--------------------------+---------------------------------------+  |
-|  |         Tracing Layer     |  (tracing + tracing-opentelemetry)   |  |
-|  |  +-----------------------+------------------------+             |  |
-|  |  |              OpenTelemetry Spans                  |             |  |
-|  |  |  per message  |  per handler invoke  |  per batch |             |  |
-|  |  +-------------------------------------------------+             |  |
-|  +-------------------------------------------------------------------+  |
-|                                                                          |
-|  +-------------------------------------------------------------------+  |
-|  |                      Structured Log Sink                            |  |
-|  |         (tracing-subscriber Layer -> user-configured backend)       |  |
-|  +-------------------------------------------------------------------+  |
-|                                                                          |
-+-------------------------------------------------------------------------+
+
+**Integration with existing components:**
+
+1. **ConsumerRunner**: `ShutdownCoordinator` calls `runner.stop()` in Phase 1 (sends broadcast to `shutdown_rx` in `run()` loop)
+2. **ConsumerDispatcher**: `ShutdownCoordinator` drops the dispatcher handle in Phase 1, causing `run()` stream to close
+3. **WorkerPool**: `ShutdownCoordinator` calls `pool.shutdown()` in Phase 2 (waits with timeout)
+4. **BatchAccumulator**: `batch_worker_loop` already drains on `shutdown_token.cancelled()` -- Phase 2 waits for this
+5. **RetryCoordinator**: Phase 3 calls `retry_coordinator.flush_pending_retries()` (new method needed)
+6. **OffsetTracker**: Phase 3 calls `graceful_shutdown()` (already exists)
+7. **OffsetCommitter**: Phase 3 cancels the committer via `committer_handle.abort()`
+
+**Python API:**
+
+```rust
+// pyconsumer.rs
+#[pymethods]
+impl Consumer {
+    pub fn start(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let coordinator = ShutdownCoordinator::new(
+                shutdown_token.clone(),
+                runner_arc.clone(),
+                offset_tracker.clone(),
+                pool.clone(),
+                dispatcher.clone(),
+                committer_handle,  // passed in to be owned
+            );
+
+            // Spawn all tasks under coordinator's management
+            // ...
+        })
+    }
+
+    pub fn stop(&self) {
+        // NEW: Coordinated shutdown instead of just token cancel
+        self.coordinator.shutdown();
+    }
+}
 ```
 
-### Component Responsibilities
+### Phase 2: PartitionOwnership
 
-| Component | Responsibility | Implementation |
-|-----------|----------------|----------------|
-| `Observable` trait | Defines metrics + tracing contract for all instrumented components | New trait in `src/observability/` |
-| `HandlerMetrics` | Per-handler: invocation count, latency histogram, error count, batch size | `metrics` crate counters + histograms |
-| `BatchMetrics` | Per-batch: size distribution, flush reason, accumulation time | `metrics` crate histograms |
-| `KafkaMetrics` | Kafka-level: consumer lag per TP, assignment size, committed vs HW | `rdkafka` stats callback + `metrics` gauges |
-| `WorkerPoolMetrics` | Pool-level: idle/active/busy workers, queue depths | `metrics` gauges |
-| `TracingLayer` | Bridges `tracing` spans to OpenTelemetry via `tracing-opentelemetry` | `tracing_subscriber::Layer` |
-| `MetricsLayer` | Exposes `metrics` recordings via OpenTelemetry Meter | `tracing-opentelemetry::MetricsLayer` |
-| `ObservableDecorator` | Attaches metrics + span context to `ExecutionContext` | New struct wrapping context |
+Tracks which partitions the consumer currently owns and whether they are active/revoked.
+
+```rust
+/// Thread-safe partition ownership state.
+///
+/// Updated on every rebalance. Used by Dispatcher and WorkerPool
+/// to determine which partitions they should be processing.
+pub struct PartitionOwnership {
+    /// Current assignment: topic -> Vec<Partition>
+    assignment: parking_lot::RwLock<HashMap<String, Vec<i32>>>,
+    /// Partitions that were revoked but not yet fully drained
+    revoking: parking_lot::RwLock<HashMap<String, Vec<i32>>>,
+    /// Assignment metadata for pause/resume
+    partition_handles: Arc<parking_lot::Mutex<HashMap<String, rdkafka::TopicPartitionList>>>,
+}
+
+impl PartitionOwnership {
+    /// Updates assignment on rebalance.
+    /// Returns (newly_owned, newly_revoked) for downstream processing.
+    pub fn update_assignment(
+        &self,
+        new_assignment: rdkafka::TopicPartitionList,
+    ) -> (Vec<(String, i32)>, Vec<(String, i32)>) {
+        // Compare with current, compute delta
+        // Update assignment and revoking sets
+    }
+
+    /// Returns partitions currently owned.
+    pub fn current_ownership(&self) -> Vec<(String, i32)> { }
+
+    /// Marks a partition as fully drained after rebalance.
+    pub fn mark_drained(&self, topic: &str, partition: i32) { }
+
+    /// Returns true if the partition is currently owned.
+    pub fn is_owned(&self, topic: &str, partition: i32) -> bool { }
+
+    /// Returns the TopicPartitionList for pause/resume.
+    pub fn get_handles(&self) -> Arc<parking_lot::Mutex<HashMap<String, rdkafka::TopicPartitionList>>> { }
+}
+```
+
+**Integration with ConsumerDispatcher:**
+
+```rust
+// In ConsumerDispatcher
+pub struct ConsumerDispatcher {
+    runner: Arc<ConsumerRunner>,
+    dispatcher: Dispatcher,
+    partition_ownership: Arc<PartitionOwnership>,  // NEW
+    // ...
+}
+
+impl ConsumerDispatcher {
+    /// Called on rebalance. Updates ownership and pauses revoked partitions.
+    pub fn on_rebalance(&self, assignment: rdkafka::TopicPartitionList) {
+        let (owned, revoked) = self.partition_ownership.update_assignment(assignment);
+        // Pause revoked partitions
+        for (topic, partition) in &revoked {
+            self.pause_partition(topic);
+        }
+    }
+
+    /// Called by WorkerPool when a partition is fully drained post-revoke.
+    pub fn on_partition_drained(&self, topic: &str, partition: i32) {
+        self.partition_ownership.mark_drained(topic, partition);
+    }
+}
+```
+
+### Phase 3: RebalanceHandler
+
+Detects rebalance events and coordinates the response.
+
+**Key architectural question:** How does rdkafka expose rebalance to Rust?
+
+Looking at the rdkafka source and documentation, `StreamConsumer` does not have a native callback mechanism in Rust (unlike the Java client). The recommended detection approach is:
+
+1. **Polling-based**: Periodically call `consumer.assignment()` and compare with the previous snapshot. If changed, a rebalance occurred.
+2. **Message-based**: Most rebalances are preceded by a `KafkaError::PartitionEof` or similar signal, but this is unreliable.
+3. **Consumer loop integration**: Compare assignment at the start of each `consumer.recv()` iteration.
+
+**Recommended approach (Option 3):** Detect rebalance inside `ConsumerRunner::run()` by storing the previous assignment snapshot and comparing on each iteration. When assignment changes:
+1. Emit a rebalance event (via broadcast channel)
+2. `RebalanceHandler` receives it, calls `ConsumerDispatcher::on_rebalance()`
+3. Dispatcher pauses revoked partitions, updates `PartitionOwnership`
+
+```rust
+// In ConsumerRunner::run()
+async fn run(&self) -> mpsc::Receiver<Result<OwnedMessage, ConsumerError>> {
+    let (tx, rx) = mpsc::channel(1000);
+    let consumer = Arc::clone(&self.consumer);
+    let mut shutdown_rx = self.shutdown_tx.subscribe();
+    let mut prev_assignment = consumer.assignment().ok();
+    let rebalance_tx = self.rebalance_tx.clone(); // NEW: broadcast channel for rebalance events
+
+    tokio::spawn(async move {
+        loop {
+            select! {
+                biased;
+                _ = shutdown_rx.recv() => {
+                    break;
+                }
+                message_result = consumer.recv() => {
+                    // Check for rebalance
+                    let current_assignment = consumer.assignment().ok();
+                    if current_assignment != prev_assignment {
+                        let (owned, revoked) = diff_assignments(&prev_assignment, &current_assignment);
+                        let _ = rebalance_tx.send(RebalanceEvent { owned, revoked });
+                        prev_assignment = current_assignment;
+                    }
+
+                    match message_result {
+                        // ...
+                    }
+                }
+            }
+        }
+    });
+    rx
+}
+```
+
+**RebalanceEvent broadcast:**
+
+```rust
+/// Emitted by ConsumerRunner when partition assignment changes.
+#[derive(Debug, Clone)]
+pub struct RebalanceEvent {
+    pub newly_owned: Vec<(String, i32)>,
+    pub newly_revoked: Vec<(String, i32)>,
+}
+```
+
+**RebalanceHandler integration:**
+
+```rust
+// In pyconsumer.rs start()
+let rebalance_tx = broadcast::Sender::<RebalanceEvent>::new(1);
+let rebalance_rx = rebalance_tx.subscribe();
+
+let rebalance_handler = RebalanceHandler::new(
+    Arc::clone(&dispatcher),
+    Arc::clone(&partition_ownership),
+    Arc::clone(&retry_coordinator),
+);
+
+tokio::spawn(async move {
+    rebalance_handler.run(rebalance_rx).await;
+});
+```
 
 ---
 
-## New Components
+## Integration with Existing Components
 
-### 1. `src/observability/mod.rs` -- Observability Module Root
+### Integration with BatchAccumulator
+
+`BatchAccumulator` is per-worker, embedded in `batch_worker_loop`. On rebalance revocation:
+
+1. `RebalanceHandler` calls `partition_ownership.mark_revoked(topic, partition)`
+2. WorkerPool workers observe revocation and drain:
+   - `batch_worker_loop` already handles `shutdown_token.cancelled()` by flushing all
+   - Need a separate signal for rebalance-specific drain (different from full shutdown)
+3. Add `partition_revoked` field to signal targeted drain vs. full shutdown
+
+**Alternative:** Use existing `shutdown_token` for rebalance drain too -- when `CancellationToken` is cancelled, all workers drain all batches. This is simpler but less targeted.
+
+**Recommendation:** Use `CancellationToken` for both shutdown and rebalance drain. When a partition is revoked, cancel only the workers that own that partition (partition-to-worker mapping needed).
+
+### Integration with RetryCoordinator
+
+`RetryCoordinator` has pending retry state in `HashMap<RetryKey, MessageRetryState>`. On shutdown:
+
+1. Phase 3 (Finalizing): iterate all retry state, for each pending retry:
+   - Produce message to DLQ (don't await)
+   - Remove from retry state
+
+**New method on RetryCoordinator:**
 
 ```rust
-//! Observability facade -- metrics, tracing, and structured logging.
-//!
-//! Provides a pluggable backend architecture:
-//! - Metrics: `metrics` crate facade (noop when no recorder installed)
-//! - Tracing: `tracing` facade + optional OpenTelemetry layer
-//! - Logging: `tracing-subscriber` layered on top of `tracing`
-
-pub mod metrics;
-pub mod tracing;
-pub mod facade;
-```
-
-### 2. `src/observability/metrics.rs` -- Metrics Domain
-
-```rust
-/// Per-handler metric instruments.
-/// All metrics use a "kafpy.handler." prefix with handler_id label.
-pub struct HandlerMetrics {
-    /// Number of handler invocations (success + error separately).
-    pub invocations: Counter,
-    /// Latency from message dispatch to execution complete.
-    pub latency_ms: Histogram,
-    /// Batch sizes observed at invocation time.
-    pub batch_size: Histogram,
-    /// Current inflight messages for this handler (gauge).
-    pub inflight: Gauge,
-    /// Queue depth at dispatch time.
-    pub queue_depth: Gauge,
-}
-
-/// Kafka-level metrics.
-/// Prefix: "kafpy.kafka."
-pub struct KafkaMetrics {
-    /// Consumer lag per topic-partition (high_watermark - committed_offset).
-    pub consumer_lag: IntGauge,
-    /// Number of assigned partitions.
-    pub assignment_size: Gauge,
-    /// Committed offset per topic-partition.
-    pub committed_offset: IntGauge,
-}
-
-/// Worker pool metrics.
-/// Prefix: "kafpy.pool."
-pub struct WorkerPoolMetrics {
-    pub idle_workers: Gauge,
-    pub active_workers: Gauge,
-    pub busy_workers: Gauge,
+/// Flushes all pending retries to DLQ.
+/// Called during graceful shutdown before final offset commit.
+pub fn flush_pending_retries(
+    &self,
+    dlq_router: &Arc<dyn DlqRouter>,
+    dlq_producer: &Arc<SharedDlqProducer>,
+) {
+    let state_guard = self.state.lock();
+    for (key, msg_state) in state_guard.iter() {
+        let metadata = DlqMetadata::new(
+            msg_state.topic.clone(),
+            msg_state.partition,
+            msg_state.offset,
+            msg_state.last_failure.as_ref().map(|r| r.to_string()).unwrap_or_else(|| "unknown".to_string()),
+            msg_state.attempt as u32,
+            chrono::Utc::now(),
+            chrono::Utc::now(),
+        );
+        let tp = dlq_router.route(&metadata);
+        dlq_producer.produce_async(tp.topic, tp.partition, vec![], None, &metadata);
+    }
 }
 ```
 
-**Integration:** `HandlerMetrics` is created per `handler_id` via `Arc<MetricsGuard>` stored in `ExecutionContext`. The guard holds weak references; actual recording happens only if a global recorder is installed (facade pattern).
+### Integration with OffsetCommitter
 
-### 3. `src/observability/tracing.rs` -- OpenTelemetry Tracing Integration
+The `OffsetCommitter` task currently runs forever with no shutdown signal. On `ShutdownCoordinator::shutdown()`:
+
+1. Phase 1: abort `committer_handle`
+2. Phase 3: before `graceful_shutdown()`, ensure no new commits can start
+
+**Current problem:** `OffsetCommitter::run()` uses `tokio::select!` on `rx.changed()` and `ticker.tick()`. When the watch channel closes (tx dropped), the loop exits -- but in current code, tx is never dropped until `pyconsumer` drops the committer after `pool.run().await`. This works only because the channel is scoped to the async block.
+
+**Fix:** `ShutdownCoordinator` owns the committer's `JoinHandle` and calls `.abort()` on Phase 1. This is safe because `OffsetCommitter::run()` checks for cancellation:
 
 ```rust
-/// Initializes OpenTelemetry tracing with OTLP exporter.
-/// Call once at module init, before creating any consumers.
-pub fn init_otel_tracing(service_name: &str, endpoint: &str) -> Result<(), ObservabilityError> {
-    // 1. Build OTLP exporter (grpc-tonic)
-    // 2. Create SdkTracerProvider with batch processor
-    // 3. Create tracing-opentelemetry::layer()
-    // 4. Compose with existing tracing_subscriber layers
-    // 5. Set global tracer + propagator
-}
+// In commit_task.rs
+pub async fn run(mut self, mut rx: watch::Receiver<TopicPartition>) {
+    let mut ticker = interval(Duration::from_millis(self.config.commit_interval_ms));
 
-/// Span names follow semantic conventions:
-/// - "kafpy.handler.invoke" -- handler execution
-/// - "kafpy.batch.invoke" -- batch execution
-/// - "kafpy.dlq.produce" -- DLQ produce
-/// - "kafpy.offset.commit" -- offset commit
-/// - "kafpy.dispatcher.dispatch" -- message dispatch
+    loop {
+        tokio::select! {
+            _ = rx.changed() => { ... }
+            _ = ticker.tick() => { ... }
+            // NEW: catch cancellation
+            _ = tokio::task::yield_now() => { /* check for cancellation */ }
+        }
+    }
+}
 ```
 
-**Key insight:** `tracing-opentelemetry` `MetricsLayer` (with `metrics` feature) automatically converts specially-named `tracing` events to OpenTelemetry metrics. This bridges the `metrics` facade to OpenTelemetry without double-instrumentation.
+Actually `.abort()` on a Tokio task causes it to simply stop -- no cleanup needed. So Phase 1 calling `committer_handle.abort()` is sufficient.
 
-### 4. `src/observability/runtime.rs` -- Runtime Introspection
+---
+
+## New Components Specification
+
+### ShutdownCoordinator
 
 ```rust
-/// Exposes internal state for debugging/monitoring.
-/// Thread-safe snapshot of WorkerPool + QueueManager + OffsetTracker state.
-pub struct RuntimeSnapshot {
-    pub workers: Vec<WorkerState>,  // idle / active / busy
-    pub handlers: Vec<HandlerState>, // queue_depth, inflight, capacity
-    pub partitions: Vec<PartitionState>, // committed_offset, pending, failed
+pub struct ShutdownCoordinator {
+    phase: AtomicU8,
+    drain_token: CancellationToken,
+    drain_complete: broadcast::Sender<DrainComplete>,
+    runner: Arc<ConsumerRunner>,
+    offset_tracker: Arc<OffsetTracker>,
+    worker_pool: Arc<WorkerPool>,
+    dispatcher_handle: Mutex<Option<JoinHandle<()>>>,
+    committer_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
-/// Python-callable via PyO3 so users can inspect state from Python.
-pub fn get_runtime_snapshot() -> Py<PyDict>;
+impl ShutdownCoordinator {
+    /// Initiates graceful shutdown. Non-blocking.
+    pub fn shutdown(&self) {
+        self.transition_to(ShutdownPhase::Draining);
+        self.drain_token.cancel();
+    }
+
+    /// Blocks until shutdown is complete (Phase 3 done).
+    pub async fn await_shutdown(&self) { }
+
+    /// Transitions to Phase 3 (finalize) after drain complete.
+    async fn finalize(&self) {
+        self.transition_to(ShutdownPhase::Finalizing);
+        // Phase 3: flush retries, commit offsets, abort committer
+        self.flush_retries().await;
+        self.commit_offsets().await;
+        self.abort_committer();
+        self.transition_to(ShutdownPhase::Done);
+    }
+}
+```
+
+### RebalanceHandler
+
+```rust
+pub struct RebalanceHandler {
+    dispatcher: Arc<ConsumerDispatcher>,
+    partition_ownership: Arc<PartitionOwnership>,
+    retry_coordinator: Arc<RetryCoordinator>,
+}
+
+impl RebalanceHandler {
+    /// Listens for rebalance events and coordinates response.
+    pub async fn run(&self, mut rx: broadcast::Receiver<RebalanceEvent>) {
+        loop {
+            match rx.recv().await {
+                Ok(event) => self.handle_event(event).await,
+                Err(broadcast::Error::Lagged(_)) => { /* log and continue */ }
+                Err(broadcast::Error::Closed) => break,
+            }
+        }
+    }
+
+    async fn handle_event(&self, event: RebalanceEvent) {
+        // 1. Pause revoked partitions (calls dispatcher.pause_partition)
+        for (topic, _) in &event.newly_revoked {
+            if let Err(e) = self.dispatcher.pause_partition(topic) {
+                tracing::error!("failed to pause revoked topic '{}': {}", topic, e);
+            }
+        }
+
+        // 2. Mark partitions as revoking in PartitionOwnership
+        for (topic, partition) in &event.newly_revoked {
+            self.partition_ownership.mark_revoking(topic, partition);
+        }
+
+        // 3. Wait for workers to drain revoked partitions
+        self.wait_for_drain(&event.newly_revoked).await;
+
+        // 4. Mark partitions as fully revoked
+        for (topic, partition) in &event.newly_revoked {
+            self.partition_ownership.mark_revoked(topic, partition);
+        }
+
+        // 5. Resume newly owned partitions
+        for (topic, _) in &event.newly_owned {
+            if let Err(e) = self.dispatcher.resume_partition(topic) {
+                tracing::error!("failed to resume owned topic '{}': {}", topic, e);
+            }
+        }
+    }
+}
+```
+
+### PartitionOwnership
+
+```rust
+pub struct PartitionOwnership {
+    assignment: RwLock<HashMap<String, Vec<i32>>>,
+    revoking: RwLock<HashMap<String, Vec<i32>>>,
+    partition_handles: Arc<parking_lot::Mutex<HashMap<String, rdkafka::TopicPartitionList>>>,
+}
+
+impl PartitionOwnership {
+    /// Returns (newly_owned, newly_revoked) by comparing with current assignment.
+    pub fn update_assignment(
+        &self,
+        new_assignment: &rdkafka::TopicPartitionList,
+    ) -> (Vec<(String, i32)>, Vec<(String, i32)>) { }
+
+    pub fn mark_revoking(&self, topic: &str, partition: i32) { }
+    pub fn mark_drained(&self, topic: &str, partition: i32) { }
+    pub fn is_owned(&self, topic: &str, partition: i32) -> bool { }
+}
 ```
 
 ---
 
 ## Modified Components
 
-### 1. `ExecutionContext` (in `src/python/context.rs`)
+### ConsumerRunner (src/consumer/runner.rs)
 
-**Change:** Add optional metrics guard and span context.
+**Change:** Add `rebalance_tx` broadcast channel to emit rebalance events.
 
 ```rust
-pub struct ExecutionContext {
-    pub topic: String,
-    pub partition: i32,
-    pub offset: i64,
-    pub worker_id: usize,
-    // NEW:
-    pub metrics: Option<Arc<HandlerMetrics>>,
-    pub span: Option<Span>,
+pub struct ConsumerRunner {
+    consumer: Arc<StreamConsumer>,
+    shutdown_tx: broadcast::Sender<()>,
+    rebalance_tx: broadcast::Sender<RebalanceEvent>,  // NEW
+    prev_assignment: parking_lot::Mutex<Option<rdkafka::TopicPartitionList>>,
 }
 ```
 
-**Rationale:** `ExecutionContext` already flows through `worker_loop` and `batch_worker_loop`. Attaching metrics here means every handler invocation automatically gets instrumentation without changing call signatures.
+**In `run()` loop:** Before processing each message, compare `consumer.assignment()` with `prev_assignment`. If changed, emit `RebalanceEvent`.
 
-### 2. `worker_loop` (in `src/worker_pool/mod.rs`)
+### ConsumerDispatcher (src/dispatcher/mod.rs)
 
-**Change:** Record metrics at key points. Wrap handler invocation in a span.
+**Change:** Add `partition_ownership: Arc<PartitionOwnership>` field.
 
 ```rust
-async fn worker_loop(...) {
-    // At message pickup:
-    let span = tracer.span_builder("kafpy.handler.invoke")
-        .with_attribute("handler_id", handler_id.clone())
-        .with_attribute("topic", msg.topic.clone())
-        .with_attribute("partition", msg.partition)
-        .start(&tracer);
-
-    let result = handler.invoke_mode(&ctx, msg.clone()).instrument(span).await;
-
-    // After execution, record metrics:
-    metrics.latency_ms.record(elapsed_ms as f64, &[
-        KeyValue::new("handler_id", handler_id.clone()),
-        KeyValue::new("result", result.variant_name()),
-    ]);
-    metrics.invocations.increment(&[
-        KeyValue::new("handler_id", handler_id.clone()),
-        KeyValue::new("result", result.variant_name()),
-    ]);
+pub struct ConsumerDispatcher {
+    runner: Arc<ConsumerRunner>,
+    dispatcher: Dispatcher,
+    partition_ownership: Arc<PartitionOwnership>,  // NEW
+    // ...
 }
 ```
 
-**Rationale:** `worker_loop` is the hot path. Instrumenting here covers all 4 `HandlerMode` variants since `invoke_mode` is the single dispatch point.
+**New methods:**
+- `pause_partition(topic)` -- pause all partitions of topic (uses `partition_handles`)
+- `resume_partition(topic)` -- resume all partitions of topic
+- `on_rebalance(assignment)` -- called by RebalanceHandler
 
-### 3. `batch_worker_loop` (in `src/worker_pool/mod.rs`)
+### WorkerPool (src/worker_pool/mod.rs)
 
-**Change:** Record batch-size histogram and flush-reason counter.
+**Change:** `shutdown()` method already does the right thing -- cancel token, flush DLQ, graceful shutdown. Add integration with `PartitionOwnership` to mark partition drain complete.
 
-```rust
-// At flush:
-metrics.batch_size.record(batch.len() as f64, &[
-    KeyValue::new("handler_id", handler_id.clone()),
-    KeyValue::new("flush_reason", flush_reason.as_str()), // "size" | "deadline" | "shutdown"
-]);
+### OffsetTracker (src/coordinator/offset_tracker.rs)
 
-// Track accumulation time per partition:
-let accumulation_time_ms = deadline.map(|d| d.elapsed().as_millis() as f64).unwrap_or(0.0);
-metrics.accumulation_ms.record(accumulation_time_ms, &[
-    KeyValue::new("handler_id", handler_id.clone()),
-]);
-```
+**Change:** `graceful_shutdown()` already exists and commits all partitions. Add check for `should_commit()` before committing (already implemented).
 
-### 4. `ConsumerDispatcher::run` (in `src/dispatcher/mod.rs`)
+### RetryCoordinator (src/coordinator/retry_coordinator.rs)
 
-**Change:** Add dispatch span with topic/partition/offset attributes.
+**Change:** Add `flush_pending_retries()` method for Phase 3 of shutdown.
 
-```rust
-// Around each send_with_policy call:
-let span = tracer.span_builder("kafpy.dispatcher.dispatch")
-    .with_attribute("topic", msg.topic.clone())
-    .with_attribute("partition", msg.partition)
-    .with_attribute("offset", msg.offset)
-    .start(&tracer);
+### QueueManager (src/dispatcher/queue_manager.rs)
 
-let (outcome, pause_signal) = self.dispatcher.send_with_policy_and_signal(msg, policy)
-    .instrument(span).await;
-```
-
-### 5. `QueueManager` (in `src/dispatcher/queue_manager.rs`)
-
-**Change:** Expose queue depth and inflight as `metrics::Gauge` readings via periodic sweep.
-
-```rust
-impl QueueManager {
-    /// Returns snapshot of all handler queue states for metrics recording.
-    pub fn queue_snapshots(&self) -> Vec<HandlerQueueSnapshot> {
-        let guard = self.handlers.lock();
-        guard.iter().map(|(id, entry)| HandlerQueueSnapshot {
-            handler_id: id.clone(),
-            queue_depth: entry.metadata.get_queue_depth(),
-            inflight: entry.metadata.get_inflight(),
-            capacity: entry.metadata.capacity,
-        }).collect()
-    }
-}
-```
-
-**Rationale:** `QueueManager` already has all this data in atomic counters. Exposing snapshots enables a periodic metrics recorder (e.g., every 10s) to update gauges without adding polling infrastructure to the hot path.
-
-### 6. `OffsetTracker` (in `src/coordinator/offset_tracker.rs`)
-
-**Change:** Expose committed offset + consumer lag via `KafkaMetrics`.
-
-```rust
-/// Periodic snapshot for metrics -- called by a background task.
-/// Returns (topic, partition, committed_offset, high_watermark).
-pub fn offset_snapshots(&self) -> Vec<PartitionOffsetSnapshot> {
-    // Iterate all partitions, look up high watermark from runner
-}
-```
-
-**Note:** High watermark requires `ConsumerRunner::position()` or stats callback. `OffsetTracker` already holds `Arc<ConsumerRunner>` for commits; expose it for lag calculation.
-
-### 7. `PythonHandler` (in `src/python/handler.rs`)
-
-**Change:** No structural change. The `invoke_mode` method is already the instrumented entry point from `worker_loop`. Metrics recording happens at the `worker_loop` call site, not inside `PythonHandler` itself.
-
-### 8. `lib.rs` / `logging.rs`
-
-**Change:** Refactor `Logger::init()` to accept an optional `ObservabilityConfig` that configures OTLP, Prometheus, or user-provided exporters.
-
-```rust
-/// Observability configuration -- passed to Logger::init() or a new Observability::init()
-pub struct ObservabilityConfig {
-    pub service_name: String,
-    pub otlp_endpoint: Option<String>,      // OTLP gRPC endpoint
-    pub prometheus_port: Option<u16>,        // Prometheus scrape endpoint
-    pub log_format: LogFormat,              // json / pretty / simple
-    pub log_level: String,                   // env-filter string
-}
-```
-
----
-
-## Data Flow Changes
-
-### Message Flow with Observability
-
-```
-Kafka Message
-    |
-    v
-ConsumerDispatcher::run()
-    | span: "kafpy.dispatcher.dispatch" {topic, partition, offset}
-    v
-Dispatcher::send_with_policy()
-    | record: queue_depth gauge (snapshot)
-    v
-QueueManager -> HandlerChannel
-    |
-    v
-worker_loop picks up message
-    | span: "kafpy.handler.invoke" {handler_id, topic, partition}
-    | record: latency_ms start_time
-    v
-PythonHandler::invoke_mode()
-    |
-    +-- SingleSync -> invoke() -> spawn_blocking -> Python callback
-    +-- SingleAsync -> invoke_async() -> PythonAsyncFuture
-    +-- BatchSync -> invoke_batch() -> spawn_blocking
-    +-- BatchAsync -> invoke_batch_async() -> PythonAsyncFuture
-    |
-    v
-ExecutionResult
-    | span: set_status(Ok | Error)
-    | record: latency_ms (stopwatch), invocations counter, batch_size histogram
-    v
-Executor::execute() -> OffsetCoordinator::record_ack / record_failure
-    |
-    v
-OffsetTracker
-    | span: "kafpy.offset.commit" (at commit time)
-    | record: committed_offset gauge, consumer_lag gauge
-    v
-QueueManager::ack()
-    | record: inflight gauge (decrement)
-    v
-DLQ routing if needed
-    | span: "kafpy.dlq.produce"
-```
-
----
-
-## Architectural Patterns
-
-### Pattern 1: Metrics Facade with Lazy Initialization
-
-**What:** Use the `metrics` crate facade. Instrumented code records through `metrics::counter!()`, `metrics::histogram!()` macros. Actual recording happens only if a global recorder is installed.
-
-**When:** For library code like KafPy where you don't know what backend the user will choose.
-
-**Trade-offs:**
-- Pro: Zero overhead when no recorder (noop implementation is atomic load + compare)
-- Pro: Users choose their own backend (Prometheus, OpenTelemetry, Datadog, etc.)
-- Con: Labels (handler_id, topic, partition) must be provided at every call site
-
-**Example:**
-```rust
-// In worker_loop:
-metrics::histogram!("kafpy.handler.latency_ms", elapsed_ms as f64, "handler_id" => handler_id.clone());
-
-// At startup (user code):
-metrics::_recorder(MetricsRecorder::OpenTelemetry(meter));
-```
-
-### Pattern 2: Tracing Span Hierarchy
-
-**What:** Parent span = dispatch, child span = handler invocation, nested child = Python callback. `tracing`'s `instrument()` combinator propagates context automatically.
-
-**When:** For correlating metrics across async boundaries.
-
-**Trade-offs:**
-- Pro: Automatic span propagation through `spawn_blocking` and `tokio::select!`
-- Pro: `tracing-opentelemetry` `MetricsLayer` converts events to metrics without double instrumentation
-- Con: Span lifetime must outlive the async operation -- use `Span::current()` for spawned tasks
-
-### Pattern 3: Snapshot-Based Polling for Gauge Metrics
-
-**What:** Gauge metrics (queue depth, inflight, worker state) are recorded by periodically sweeping the source of truth and recording the snapshot. Not updated inline on every operation.
-
-**When:** For high-frequency counters that don't need per-event granularity (queue depths, pool state).
-
-**Trade-offs:**
-- Pro: No performance impact on hot path (atomics already exist, no extra work)
-- Con: Slight staleness (10s polling interval typical)
-- Con: Requires background task or periodic callback
-
-**Example:**
-```rust
-// Background task every 10s:
-tokio::spawn(async {
-    let mut interval = tokio::time::interval(Duration::from_secs(10));
-    loop {
-        interval.tick().await;
-        for snapshot in queue_manager.queue_snapshots() {
-            GAUGE_QUEUE_DEPTH.set(snapshot.queue_depth as f64, &["handler_id" => snapshot.handler_id]);
-        }
-    }
-});
-```
-
-### Pattern 4: OpenTelemetry Layer as Backend Bridge
-
-**What:** `tracing-opentelemetry::layer()` + `SdkTracerProvider` + OTLP exporter bridges `tracing` spans to any OTLP-compatible backend (Jaeger, Tempo, CloudWatch, etc.). `MetricsLayer` bridges `tracing` events named `otel.*` to OpenTelemetry metrics.
-
-**When:** For zero-vendor lock-in observability with a standard protocol.
-
-**Trade-offs:**
-- Pro: Industry standard, many compatible backends
-- Pro: Single instrumented codebase produces traces + metrics + logs
-- Con: OTLP overhead (batch processing mitigates this)
-- Con: Semantic conventions require discipline
-
----
-
-## Anti-Patterns to Avoid
-
-### Anti-Pattern 1: Double Instrumentation
-
-**What:** Instrumenting the same operation both with `metrics` counters AND with `tracing` events that carry metric names for `MetricsLayer`.
-
-**Why:** Causes inflated counts or confusing data when both paths are active.
-
-**Do this instead:** Choose one -- use `metrics` facade for numerical data, use `tracing` for categorical events (error types, retry reasons, routing decisions). `MetricsLayer` converts the latter to metrics automatically if you follow naming conventions.
-
-### Anti-Pattern 2: Blocking in Span Enter/Exit
-
-**What:** Performing I/O or expensive computation inside `Span::enter()` guards.
-
-**Why:** `Span::enter()` is synchronous. Blocking there blocks the async executor.
-
-**Do this instead:** Create spans using `tracer.span_builder()` + `.start()` outside the async task. Use `.instrument(future)` to attach the span to an async operation.
-
-### Anti-Pattern 3: Storing Metric State in Instrumented Components
-
-**What:** Adding `metrics::Counter` fields directly to `PythonHandler`, `QueueManager`, etc.
-
-**Why:** Pollutes domain structs with observability concerns. Metrics should be external and looked up by ID.
-
-**Do this instead:** Use the `metrics` global facade. Components don't know about metrics. Call sites use `metrics::histogram!()` with labels.
-
-### Anti-Pattern 4: Missing Span Context on Spawned Tasks
-
-**What:** Spawning a `tokio::spawn` without attaching the current span context.
-
-**Why:** Child tasks appear as orphan spans in the trace.
-
-**Do this instead:** Use `tracing::TaskContext::current()` or `tracing::future::Instrument::instrument(spawned, Span::current())`.
+**Change:** `ack()` already decrements inflight. No changes needed.
 
 ---
 
 ## Build Order
 
-### Phase 1: Metrics Infrastructure (Foundation)
-1. Add `metrics` crate dependency
-2. Create `src/observability/metrics.rs` with `HandlerMetrics`, `KafkaMetrics`, `WorkerPoolMetrics` structs
-3. Add `MetricsGuard` registry that creates instruments lazily per handler_id
-4. Modify `worker_loop` to record `latency_ms` histogram and `invocations` counter at invocation result
-5. Add `QueueManager::queue_snapshots()` for polling-based gauge updates
+### Phase 1: ShutdownCoordinator (Foundation)
 
-**Rationale:** Metrics are the most impactful observability signal. Start here to establish the recording pattern before adding tracing.
+1. Create `src/coordinator/shutdown_coordinator.rs`
+2. Define `ShutdownPhase` enum and `ShutdownCoordinator` struct
+3. Add `drain_token: CancellationToken` to `ShutdownCoordinator`
+4. Wire `ShutdownCoordinator::shutdown()` to `Consumer::stop()`
+5. Modify `pyconsumer.rs` to create and store `ShutdownCoordinator`
 
-### Phase 2: Tracing Infrastructure
-1. Add `opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp` dependencies
-2. Create `src/observability/tracing.rs` with `init_otel_tracing()` function
-3. Add `tracing-opentelemetry::layer()` to subscriber stack in `Logger::init()`
-4. Wrap `worker_loop` handler invocation in `span.instrument(future)`
-5. Add dispatch span in `ConsumerDispatcher::run()`
+**Rationale:** Establishes the central shutdown orchestration before adding rebalance handling.
 
-**Rationale:** Tracing spans provide correlation context for metrics. The span hierarchy (dispatch -> handler -> offset commit) enables distributed-tracing-style analysis.
+### Phase 2: PartitionOwnership
 
-### Phase 3: Kafka-Level Metrics
-1. Wire `rdkafka` stats callback to `KafkaMetrics` consumer_lag and assignment_size gauges
-2. Add `OffsetTracker::offset_snapshots()` for committed_offset per TP
-3. Implement background polling task (10s interval) to update lag gauges
+1. Create `src/coordinator/partition_ownership.rs`
+2. Define `PartitionOwnership` struct with `RwLock` assignment map
+3. Add `update_assignment()` method returning (newly_owned, newly_revoked)
+4. Modify `ConsumerDispatcher` to hold `Arc<PartitionOwnership>`
+5. Modify `populate_partitions()` to initialize `PartitionOwnership`
 
-**Rationale:** Consumer lag is the most important Kafka-specific metric. Requires `rdkafka` integration.
+**Rationale:** PartitionOwnership is needed by RebalanceHandler, which needs it to coordinate pause/resume.
 
-### Phase 4: Runtime Introspection API
-1. Create `src/observability/runtime.rs` with `RuntimeSnapshot` struct
-2. Add `get_runtime_snapshot()` PyO3 function
-3. Expose worker pool state (idle/active/busy) via `WorkerPoolMetrics`
+### Phase 3: RebalanceHandler
 
-**Rationale:** Python users need runtime visibility. PyO3 bridge enables `consumer.runtime_snapshot()` API.
+1. Create `src/coordinator/rebalance_handler.rs`
+2. Define `RebalanceEvent` and `RebalanceHandler` struct
+3. Modify `ConsumerRunner` to emit rebalance events on assignment change
+4. Add `RebalanceHandler::run()` that calls `ConsumerDispatcher::on_rebalance()`
+5. Wire into `pyconsumer.rs::start()`
 
-### Phase 5: Structured Logging Refinement
-1. Refactor `logging.rs` into `ObservabilityConfig` with OTLP + Prometheus + log format options
-2. Ensure all `tracing::info!` / `warn!` / `error!` calls in hot paths use structured fields
-3. Add `LogFormat::Json` with OTLP-compatible field names
+**Rationale:** Rebalance handling is the most complex new component. Build it after basic infrastructure.
 
-**Rationale:** Structured logs complement metrics/tracing. Ensure fields are consistent across all three signals.
+### Phase 4: ShutdownCoordinator Phase Integration
+
+1. Wire Phase 1 of `ShutdownCoordinator` to call `runner.stop()` and abort handles
+2. Wire Phase 2 to wait for `WorkerPool::shutdown()` with timeout
+3. Add `RetryCoordinator::flush_pending_retries()` method
+4. Wire Phase 3 to flush retries, commit offsets, abort committer
+5. Add graceful timeout (default 30s) after which forced shutdown occurs
+
+**Rationale:** Integrates all components into the coordinated shutdown sequence.
+
+### Phase 5: BatchAccumulator Revoke Integration
+
+1. Add `revoke_partition()` method to `BatchAccumulator`
+2. Modify `batch_worker_loop` to check `PartitionOwnership::is_owned()` before processing
+3. On revocation: drain the accumulator for that partition, ack with 0 (don't reprocess)
+
+**Rationale:** Ensures no messages are lost during partition revocation.
 
 ---
 
-## Integration Points Summary
+## Data Flow: Shutdown Sequence
 
-| Component | What Changes | Metrics Recorded | Tracing Spans |
-|-----------|-------------|------------------|---------------|
-| `ConsumerDispatcher::run` | Dispatch span added | None (Kafka metrics handle this) | `kafpy.dispatcher.dispatch` |
-| `Dispatcher::send_with_policy` | Snapshot recording | `queue_depth` gauge | None |
-| `worker_loop` | Latency + count recording, span wrapping | `latency_ms`, `invocations`, `batch_size` | `kafpy.handler.invoke` |
-| `batch_worker_loop` | Flush reason recording, accumulation time | `batch_size`, flush reason counter, `accumulation_ms` | `kafpy.batch.invoke` |
-| `QueueManager` | `queue_snapshots()` method added | `inflight`, `queue_depth` gauges | None |
-| `OffsetTracker` | `offset_snapshots()` method added | `committed_offset`, `consumer_lag` gauges | `kafpy.offset.commit` |
-| `ExecutionContext` | `metrics: Option<Arc<HandlerMetrics>>` field | Carried through call chain | Span context field |
-| `PythonHandler` | No change (instrumented at call site) | -- | -- |
-| `Logger::init` | Refactored to `ObservabilityConfig` | None | Sets up global tracer |
+```
+Consumer::stop()
+    |
+    v
+ShutdownCoordinator::shutdown()
+    |
+    +-- Phase 1: Signal stop
+    |       |
+    |       +-- runner.stop()  [broadcast to ConsumerRunner shutdown_rx]
+    |       +-- abort(dispatcher_handle)
+    |       +-- abort(committer_handle)
+    |       +-- drain_token.cancel()
+    |
+    +-- Phase 2: Drain inflight
+    |       |
+    |       +-- pool.shutdown()  [cancels worker token, flushes DLQ, awaits workers]
+    |       +-- flush_pending_retries()  [RetryCoordinator]
+    |
+    +-- Phase 3: Finalize
+            |
+            +-- offset_tracker.graceful_shutdown()  [store_offset + commit all]
+            +-- phase = Done
+```
+
+---
+
+## Data Flow: Rebalance Sequence
+
+```
+ConsumerRunner::run() loop
+    |
+    v
+consumer.assignment() != prev_assignment
+    |
+    v
+rebalance_tx.send(RebalanceEvent { owned, revoked })
+    |
+    v
+RebalanceHandler::run() receives event
+    |
+    +-- dispatcher.pause_partition(revoked_topics)
+    +-- partition_ownership.mark_revoking(topic, partition)
+    |
+    v
+Workers drain messages for revoked partitions
+    |
+    v
+partition_ownership.mark_drained() for each revoked partition
+    |
+    v
+dispatcher.resume_partition(newly_owned_topics)
+```
+
+---
+
+## Anti-Patterns to Avoid
+
+### Anti-Pattern 1: Blocking in Shutdown
+
+**What:** Calling `.await` on a future inside a drop implementation or synchronous cleanup.
+
+**Why:** Can cause deadlock if the future holds a lock that another task needs.
+
+**Do this instead:** Use `spawn()` for async cleanup and detach. Use `tokio::task::spawn_blocking` for sync cleanup.
+
+### Anti-Pattern 2: Shared Mutex on Hot Path
+
+**What:** Using `parking_lot::Mutex` or `std::sync::Mutex` in the message processing path (e.g., in `worker_loop`).
+
+**Why:** Blocks the async executor. `tokio::sync::Mutex` is async-aware; `parking_lot::Mutex` is not.
+
+**Do this instead:** Use `parking_lot::Mutex` only in initialization and shutdown paths. For hot path, use atomic operations (already done correctly with `AtomicUsize` in `QueueManager`).
+
+### Anti-Pattern 3: Forgetting Cancellation in Select
+
+**What:** `tokio::select!` without a `biased` directive and without checking for cancellation branch first.
+
+**Why:** Can cause shutdown to not trigger until the next event (non-deterministic).
+
+**Do this instead:** Use `biased` and put the cancellation branch first in every `select!` in shutdown-sensitive loops (already done in `ConsumerRunner::run()` and `batch_worker_loop`).
+
+### Anti-Pattern 4: Losing Messages on Rebalance
+
+**What:** Not waiting for worker drain before marking partition as revoked.
+
+**Why:** In-flight messages for the revoked partition are lost (processed as success but never committed).
+
+**Do this instead:** `RebalanceHandler::handle_event()` waits for drain signal from workers before marking partition fully revoked.
+
+---
+
+## Open Questions
+
+1. **Partition-to-Worker mapping:** When revoking a partition, we need to cancel only the workers processing that partition. Current `CancellationToken` is shared across all workers. Need per-partition tokens or worker-to-partition mapping.
+
+2. **Rebalance detection granularity:** The current approach (compare assignment on each `consumer.recv()` iteration) detects changes but not the type (revoked vs assigned). rdkafka's underlying API does expose assignment type -- research needed to see if Rust bindings expose it.
+
+3. **OffsetCommitter abort safety:** When `OffsetCommitter` is aborted during a commit operation, the offset may or may not have been committed to Kafka. Need to verify idempotency of `store_offset` + `commit` calls.
+
+4. **DLQ flush on normal shutdown (non-rebalance):** Currently `WorkerPool::shutdown()` calls `flush_failed_to_dlq()` and then `graceful_shutdown()`. This is correct. Need to ensure `ShutdownCoordinator` doesn't call these again (duplicate DLQ produce).
 
 ---
 
 ## Sources
 
-- [OpenTelemetry Rust Getting Started](https://opentelemetry.io/docs/languages/rust/getting-started/) -- SDK initialization, tracer provider
-- [OpenTelemetry Rust Exporters](https://opentelemetry.io/docs/languages/rust/exporters/) -- OTLP exporter setup
-- [tracing crate docs](https://docs.rs/tracing/latest/tracing/) -- Span, instrument macro, semantic conventions
-- [tracing-subscriber Layer docs](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/layer/) -- layer composition, filtering
-- [tracing-opentelemetry docs](https://docs.rs/tracing-opentelemetry/latest/tracing_opentelemetry/) -- OpenTelemetryLayer, MetricsLayer
-- [opentelemetry_sdk metrics docs](https://docs.rs/opentelemetry_sdk/latest/opentelemetry_sdk/metrics/) -- Meter, Counter, Histogram, SdkMeterProvider
-- [metrics crate docs](https://docs.rs/metrics/latest/metrics/) -- Counter, Gauge, Histogram, Recorder trait, facade pattern
+- [rdkafka Rust StreamConsumer docs](https://docs.rs/rdkafka/latest/rdkafka/consumer/struct.StreamConsumer.html) -- rebalance via assignment polling
+- [tokio CancellationToken docs](https://docs.rs/tokio-util/latest/tokio_util/sync/struct.CancellationToken.html) -- shutdown signaling
+- [parking_lotRwLock vs tokio::sync::RwLock](https://docs.rs/parking_lot/latest/parking_lot/struct.RwLock.html) -- when to use which (hot path vs blocking)
+- [tokio select biased](https://docs.rs/tokio/latest/tokio/macro.select.html) -- priority ordering for shutdown
 
 ---
 
-*Architecture research for: KafPy Observability Layer*
-*Researched: 2026-04-18*
+*Architecture research for: KafPy Lifecycle Management*
+*Researched: 2026-04-19*
