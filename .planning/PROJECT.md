@@ -10,7 +10,7 @@
 
 KafPy is a Python-facing Kafka framework where Rust provides the runtime/core engine and Python holds the business logic. PyO3 bridges the two. The pure-Rust consumer core handles Kafka protocol, while Python registers handlers/callbacks via bindings.
 
-Current status (after Milestone v1.4):
+Current status (after Milestone v1.7):
 - `src/consumer/` — pure-Rust consumer core: `ConsumerConfigBuilder`, `OwnedMessage`, `ConsumerRunner`, `ConsumerStream`, `ConsumerTask`
 - `src/dispatcher/` — message dispatcher: `Dispatcher`, `QueueManager`, `BackpressurePolicy`, `BackpressureAction`, `ConsumerDispatcher`
 - `src/python/` — Python execution lane: `PythonHandler`, `WorkerPool`, `ExecutionContext`, `ExecutionResult`, `Executor` trait
@@ -18,6 +18,7 @@ Current status (after Milestone v1.4):
 - `src/failure/` — failure classification: `FailureReason`, `FailureCategory`, `FailureClassifier` trait
 - `src/retry/` — retry policy: `RetryPolicy`, `RetrySchedule` with exponential backoff + jitter
 - `src/dlq/` — DLQ routing: `DlqRouter` trait, `DlqMetadata`, `SharedDlqProducer`
+- `src/observability/` — metrics, tracing, logging infrastructure (MetricsSink, PrometheusMetricsSink, RuntimeSnapshot)
 - `src/pyconsumer.rs` — PyO3 bridge: `Consumer` pyclass wrapping `ConsumerRunner`
 - `src/config.rs` — Python-facing `ConsumerConfig` / `ProducerConfig` (PyO3)
 - `src/kafka_message.rs` — PyO3 `KafkaMessage` wrapping `OwnedMessage`
@@ -62,15 +63,28 @@ Current status (after Milestone v1.4):
 
 **Milestone v1.3:** Offset commit coordinator — per-topic-partition ack tracking via `OffsetTracker`, highest-contiguous-offset commit logic via `OffsetCommitter`, out-of-order completion handling, `store_offset()` + `commit()` coordination for at-least-once delivery.
 
-**Milestone v1.4:** Failure Handling & DLQ — Phases 17-20 complete. FailureReason taxonomy, RetryPolicy with exponential backoff, DLQ routing with metadata envelope, per-partition commit gating with terminal state tracking, graceful shutdown DLQ flush.
+**Milestone v1.4:** Failure Handling & DLQ — FailureReason taxonomy, RetryPolicy with exponential backoff, DLQ routing with metadata envelope, per-partition commit gating with terminal state tracking, graceful shutdown DLQ flush.
 
-**Current milestone (v1.5):** Extensible Routing — Pattern/header/key routing with optional Python fallback, Rust as fast-path owner.
-
-**v1.5 shipped:** Phase 21 (RoutingCore), Phase 22 (PythonRouter), Phase 23 (DispatcherIntegration). RoutingChain wired into ConsumerDispatcher with all 4 RoutingDecision variants handled (Route→handler queue, Drop→offset advance, Reject→DLQ, Defer→default).
+**v1.5 shipped:** Extensible Routing — Pattern/header/key routing with Python fallback, RoutingChain wired into ConsumerDispatcher with all 4 RoutingDecision variants (Route→handler queue, Drop→offset advance, Reject→DLQ, Defer→default).
 
 **v1.6 shipped:** Phase 24 (HandlerMode foundation), Phase 25 (BatchAccumulator), Phase 26 (Async Python handlers), Phase 27 (Shutdown drain verification). HandlerMode enum with 4 variants, BatchAccumulator with fixed-window flush, PythonAsyncFuture with custom CFFI bridge, all 4 execution modes working.
 
 **v1.7 shipped:** Phase 28 (Metrics Infrastructure), Phase 29 (Tracing Infrastructure), Phase 30 (Kafka-Level Metrics), Phase 31 (Runtime Introspection), Phase 32 (Structured Logging). MetricsSink trait, Prometheus adapter, OTLP tracing with W3C context propagation, KafkaMetrics with consumer lag gauges, RuntimeSnapshot with get_runtime_snapshot(), structured logging with LogTracer forwarding.
+
+**v1.8: Graceful Shutdown & Rebalance Handling**
+Goal: Framework behaves safely during process shutdown, rebalance events, and partition revocation/reassignment — preserving delivery guarantees and avoiding unsafe offset advancement.
+
+**Target features:**
+- Graceful shutdown: stop intake → drain queues → commit safe offsets → stop components in order
+- Rebalance handling: Assign/Revoke/Error events, partition ownership state, prevent unsafe dispatch
+- Partition state coordination: assigned / paused / draining / revoked per TP
+- Integration with: offset manager, retry/DLQ, worker execution, batching, observability
+
+**Design constraints:**
+- Explicit lifecycle states over boolean flags
+- Close-and-drain over abrupt drops
+- Lightweight rebalance callbacks triggering meaningful state transitions
+- Observable through existing tracing/logging
 
 ## Validated Requirements
 

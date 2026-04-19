@@ -1,41 +1,40 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.7
-milestone_name: milestone
-status: completed
-stopped_at: Phase 29 complete
-last_updated: "2026-04-18T10:30:36.401Z"
-last_activity: 2026-04-18
+milestone: v1.8
+milestone_name: Graceful Shutdown & Rebalance Handling
+status: planning
+last_updated: "2026-04-19T05:50:00.000Z"
+last_activity: 2026-04-19
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 7
-  completed_plans: 7
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-18)
+See: .planning/PROJECT.md (updated 2026-04-19)
 
 **Core value:** High-performance Rust Kafka client with idiomatic Python API
-**Current focus:** Phase 30 (Kafka-Level Metrics)
+**Current focus:** Phase 33 (defining requirements)
 
 ## Current Position
 
-Phase: 30 of 32 (Kafka-Level Metrics)
-Plan: 01
-Status: Complete - Ready for next plan
-Last activity: 2026-04-18
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-19 — Milestone v1.8 started
 
 ## Performance Metrics
 
 **Velocity:**
 
 - Total plans completed: 23
-- Total milestones: 7 (including v1.7)
+- Total milestones: 8 (including v1.7)
 
 **By Milestone:**
 
@@ -48,8 +47,8 @@ Last activity: 2026-04-18
 | v1.4 | 4 | 8 |
 | v1.5 | 3 | 5 |
 | v1.6 | 4 | 7 |
-| v1.7 | 5 | TBD |
-| Phase 28 P01 | ~3 minutes | 4 tasks | 4 files |
+| v1.7 | 5 | 7 |
+| v1.8 | TBD | TBD |
 
 ## Accumulated Context
 
@@ -75,6 +74,9 @@ Last activity: 2026-04-18
 - **v1.7**: Span context propagates via W3C tracecontext headers at spawn_blocking boundary
 - **v1.7**: Kafka metrics polling-based (not per-message) to avoid hot-path overhead
 - **v1.7**: RuntimeSnapshot zero-cost when not called (no atomic updates on hot path)
+- **v1.8**: Explicit lifecycle states over boolean flags
+- **v1.8**: Close-and-drain over abrupt drops
+- **v1.8**: Partition ownership state: assigned / paused / draining / revoked
 
 ### Pending Todos
 
@@ -83,6 +85,9 @@ Last activity: 2026-04-18
 - Phase 30: Consumer lag, assignment size, committed offset gauges via rdkafka stats
 - Phase 31: RuntimeSnapshot, get_runtime_snapshot() PyO3, Consumer.status() Python method
 - Phase 32: Consistent field names, log format config, per-component log levels, LogTracer
+- Phase 33: Graceful Shutdown Coordinator, lifecycle state machine, shutdown signal handling
+- Phase 34: Rebalance Handling, partition ownership state, Assign/Revoke/Error events
+- Phase 35: Integration - offset manager, retry/DLQ, worker, batching, observability wired to lifecycle
 
 ### Blockers/Concerns
 
@@ -106,9 +111,13 @@ Last activity: 2026-04-18
 | Trace context into Kafka headers | Cross-service correlation | v1.8+ | v1.7 |
 | Python-side tracing | Python tracing conventions differ | v1.8+ | v1.7 |
 | Sliding window latency | p50, p95, p99 percentiles | v1.8+ | v1.7 |
+| OTLP exporter sink | Full OTLP protocol metrics export | v1.9+ | v1.8 |
+| Alerting rules library | Pre-built Prometheus alerting rules | v1.9+ | v1.8 |
+| Trace context into Kafka headers | Cross-service correlation | v1.9+ | v1.8 |
+| Sliding window latency | p50, p95, p99 percentiles | v1.9+ | v1.8 |
 
 ## Session Continuity
 
-Last session: 2026-04-18T08:16:17.948Z
-Stopped at: Phase 29 complete
+Last session: 2026-04-19T05:39:55.233Z
+Stopped at: v1.7 milestone complete
 Resume file: None
