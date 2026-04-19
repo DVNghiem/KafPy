@@ -25,18 +25,19 @@
 **Depends on**: Nothing (first phase of milestone)
 **Requirements**: LSC-01, LSC-02, LSC-03, LSC-04, LSC-05
 **Success Criteria:**
-1. ShutdownCoordinator owns ShutdownPhase enum (Running → Draining → Finalizing → Done)
+1. ShutdownCoordinator owns ShutdownPhase enum (Running -> Draining -> Finalizing -> Done)
 2. Consumer::stop() signals ShutdownCoordinator which orchestrates component shutdown
-3. Shutdown order prevents deadlock: dispatcher → workers → commit
+3. Shutdown order prevents deadlock: dispatcher -> workers -> commit
 4. Drain timeout default 30s with force-abort fallback
 5. ConsumerRunner::close() calls rd_kafka_consumer_close() on drop
-**Plans**: 1 plan
+**Plans:** 1 plan
+- [ ] 33-01-PLAN.md — Create ShutdownCoordinator with ShutdownPhase enum, drain timeout, and correct shutdown order
 
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 33. ShutdownCoordinator | v1.8 | 0/1 | Not started | - |
+| 33. ShutdownCoordinator | v1.8 | 1/1 | Planned | - |
 | 34. Rebalance Handling | v1.8 | 0/1 | Not started | - |
 | 35. Integration & Hardening | v1.8 | 0/1 | Not started | - |
 
