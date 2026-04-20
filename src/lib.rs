@@ -35,6 +35,9 @@ pub(crate) mod dlq;
 // Observability — metrics sink, metric labels, handler metrics, queue snapshots
 pub(crate) mod observability;
 
+// Benchmark infrastructure — measurement types, latency/throughput tracking
+pub(crate) mod benchmark;
+
 // Routing — zero-copy context, decision enum, router trait, and concrete routers
 pub(crate) mod routing;
 
