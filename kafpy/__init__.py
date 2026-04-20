@@ -5,8 +5,19 @@ Public API entry point. All public types are re-exported here for convenience::
 
     import kafpy
 
-    config = kafpy.ConsumerConfig(brokers="localhost:9092", group_id="my-group", topics=["my-topic"])
-    app = kafpy.KafPy(config)
+    config = kafpy.ConsumerConfig(
+        bootstrap_servers="localhost:9092",
+        group_id="my-group",
+        topics=["my-topic"],
+    )
+    consumer = kafpy.Consumer(config)
+    app = kafpy.KafPy(consumer)
+
+    @app.handler(topic="my-topic")
+    def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerResult:
+        print(f"Received: {msg.value}")
+        return kafpy.HandlerResult(action="ack")
+
     app.run()
 
 Exception types are available via ``kafpy.exceptions``:
@@ -25,7 +36,6 @@ __version__ = "0.1.0"
 from ._kafpy import (
     ProducerConfig,
     KafkaMessage,
-    Consumer,
     Producer,
 )
 
@@ -38,17 +48,20 @@ from .config import (
     ConcurrencyConfig,
 )
 
-# Re-export stubs for future phases (implemented in Phases 35-37)
-try:
-    from .handlers import (
-        HandlerContext,
-        HandlerResult,
-    )
-except ImportError:
-    # Added in Phase 35 (Handler Registration & Runtime)
-    HandlerContext = None
-    HandlerResult = None
+# Handler types and registration (Phase 35)
+from .handlers import (
+    HandlerContext,
+    HandlerResult,
+    register_handler,
+)
 
+# Consumer wrapper (Phase 35)
+from .consumer import Consumer
+
+# Runtime with KafPy class (Phase 35)
+from .runtime import KafPy
+
+# Exception types (Phase 36 — stub)
 try:
     from .exceptions import (
         KafPyError,
@@ -63,32 +76,27 @@ except ImportError:
     HandlerError = None
     ConfigurationError = None
 
-try:
-    from .consumer import KafPy
-except ImportError:
-    # Added in Phase 34 (Configuration Model) — main runtime wrapper
-    KafPy = None
-
 __all__ = [
     # Rust extension types (available now)
-    "ConsumerConfig",  # from config.py (Python wrapper)
     "ProducerConfig",
     "KafkaMessage",
-    "Consumer",
     "Producer",
     # Configuration types — Phase 34
+    "ConsumerConfig",
     "RoutingConfig",
     "RetryConfig",
     "BatchConfig",
     "ConcurrencyConfig",
-    # Handler types — Phase 35
+    # Consumer wrapper and runtime — Phase 35
+    "Consumer",
+    "KafPy",
+    # Handler types and registration — Phase 35
     "HandlerContext",
     "HandlerResult",
+    "register_handler",
     # Exception types — Phase 36
     "KafPyError",
     "ConsumerError",
     "HandlerError",
     "ConfigurationError",
-    # Main runtime — Phase 34
-    "KafPy",
 ]

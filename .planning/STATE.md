@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
+milestone: v1.8
+milestone_name: Public API Foundation
 status: executing
-stopped_at: Phase 33 context gathered
-last_updated: "2026-04-20T02:46:49.177Z"
-last_activity: 2026-04-20 -- Phase 33 execution started
+stopped_at: Phase 35 complete
+last_updated: "2026-04-20T04:00:00.000Z"
+last_activity: 2026-04-20 -- Phase 35 execution complete
 progress:
   total_phases: 5
-  completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  completed_phases: 3
+  total_plans: 5
+  completed_plans: 5
   percent: 100
 ---
 
@@ -21,15 +21,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-18)
 
 **Core value:** High-performance Rust Kafka client with idiomatic Python API
-**Current focus:** Phase 33 — public-api-conventions
+**Current focus:** Phase 36 — Error Handling
 
 ## Current Position
 
-Milestone: v1.8 (not started)
-Phase: 33 (public-api-conventions) — EXECUTING
-Plan: 1 of 2
-Status: Executing Phase 33
-Last activity: 2026-04-20 -- Phase 33 execution started
+Milestone: v1.8 (in progress)
+Phase: 35 (Handler Registration & Runtime) — COMPLETE
+Plan: 1 of 1
+Status: Phase 35 complete — next is Phase 36
+Last activity: 2026-04-20 -- Phase 35 execution complete
 
 ## Performance Metrics
 
@@ -80,13 +80,16 @@ Last activity: 2026-04-20 -- Phase 33 execution started
 - **v1.8**: Decorator + explicit handler registration as primary Python API patterns
 - **v1.8**: Rust internals private by default; only explicitly pub items accessible from Python
 - **v1.8**: kafpy.exceptions as sole public import path for exceptions
+- **v1.8**: Dual Consumer + KafPy wrapper: consumer = kafpy.Consumer(config) → Rust Consumer; app = kafpy.KafPy(consumer) → Python wrapper
+- **v1.8**: Callable type detection via inspect.iscoroutinefunction/isasyncgenfunction/isgeneratorfunction
+- **v1.8**: HandlerContext/HandlerResult stub frozen dataclasses (full impl in Phase 36+)
 
 ### Pending Todos
 
-- Phase 33: Public API Conventions — plan 01 TBD
-- Phase 34: Configuration Model — TBD
-- Phase 35: Handler Registration & Runtime — TBD
-- Phase 36: Error Handling — TBD
+- Phase 33: Public API Conventions — COMPLETE
+- Phase 34: Configuration Model — COMPLETE
+- Phase 35: Handler Registration & Runtime — COMPLETE
+- Phase 36: Error Handling — NEXT
 - Phase 37: Documentation & Packaging — TBD
 
 ### Blockers/Concerns

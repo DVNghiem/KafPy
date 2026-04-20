@@ -101,11 +101,11 @@
 | 31. Runtime Introspection | v1.7 | 1/1 | Complete | 2026-04-18 |
 | 32. Structured Logging | v1.7 | 1/1 | Complete | 2026-04-18 |
 | 33. Public API Conventions | v1.8 | 2/2 | Complete | 2026-04-20 |
-| 34. Configuration Model | v1.8 | 1/1 | Planned | - |
-| 35. Handler Registration & Runtime | v1.8 | 0/1 | Not started | - |
+| 34. Configuration Model | v1.8 | 1/1 | Complete | 2026-04-20 |
+| 35. Handler Registration & Runtime | v1.8 | 1/1 | Complete | 2026-04-20 |
 | 36. Error Handling | v1.8 | 0/1 | Not started | - |
 | 37. Documentation & Packaging | v1.8 | 0/1 | Not started | - |
 
 ---
 
-*Last updated: 2026-04-20 after Phase 34 plan created*
+*Last updated: 2026-04-20 after Phase 35 complete*
