@@ -3,7 +3,6 @@ use pyo3::prelude::*;
 pub mod config;
 pub mod errors;
 pub mod kafka_message;
-pub mod logging;
 pub mod produce;
 pub mod pyconsumer;
 
@@ -19,24 +18,28 @@ pub mod python;
 // Worker pool — N Tokio workers polling handler queues, invoking Python callbacks
 pub mod worker_pool;
 
+// Internal-only modules — not exposed to Python, used within Rust crate
+
 // Offset commit coordinator — per-topic-partition ack tracking with highest-contiguous-offset
-pub mod coordinator;
+pub(crate) mod coordinator;
 
 // Failure classification — structured failure taxonomy for retry/DLQ handling
-pub mod failure;
+pub(crate) mod failure;
 
 // Retry scheduling — RetryPolicy, RetrySchedule for exponential backoff with jitter
-pub mod retry;
+pub(crate) mod retry;
 
 // DLQ routing — DlqMetadata envelope, DlqRouter trait, fire-and-forget produce
-pub mod dlq;
+pub(crate) mod dlq;
 
 // Observability — metrics sink, metric labels, handler metrics, queue snapshots
-pub mod observability;
+pub(crate) mod observability;
 
 // Routing — zero-copy context, decision enum, router trait, and concrete routers
-pub mod routing;
-pub use routing::config::{PatternType, RoutingRule, RoutingRuleBuildError, RoutingRuleBuilder};
+pub(crate) mod routing;
+
+// Logging — internal logger initialization used by other modules
+mod logging;
 
 use kafka_message::KafkaMessage;
 use logging::Logger;
