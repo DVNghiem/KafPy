@@ -23,29 +23,22 @@ __version__ = "0.1.0"
 
 # Re-export from Rust extension (_kafpy)
 from ._kafpy import (
-    ConsumerConfig,
     ProducerConfig,
     KafkaMessage,
     Consumer,
     Producer,
 )
 
-# Re-export stubs for future phases (implemented in Phases 34-37)
-# These will be replaced with real implementations in their respective phases.
-try:
-    from .config import (
-        RoutingConfig,
-        RetryConfig,
-        BatchConfig,
-        ConcurrencyConfig,
-    )
-except ImportError:
-    # Added in Phase 34 (Configuration Model)
-    RoutingConfig = None
-    RetryConfig = None
-    BatchConfig = None
-    ConcurrencyConfig = None
+# Configuration classes (Python wrapper, Phase 34)
+from .config import (
+    ConsumerConfig,
+    RoutingConfig,
+    RetryConfig,
+    BatchConfig,
+    ConcurrencyConfig,
+)
 
+# Re-export stubs for future phases (implemented in Phases 35-37)
 try:
     from .handlers import (
         HandlerContext,
@@ -78,24 +71,24 @@ except ImportError:
 
 __all__ = [
     # Rust extension types (available now)
-    "ConsumerConfig",
+    "ConsumerConfig",  # from config.py (Python wrapper)
     "ProducerConfig",
     "KafkaMessage",
     "Consumer",
     "Producer",
     # Configuration types — Phase 34
-    "RoutingConfig",  # type: ignore[misc] # Added in Phase 34
-    "RetryConfig",  # type: ignore[misc] # Added in Phase 34
-    "BatchConfig",  # type: ignore[misc] # Added in Phase 34
-    "ConcurrencyConfig",  # type: ignore[misc] # Added in Phase 34
+    "RoutingConfig",
+    "RetryConfig",
+    "BatchConfig",
+    "ConcurrencyConfig",
     # Handler types — Phase 35
-    "HandlerContext",  # type: ignore[misc] # Added in Phase 35
-    "HandlerResult",  # type: ignore[misc] # Added in Phase 35
+    "HandlerContext",
+    "HandlerResult",
     # Exception types — Phase 36
-    "KafPyError",  # type: ignore[misc] # Added in Phase 36
-    "ConsumerError",  # type: ignore[misc] # Added in Phase 36
-    "HandlerError",  # type: ignore[misc] # Added in Phase 36
-    "ConfigurationError",  # type: ignore[misc] # Added in Phase 36
+    "KafPyError",
+    "ConsumerError",
+    "HandlerError",
+    "ConfigurationError",
     # Main runtime — Phase 34
-    "KafPy",  # type: ignore[misc] # Added in Phase 34
+    "KafPy",
 ]
