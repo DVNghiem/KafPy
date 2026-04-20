@@ -27,12 +27,11 @@ pub mod consumer_dispatcher;
 pub mod error;
 pub mod queue_manager;
 
-pub use crate::consumer::{MessageTimestamp, OwnedMessage};
+pub use crate::consumer::OwnedMessage;
 pub use consumer_dispatcher::ConsumerDispatcher;
 pub(crate) use backpressure::BackpressurePolicy;
 pub use backpressure::{BackpressureAction, DefaultBackpressurePolicy, PauseOnFullPolicy};
 pub use error::DispatchError;
-use crate::observability::tracing::KafpySpanExt;
 use queue_manager::QueueManager;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
