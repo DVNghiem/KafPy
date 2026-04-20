@@ -1,957 +1,319 @@
-# Pitfalls Research: Shutdown and Rebalance Handling for KafPy
+# Domain Pitfalls: Benchmark & Hardening Infrastructure
 
-**Domain:** Rust/PyO3 Kafka Consumer Lifecycle -- Graceful Shutdown, Rebalance Events, Partition Ownership
-**Researched:** 2026-04-19
-**Confidence:** MEDIUM-HIGH -- Based on rdkafka Rust documentation (HIGH), Tokio docs (HIGH), existing KafPy codebase analysis (HIGH), general Kafka consumer patterns (MEDIUM-HIGH)
-
----
-
-## Executive Summary
-
-KafPy's v1.8 milestone adds graceful shutdown coordination and rebalance event handling. This research catalogs the pitfalls that cause consumer data loss, message duplication, infinite rebalances, and deadlock during these lifecycle transitions. The most critical pitfalls are: premature partition revocation before offset commit, lost in-flight messages on shutdown, and deadlock from circular wait conditions between workers and the dispatcher.
-
-The project already has sound foundations: `OffsetTracker` uses highest-contiguous-offset semantics, `WorkerPool::shutdown()` waits for in-flight completion, and `CancellationToken` with `biased` select ordering is used correctly. The new pitfalls emerge from the interaction between these components when rebalance or shutdown signals arrive mid-processing.
+**Project:** KafPy v1.9 Benchmark & Hardening
+**Researched:** 2026-04-20
+**Confidence:** MEDIUM (based on Rust/PyO3 domain knowledge + KafPy codebase patterns; external search tools unavailable at time of research)
 
 ---
 
 ## Critical Pitfalls
 
-### Pitfall 1: Premature Partition Revocation Before Offset Commit
-
-**What goes wrong:**
-A partition is revoked during a rebalance, but offsets for in-flight messages have not yet been committed to Kafka. When the partition is reassigned to another consumer, those messages are re-processed (duplicate delivery) or skipped (data loss), depending on auto.offset.reset settings.
-
-**Why it happens:**
-Kafka's rebalance protocol revokes partitions before the consumer has a chance to commit. The time between revocation and the consumer's graceful commit is the danger window. In KafPy's current architecture, `OffsetCommitter` runs independently with no awareness of rebalance events -- if a rebalance occurs between the committer's interval ticks, offsets may not be committed.
-
-```rust
-// Current problem: OffsetCommitter has no rebalance awareness
-// If rebalance fires between ticker.tick() and process_ready_partitions():
-// - partition is revoked
-// - offsets for in-flight messages are still in pending_offsets
-// - those offsets are lost from this consumer's perspective
-async fn process_ready_partitions(&self) {
-    let ready = self.collect_ready_partitions(); // scans all partitions
-    for (topic, partition, offset) in ready {
-        self.commit_partition(topic, partition, offset).await;
-    }
-}
-```
-
-**Consequences:**
-- **Data loss**: If auto.offset.reset=earliest is not set (or wrong), messages are skipped
-- **Duplicate processing**: If auto.offset.reset=latest, same messages reprocessed by new owner
-- **Consumer lag inflation**: Duplicate reprocessing causes apparent lag
-
-**Prevention:**
-1. **Rebalance-aware committer**: Before processing a rebalance event, trigger an immediate commit cycle for all partitions
-2. **Store offsets eagerly**: Call `store_offset()` immediately after each `ack()`, not just on interval ticks
-3. **Revocation barrier**: On rebalance revocation, pause consumption and wait for inflight to drain AND commit before acknowledging the revocation
-
-```rust
-// Recommended: Immediate commit on rebalance signal
-impl OffsetCommitter {
-    pub fn on_rebalance_revoked(&self, partitions: &[(String, i32)]) {
-        // Wake up the committer immediately -- send signal through channel
-        for (topic, partition) in partitions {
-            self.tracker.force_commit(topic, partition);
-        }
-        // The rx.changed() branch in run() will fire on next poll
-        let _ = self.tx.send(TopicPartition::new(topic.clone(), *partition));
-    }
-}
-```
-
-**Detection:**
-- Consumer group offset lag jumps to message batch sizes during rebalances
-- Duplicate message IDs in processing logs
-- `committed_offset` not advancing for revoked partitions
-
-**Phase to address:**
-Phase 33 (Graceful Shutdown Coordinator) -- the `RebalanceHandler` must coordinate with `OffsetCommitter` before allowing revocation to complete.
+Mistakes that cause benchmark infrastructure to produce misleading data, corrupt measurements, or fail to detect real production issues.
 
 ---
 
-### Pitfall 2: Unsafe Offset Advancement on Revoked Partitions
+### Pitfall 1: Benchmark Hot-Path Contamination
 
-**What goes wrong:**
-After a partition is revoked, the consumer continues to call `ack()` and `record_ack()` on messages from that partition. These offsets are stale -- the partition belongs to another consumer now. The `OffsetTracker` advances its internal state, and on the next rebalance (when partitions are reassigned), the consumer commits offsets it never actually processed.
+**What goes wrong:** Benchmark measurement code itself becomes a significant source of overhead, distorting results. The measurement infrastructure is so heavy that it changes the behavior of the system under test.
 
-**Why it happens:**
-`PartitionOwnership` is not consulted in the `worker_loop`'s ack path. Messages for revoked partitions continue flowing through the dispatcher until the rebalance pause takes effect. Workers process these messages and call `offset_coordinator.record_ack()`.
-
-```rust
-// worker_loop continues processing after revocation until pause takes effect
-// These acks are for a partition we no longer own!
-ExecutionResult::Ok => {
-    retry_coordinator.record_success(&ctx.topic, ctx.partition, ctx.offset);
-    queue_manager.ack(&msg.topic, 1);
-    offset_coordinator.record_ack(&ctx.topic, ctx.partition, ctx.offset); // DANGEROUS
-}
-```
+**Why it happens:** Adding metrics, timers, and instrumentation on the critical path is seductive but catastrophic for benchmark accuracy. If measuring a handler's throughput requires acquiring locks, copying strings, or incrementing atomic counters on every message, those costs dominate at scale. KafPy's existing `MetricsSink` facade is designed to avoid exactly this.
 
 **Consequences:**
-- **Committing unprocessed offsets**: Consumer commits offset N, but another consumer processed up to N+M -- gap
-- **Duplicate processing**: The consumer re-acquires the partition and skips N..N+M messages
-- **Offset Tracker corruption**: `pending_offsets` contains offsets from a partition it no longer owns
+- Reported latency is artificially high; throughput is artificially low
+- Benchmarks show regressions when instrumentation is added, even though actual performance is unchanged
+- Optimization cycles target instrumentation instead of real bottlenecks
 
 **Prevention:**
-1. **Partition ownership check before ack**: `offset_coordinator.record_ack()` must check `PartitionOwnership::is_owned(topic, partition)` before recording
-2. **Mark partition as revoking**: When a partition enters the revoking state, stop recording acks for it
-3. **Separate tracking for revoking partitions**: Accumulate pending offsets but do not commit until drain confirmed
-
-```rust
-impl OffsetCoordinator for OffsetTracker {
-    fn record_ack(&self, topic: &str, partition: i32, offset: i64) {
-        // SAFETY: Check partition ownership before recording
-        if !self.ownership.is_owned(topic, partition) {
-            tracing::warn!(
-                topic = topic,
-                partition = partition,
-                offset = offset,
-                "Ignoring ack for partition not owned -- likely revoked"
-            );
-            return;
-        }
-        self.ack(topic, partition, offset);
-    }
-}
-```
+- Route all measurement data through lock-free channels (Tokio mpsc, not `Arc<Mutex<Vec>>`)
+- Aggregate measurements off the hot path, not on it (KafPy's `RuntimeSnapshotTask` already polls every 10s -- follow this pattern)
+- Use existing `MetricsSink` facade; the noop implementation already costs nothing
+- Time only what you must time on-path; everything else goes in the background snapshot task
+- Validate measurement overhead by running with instrumentation disabled and comparing baseline throughput
 
 **Detection:**
-- `OffsetTracker::pending_offsets` contains offsets for partitions not in current assignment
-- Committed offsets jump backward after rebalance (different consumer took over with lower committed)
-- Logs show acks for partitions in "revoking" state
-
-**Phase to address:**
-Phase 34 (Rebalance Handling) -- requires `PartitionOwnership` integration with `OffsetTracker`.
+- Compare benchmark throughput with and without metrics collection
+- If enabling a metric sink causes >5% throughput drop, that metric is on the hot path
+- Profile with `perf` or `tokio-console` to identify lock contention in measurement code
 
 ---
 
-### Pitfall 3: Race Between Rebalance Callback and Message Processing
+### Pitfall 2: Measuring PyO3 Binding Overhead Instead of Core Engine Performance
 
-**What goes wrong:**
-A message is dispatched to a worker at the same moment a rebalance revokes that partition. The worker processes the message and calls `ack()` after the partition has been revoked, corrupting offset state. Alternatively, the worker processes a message for a partition that has been reassigned to it mid-processing.
+**What goes wrong:** Benchmark results reflect the cost of PyO3 Python-callable API boundaries (spawn_blocking, GIL transitions, pyclass conversions) rather than the Rust consumer core. Comparing results across HandlerModes (SingleSync vs BatchSync vs Async) conflates Python binding overhead with actual Kafka message processing performance.
 
-**Why it happens:**
-The `ConsumerDispatcher::run()` loop and the rebalance handler run concurrently. There is no synchronization between message dispatch and rebalance state changes.
-
-```rust
-// DISPATCH: message sent to worker
-let outcome = dispatcher.send_with_policy_and_signal(msg, policy);
-
-// CONCURRENTLY:
-// RebalanceHandler marks partition as revoking
-partition_ownership.mark_revoking(topic, partition);
-
-// LATER:
-// Worker finishes processing and calls record_ack()
-// -- but partition was revoked during processing!
-offset_coordinator.record_ack(topic, partition, offset);
-```
+**Why it happens:** PyO3 introduces overhead at each Python/Rust boundary. A benchmark that calls into KafPy from Python measures this overhead on every invocation. This is not representative of the pure Rust throughput of `ConsumerRunner` and `Dispatcher` processing messages at speed.
 
 **Consequences:**
-- **Duplicate processing**: If ack is recorded but partition revoked before commit, message reprocessed
-- **Offset gap**: If partition reassigned and consumer committed higher offset than what it actually processed
-- **Inconsistent state**: `PartitionOwnership` and `OffsetTracker` have conflicting views
+- "Sync vs Async" benchmark results are dominated by Python GIL cost, not actual handler mode differences
+- Optimization efforts target Python binding code instead of the Rust core
+- Users cannot understand what their actual per-message overhead is vs. the baseline Kafka consumer
 
 **Prevention:**
-1. **Atomic rebalance state transitions**: Use compare-and-swap semantics when updating `PartitionOwnership`
-2. **In-flight message tracking**: Track which partitions each worker is currently processing
-3. **Grace period**: After revocation, allow in-flight messages a grace period to complete before blocking new dispatches for that partition
-
-```rust
-// Recommended: mark_revoking uses atomic compare-and-swap
-impl PartitionOwnership {
-    pub fn mark_revoking(&self, topic: &str, partition: i32) -> bool {
-        let mut guard = self.revoking.write();
-        // Only mark if not already revoking -- prevents double-marking
-        let key = TopicPartitionKey::new(topic, partition);
-        if guard.contains(&key) {
-            return false; // Already revoking
-        }
-        guard.insert(key);
-        true
-    }
-}
-
-// Worker checks ownership before recording ack
-if partition_ownership.is_owned(topic, partition) {
-    offset_coordinator.record_ack(topic, partition, offset);
-}
-```
+- Implement a "Rust-native benchmark mode" that measures `ConsumerRunner` + `Dispatcher` + handler execution in-process, without crossing the PyO3 Python-callable boundary
+- Separate PyO3 binding overhead from core throughput by running identical workload in both modes
+- For the public Python-facing benchmarks, label results clearly as "Python API" measurements vs. "Rust core" measurements
+- Use existing `MetricsSink` to report Rust-side latency (already instrumented via `HandlerMetrics`); do not rely solely on Python-side timing
 
 **Detection:**
-- Intermittent duplicate messages during rebalances
-- `OffsetTracker` state inconsistent with Kafka's committed offset
-- Worker processing messages from a partition it doesn't own
-
-**Phase to address:**
-Phase 34 (Rebalance Handling) -- requires coordination protocol between `RebalanceHandler`, `ConsumerDispatcher`, and `WorkerPool`.
+- Profile the benchmark to identify where time is spent -- if >30% of time is in PyO3 binding code, binding overhead dominates
+- Compare Rust-only benchmark numbers against Python API benchmark numbers -- they should differ significantly if binding overhead is real
 
 ---
 
-### Pitfall 4: Deadlock During Graceful Shutdown
+### Pitfall 3: Incomplete Throughput Measurement (Happy-Path Only)
 
-**What goes wrong:**
-Workers wait for the dispatcher to send more messages, but the dispatcher is waiting for workers to drain so it can shut down. Neither side proceeds, causing the consumer to hang indefinitely on shutdown.
+**What goes wrong:** Benchmarks report message processing throughput but never measure the cost of retries, DLQ routing, and backpressure-induced stalls. A 99th-percentile latency spike of 500ms caused by retry backoff never appears in the average, and retry rates never appear in the report.
 
-**Why it happens:**
-The shutdown sequence is incorrect: workers are waiting on the dispatcher's channel to close, but the dispatcher waits for workers to complete before closing its side. This creates a classic circular wait.
-
-```
-WorkerPool.shutdown() {
-    drain_token.cancel()              // Workers should stop accepting new work
-    workers.wait_for_idle()          // Workers waiting for queue to drain
-                                      // BUT: dispatcher has already stopped producing!
-    // DEADLOCK: dispatcher waiting for workers to finish
-    //           workers waiting for dispatcher to send more messages
-}
-```
-
-**Current KafPy code:**
-```rust
-// WorkerPool::shutdown() - current (simplified)
-pub async fn shutdown(&mut self) {
-    self.shutdown_token.cancel();         // Workers exit when idle
-    self.offset_coordinator.graceful_shutdown();  // Commit offsets
-    self.join_set.shutdown().await;      // Wait for workers
-    // BUT: ConsumerDispatcher may still be running, holding receivers
-}
-```
+**Why it happens:** Measuring successful end-to-end message processing is straightforward. Measuring retry loops, DLQ routing under failure, and backpressure stalls requires more instrumentation that is often skipped in initial benchmark implementations.
 
 **Consequences:**
-- **Infinite hang**: Shutdown never completes, consumer process never exits
-- **Force kill required**: Requires SIGKILL to terminate
-- **In-flight messages lost**: Even if killed, in-flight messages are lost
+- Throughput numbers look great in benchmarks but degrade 10x in production when 5% of messages encounter transient failures and trigger retry loops
+- Users report latency spikes that benchmarks never predicted
+- The benchmark does not validate that the hardening features (retry, DLQ, backpressure) actually work under load
 
 **Prevention:**
-1. **Correct shutdown order**: Dispatcher stops first, then workers drain, then final commit
-2. **Non-circular wait**: Use a `broadcast::Sender` that workers subscribe to for shutdown notification, not channel closure
-3. **Timeout with force-abort**: After grace period, force-terminate even if not fully drained
-
-```rust
-// Recommended shutdown sequence
-impl ShutdownCoordinator {
-    pub async fn shutdown(&self) {
-        // Phase 1: Stop producing new messages
-        self.runner.stop();                    // ConsumerRunner stops
-        self.abort_dispatcher();               // Dispatcher task aborts
-
-        // Phase 2: Wait for in-flight to complete (with timeout)
-        let drain_result = tokio::time::timeout(
-            self.drain_timeout,
-            self.workers.drain_inflight()
-        ).await;
-
-        if drain_result.is_err() {
-            tracing::warn!("Drain timeout exceeded, forcing shutdown");
-        }
-
-        // Phase 3: Final commit
-        self.flush_retries_to_dlq();
-        self.commit_final_offsets();
-    }
-}
-```
+- Define benchmark scenarios that include failure injection -- simulate broker stalls, transient errors, and network partitions
+- Track retry count, DLQ enqueue count, and backpressure stall duration as first-class metrics in the benchmark report
+- Measure latency distribution (p50, p95, p99), not just average throughput
+- Add a "failure scenario" profile: e.g., "5% of messages fail with transient error, measure time-to-DLQ"
 
 **Detection:**
-- Consumer shutdown hangs indefinitely (30s+)
-- No log messages from workers after shutdown initiated
-- `tokio::time::timeout` on shutdown never fires (deadlock, not slow)
-
-**Phase to address:**
-Phase 33 (Graceful Shutdown Coordinator) -- must define correct shutdown order and implement timeout with force-abort fallback.
+- Run benchmark with a scenario that injects 5% transient failures; compare p99 latency to the no-failure scenario
+- If p99 latency is not reported, the benchmark is incomplete
+- If retry count is not in the output, failure handling is not being measured
 
 ---
 
-### Pitfall 5: Lost In-Flight Messages During Shutdown
+### Pitfall 4: No Realistic Kafka Broker Simulation
 
-**What goes wrong:**
-Messages that have been dispatched to workers but not yet acknowledged are lost when shutdown occurs. The dispatcher drops messages that were in-flight at the moment of shutdown.
+**What goes wrong:** Benchmarks use a real Kafka broker but with minimal topic/partitions (1 topic, 1 partition), a single producer, and no realistic traffic patterns. The benchmark does not represent production workload characteristics.
 
-**Why it happens:**
-`WorkerPool::shutdown()` cancels the `CancellationToken`, causing workers to exit immediately when they next check the token (at the `select!` boundary). If a message is being processed (`active_message = Some(msg))`), the worker completes processing and calls `ack()`. But if the shutdown signal arrives between dispatch and processing, the worker may exit without completing the message.
-
-```rust
-// Current worker_loop shutdown check
-select! {
-    Some(msg) = rx.recv() => {
-        active_message = Some(msg);
-    }
-    _ = shutdown_token.cancelled() => {
-        // Worker exits HERE if no active_message
-        // But if active_message is Some, it completes first
-        break;
-    }
-}
-
-// Problem: If shutdown fires while active_message = Some,
-// worker completes processing (correct) BUT:
-// 1. If processing succeeds, calls record_ack() -- may not commit before process exits
-// 2. If processing fails, calls mark_failed() -- may not flush to DLQ before process exits
-```
-
-**Current KafPy code (worker_loop):**
-```rust
-if shutdown_token.is_cancelled() {
-    tracing::info!(worker_id = worker_id, "worker stopped (cancelled after message)");
-    worker_pool_state.set_idle(worker_id);
-    break;  // Worker exits, potentially losing ack/commit window
-}
-// Mark worker as idle after processing completes
-worker_pool_state.set_idle(worker_id);
-```
-
-The `break` happens immediately after the message completes, but the `worker_loop` function returns while the async block that spawned it may not have fully completed the commit/dispatch chain.
+**Why it happens:** Setting up a realistic multi-broker Kafka cluster for benchmarking is complex. Single-broker single-partition testing is much easier to wire up, but it misses entire categories of real-world issues (partition rebalancing, cross-partition ordering, consumer group coordination overhead).
 
 **Consequences:**
-- **Message loss**: Messages processed during shutdown are never committed
-- **Duplicate on restart**: On restart, Kafka re-delivers uncommitted messages
-- **DLQ entries lost**: Failed messages in-flight at shutdown are not flushed to DLQ
+- Benchmark shows throughput X; production achieves X/10 because partition count causes lock contention or consumer group management overhead
+- Reassignment events during benchmarking cause undefined behavior because the code was never tested under concurrent partition ownership changes
+- Batch handler performance does not scale because the workload is not partitioned
 
 **Prevention:**
-1. **Drain before cancel**: Shutdown must wait for all `active_message` processing to complete AND commit
-2. **Graceful drain notification**: Workers must receive explicit drain signal, not just cancellation
-3. **Commit-before-exit**: `OffsetCommitter` must be triggered for all in-flight offsets before workers exit
-
-```rust
-// Recommended: drain with explicit completion tracking
-impl WorkerPool {
-    pub async fn drain_inflight(&self) {
-        // 1. Signal workers to stop accepting new work (don't cancel yet)
-        self.drain_token.cancel();
-
-        // 2. Wait for all workers to reach idle state
-        loop {
-            let all_idle = self.worker_states.values()
-                .all(|s| matches!(s, WorkerStatus::Idle));
-            if all_idle {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-
-        // 3. Now safe to cancel and commit
-        self.shutdown_token.cancel();
-        self.offset_coordinator.graceful_shutdown();
-    }
-}
-```
+- Require minimum benchmark topology: at least 3 brokers, 3+ partitions across 2+ topics
+- Vary partition count in workloads (1, 5, 20 partitions) to measure partition-aware overhead
+- Include a rebalance scenario: mid-benchmark, trigger a consumer group rebalance and measure time-to-recovery
+- Use `rdkafka` performance tools to establish baseline broker-side limits before attributing throughput to KafPy
 
 **Detection:**
-- Messages re-delivered after consumer restart
-- DLQ not populated with messages that failed during shutdown
-- Offset commits missing messages that were processed at shutdown time
-
-**Phase to address:**
-Phase 33 (Graceful Shutdown Coordinator) -- requires drain-before-cancel sequence and explicit completion tracking.
+- If benchmark topology is not documented in the report, assume unrealistic broker setup
+- If no rebalance scenario exists, the benchmark never validates rebalance behavior
+- Compare partition counts across runs -- if throughput does not scale with partition count, broker setup is the bottleneck
 
 ---
 
-### Pitfall 6: Boolean Flag Soup vs Explicit State Machines
+### Pitfall 5: Label Cardinality Explosion in Metrics
 
-**What goes wrong:**
-Lifecycle state is encoded as multiple boolean flags (`is_shutting_down`, `is_draining`, `is_revoking`, `is_paused`) scattered across components. The interactions between flags create impossible states (e.g., `is_shutting_down=true` AND `is_revoking=true` AND `is_paused=false`), leading to incorrect behavior.
+**What goes wrong:** Adding high-cardinality labels (topic names, partition IDs, handler IDs) to metrics causes cardinality explosion in Prometheus sinks. A system with 10 topics and 5 handlers produces 50x more time series when labeled by topic+handler, and 500x more when partition is included.
 
-**Why it happens:**
-Boolean flags are easy to add individually but their interactions are not modeled. Each new condition adds a flag, leading to 2^N possible states.
-
-```rust
-// Boolean soup example
-struct WorkerState {
-    is_running: bool,
-    is_shutting_down: bool,
-    is_draining: bool,
-    is_paused: bool,
-    is_revoking: bool,
-}
-
-// Impossible states:
-// - is_shutting_down=true AND is_paused=false (should pause on shutdown?)
-// - is_revoking=true AND is_draining=false (should drain on revoke?)
-```
-
-**Current KafPy state:**
-From `STATE.md`: "Partition ownership state: assigned / paused / draining / revoked" -- this is already an enum state machine design decision. The risk is implementing it as flags instead.
+**Why it happens:** KafPy's `MetricLabels` in `src/observability/metrics.rs` explicitly sorts labels lexicographically to prevent this -- but if new benchmark instrumentation adds partition-level labels without awareness of cardinality, it re-introduces the problem. Benchmark writers often want fine-grained per-partition metrics, which is the worst-case cardinality.
 
 **Consequences:**
-- **Impossible states**: Components enter states that should be unreachable
-- **Non-deterministic behavior**: Same input produces different outputs depending on flag order
-- **Race conditions**: Flags checked in different order in different code paths
+- Prometheus sink collapses under cardinality pressure
+- Benchmark run with detailed partition-level metrics causes Prometheus OOM
+- Metric sink drops are silent in non-Prometheus backends
 
 **Prevention:**
-Use explicit state enums that make illegal states unrepresentable:
-
-```rust
-// CORRECT: Enum state machine
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LifecycleState {
-    /// Normal operation
-    Running,
-    /// Shutdown in progress, no new dispatches
-    Draining,
-    /// Rebalance in progress for specific partitions
-    Revoking {
-        partitions: Vec<(String, i32)>,
-    },
-    /// Partition revoked but not yet drained
-    PartiallyRevoked,
-    /// Shutdown complete, finalizing
-    Finalizing,
-    /// All done
-    Done,
-}
-
-// Transitions are explicit and enforced
-impl LifecycleState {
-    pub fn transition_to(self, next: Self) -> Result<(), InvalidTransition> {
-        match (self, next) {
-            (Running, Draining) => Ok(()),
-            (Running, Revoking { .. }) => Ok(()),
-            (Draining, Finalizing) => Ok(()),
-            (Revoking { .. }, PartiallyRevoked) => Ok(()),
-            // Invalid transitions caught at compile time
-            (Done, _) => Err(InvalidTransition),
-            _ => Err(InvalidTransition),
-        }
-    }
-}
-```
+- KafPy's `MetricLabels` already enforces sorted key order; benchmark instrumentation must follow the same pattern
+- Aggregate at handler/topic level; expose partition-level only via runtime snapshot, not metrics
+- Benchmark metrics should use low-cardinality labels: mode, scenario, worker_id (worker count is bounded)
+- Validate with `cargo bench` + Prometheus before shipping new metrics
 
 **Detection:**
-- Bugs where shutdown and rebalance interact incorrectly
-- State checks that don't make sense (e.g., "if not shutting_down and not paused")
-- Flags checked in different order in different places
-
-**Phase to address:**
-Phase 33 (Graceful Shutdown Coordinator) -- define the `LifecycleState` enum first before implementing any shutdown/rebalance logic.
+- Check metric cardinality before deploying new benchmark metrics: number of unique label combinations should be bounded
+- If cardinality scales with partition count or topic count unboundedly, it is a cardinality bug
+- KafPy's existing `MetricLabels::insert()` sorts lexicographically -- benchmark code should use the same API
 
 ---
 
-### Pitfall 7: Mixing Lifecycle State with Business Logic
+### Pitfall 6: Benchmark Results Non-Reproducibility
 
-**What goes wrong:**
-Business logic (retry policy, DLQ routing, backpressure) is conditioned on lifecycle flags. This creates tight coupling: changing retry policy requires understanding shutdown behavior, or shutdown behavior changes unexpectedly when retry policy is modified.
+**What goes wrong:** The same benchmark run produces different results on different machines, different days, or different runs on the same machine. No confidence intervals are reported, no warm-up strategy exists, and no system-state isolation is enforced between runs.
 
-**Why it happens:**
-Lifecycle checks are scattered throughout business logic code:
-
-```rust
-// Mixed concerns in worker_loop
-if should_retry {
-    tokio::time::sleep(delay).await;
-    // But what if shutdown started during the sleep?
-    active_message = Some(msg);
-    continue;
-}
-
-if shutdown_token.is_cancelled() {
-    // Exit now, but we have a pending retry!
-    break;
-}
-```
+**Why it happens:** No warm-up iterations, no statistical validation (single-run reporting), no OS-level resource isolation, no control over background processes on the host machine, and no PyO3 GIL warmup considerations.
 
 **Consequences:**
-- **Test complexity**: Business logic tests must mock lifecycle state
-- **Fragility**: Changes to lifecycle handling break business logic
-- **Hidden dependencies**: It's unclear which code depends on which lifecycle flags
+- "Performance regressions" are noise 80% of the time
+- Optimization decisions are based on non-reproducible data
+- Benchmark claims cannot be verified by external parties
 
 **Prevention:**
-1. **Lifecycle as a membrane**: Lifecycle state gates entry to business logic, not execution within it
-2. **Separation of concerns**: `RebalanceHandler` manages lifecycle; `WorkerPool` manages processing; `RetryCoordinator` manages retry
-3. **Explicit lifecycle transitions**: Business logic responds to lifecycle events, not flags
-
-```rust
-// CORRECT: Lifecycle gates dispatch, not processing
-impl ConsumerDispatcher {
-    async fn dispatch_loop(&self) {
-        while let Some(msg) = self.message_rx.recv().await {
-            // Lifecycle check: reject new dispatches if not Running
-            match self.lifecycle.state() {
-                LifecycleState::Running => {}
-                LifecycleState::Draining => {
-                    tracing::debug!("Draining, dropping message");
-                    continue;
-                }
-                LifecycleState::Revoking { partitions } => {
-                    if partitions.contains(&(msg.topic.clone(), msg.partition)) {
-                        tracing::debug!("Partition revoking, dropping message");
-                        continue;
-                    }
-                }
-                _ => continue,
-            }
-            // Business logic below -- no lifecycle checks
-            self.send_to_worker(msg).await;
-        }
-    }
-}
-```
+- Implement mandatory warm-up phase: at least 3-5 runs with data flowing before measurement begins (PyO3's GIL-compiled code has JIT-like warmup)
+- Report confidence intervals (criterion.rs provides this natively)
+- Isolate benchmark runs: clear OS caches between scenarios, use fixed CPU frequency governor
+- Run benchmark scenarios in deterministic order
+- Document the machine spec (CPU, RAM, OS, kernel) alongside every benchmark report
 
 **Detection:**
-- `shutdown_token.is_cancelled()` checks inside business logic (worker_loop processing)
-- Retry scheduling happens without checking if partition is being revoked
-- DLQ routing checks lifecycle state
-
-**Phase to address:**
-Phase 33 (Graceful Shutdown Coordinator) -- lifecycle state should be owned by `ShutdownCoordinator`, not checked in business logic paths.
+- If results vary by >10% across runs on the same machine, reproducibility is broken
+- If no confidence interval is reported, the benchmark is not statistically valid
+- If warm-up runs are not visible in the output, the measurement includes compilation effects
 
 ---
 
-### Pitfall 8: Heavy Rebalance Callbacks Causing Rebalance Storms
+### Pitfall 7: Benchmark Infrastructure Becoming a Maintenance Burden
 
-**What goes wrong:**
-The rebalance handler does too much work synchronously in the detection path (offset commits, worker cancellation, queue draining). This causes the consumer to appear unresponsive to the Kafka broker, triggering more rebalances (the consumer is "slow" from Kafka's perspective).
+**What goes wrong:** The benchmark framework accumulates bespoke scripts, hardcoded paths, inconsistent result formats, and one-off scripts that no one understands. After 6 months, running the benchmark is a fragile multi-step process that requires tribal knowledge.
 
-**Why it happens:**
-Kafka's consumer group protocol has a rebalance timeout. If a consumer doesn't respond to a rebalance event within `session.timeout.ms`, it is kicked from the group and a new rebalance begins. Heavy callback work extends the window.
-
-```rust
-// TOO HEAVY for rebalance callback
-async fn on_rebalance(&self, event: RebalanceEvent) {
-    // This ALL happens before responding to Kafka!
-    self.commit_all_offsets().await;           // Slow: network I/O
-    self.flush_all_dlq().await;                // Slow: more I/O
-    self.drain_all_workers().await;            // Slow: waits for processing
-    self.update_ownership(event.new_assignment);// Fast: memory only
-    // By now, session.timeout might have fired!
-}
-```
+**Why it happens:** Benchmark scripts are often written as throwaway code ("we'll clean it up later"). No result schema is defined, output formats are ad hoc, and there is no CI integration.
 
 **Consequences:**
-- **Rebalance loop**: Consumer repeatedly kicked from group, causing continuous rebalances
-- **Consumer lag**: Messages not processed during rebalance storms
-- **Group instability**: Consumer group never stabilizes
+- Benchmark runs are not automated in CI; results are not comparable across commits
+- New engineers cannot run benchmarks; institutional knowledge is lost
+- Benchmark results are not machine-readable; manual interpretation is required
 
 **Prevention:**
-1. **Minimal revocation response**: Mark partition as revoking, signal workers -- do this FAST
-2. **Async commit after acknowledgment**: Commit offsets AFTER Kafka has acknowledged the rebalance
-3. **Background processing**: Do heavy work (DLQ flush, final offset commit) in background after rebalance completes
-
-```rust
-// FAST revocation response
-async fn handle_rebalance(&self, event: RebalanceEvent) {
-    // Phase 1: FAST -- update ownership, signal workers (in-memory)
-    for (topic, partition) in &event.newly_revoked {
-        self.partition_ownership.mark_revoking(topic, partition);
-        self.pause_partition(topic); // rdkafka pause() is fast
-    }
-    // Acknowledge to Kafka immediately -- we're within session.timeout
-
-    // Phase 2: BACKGROUND -- do heavy work after rebalance acknowledged
-    tokio::spawn(async move {
-        self.commit_revoked_offsets(event.newly_revoked).await;
-        self.drain_revoked_partitions(event.newly_revoked).await;
-    });
-}
-```
+- Define a `BenchmarkResult` model with a schema (JSON + CSV output)
+- Machine-readable summary file (`benchmark_results.json`) alongside human-readable report
+- Integrate benchmark execution into CI (at minimum: run on PR, compare against baseline, warn on >10% regression)
+- Single entrypoint: `python -m kafpy.benchmark run --scenario throughput --output ./results/`
+- Document methodology in a `BENCHMARK.md` at project root
 
 **Detection:**
-- Multiple rebalance events in logs within short time window
-- `session.timeout` warnings in Kafka broker logs
-- Consumer lag spikes during rebalances
-
-**Phase to address:**
-Phase 34 (Rebalance Handling) -- define fast-path revocation response separate from background reconciliation.
-
----
-
-### Pitfall 9: In-Flight Messages on Revoked Partition That Cannot Complete
-
-**What goes wrong:**
-A partition is revoked while messages are in-flight. Some messages are still being processed by workers. The rebalance requires acknowledging revocation, but the in-flight messages cannot complete (e.g., the Python handler is stuck on an I/O operation with no timeout).
-
-**Why it happens:**
-There is no mechanism to forcibly complete or cancel in-flight messages when a partition is revoked. The `CancellationToken` is per-worker, not per-partition, so canceling the token cancels all workers, not just those processing revoked partitions.
-
-```rust
-// Worker has 10 messages in-flight for partition 0
-// Partition 0 is revoked
-// RebalanceHandler: "please acknowledge revocation"
-// What happens to the 10 in-flight messages?
-
-// Current options:
-// 1. Wait indefinitely -- rebalance never completes
-// 2. Drop messages -- data loss
-// 3. Let them complete, then revoke -- long delay in rebalance
-```
-
-**Consequences:**
-- **Rebalance deadlock**: Cannot acknowledge revocation until all in-flight complete
-- **Data loss**: If forced to acknowledge, in-flight messages are lost
-- **Stuck consumer**: If handler hangs, rebalance never completes
-
-**Prevention:**
-1. **Per-partition cancellation**: Map partitions to workers, cancel only affected workers on revocation
-2. **Handler timeout**: Python handlers must have a timeout -- if they exceed it, they are canceled
-3. **Drain deadline**: After a grace period, force-complete with whatever state exists
-
-```rust
-// Recommended: per-partition worker assignment
-struct PartitionWorkerMap {
-    // partition -> worker_id
-    mapping: HashMap<(String, i32), usize>,
-    // worker_id -> active partitions
-    reverse: HashMap<usize, Vec<(String, i32)>>,
-}
-
-impl PartitionWorkerMap {
-    fn revoke_partition(&self, topic: &str, partition: i32) -> Vec<usize> {
-        let worker_id = self.mapping.remove(&(topic.to_string(), partition)).unwrap();
-        self.reverse.get_mut(&worker_id).map(|v| v.retain(|p| p != &(topic.to_string(), partition)));
-        vec![worker_id] // Return affected workers
-    }
-}
-
-// On revocation: cancel only workers processing that partition
-let affected_workers = partition_map.revoke_partition(topic, partition);
-for worker_id in affected_workers {
-    self.worker_tokens[worker_id].cancel(); // Only cancels one worker
-}
-```
-
-**What to do with messages that can't complete within deadline:**
-
-Option A: **Commit up to last known good offset** (best effort)
-```rust
-// Record the last successfully processed offset before revocation
-// On rebalance, commit up to that offset
-let last_known_good = offset_tracker.last_successful_offset(topic, partition);
-runner.store_offset(topic, partition, last_known_good).await;
-```
-
-Option B: **Drain to DLQ with partial batch**
-```rust
-// Flush partial batch to DLQ -- messages retain original offset metadata
-// New consumer can pick up from committed offset
-```
-
-Option C: **Accept data loss with clear documentation**
-```rust
-// If graceful_shutdown_timeout is exceeded, acknowledge revocation anyway
-// Messages in-flight are lost -- document this as a known limitation
-```
-
-**Phase to address:**
-Phase 34 (Rebalance Handling) -- requires per-partition cancellation and handler timeout enforcement.
+- If running the benchmark requires reading multiple scripts or undocumented steps, it is already a maintenance burden
+- If benchmark results are not stored in version-controlled output directory, they cannot be compared across commits
+- If there is no CI job running benchmarks, the infrastructure is not reliable
 
 ---
 
 ## Moderate Pitfalls
 
-### Pitfall 10: `OffsetCommitter` Running Independently Without Shutdown Awareness
+### Pitfall 8: Backpressure Thresholds Configured Without Benchmark Data
 
-**What goes wrong:**
-`OffsetCommitter::run()` is a Tokio task that runs indefinitely. When `WorkerPool::shutdown()` completes, the committer task is still running. It continues committing offsets for partitions that no longer have active workers, and may interfere with rebalance operations.
+**What goes wrong:** Backpressure thresholds (queue depth limits, concurrency limits) are set to arbitrary values without measurement. Production falls over not because messages are slow but because backpressure limits are too aggressive or too permissive.
 
-**Why it happens:**
-Current `pyconsumer.rs` spawns the committer task but never stores a handle to abort it. The committer's `run()` method only exits when the watch channel closes -- but nobody closes it on shutdown.
-
-```rust
-// Current: committer runs forever
-tokio::spawn(async move {
-    committer.run(rx).await; // rx never closed on shutdown
-});
-```
+**Why it happens:** Reasonable-looking defaults (queue depth 1000, max_concurrent_handlers 10) are copied from documentation or intuition without benchmarking against actual workload characteristics.
 
 **Prevention:**
-Store `JoinHandle` for committer task and abort it during shutdown:
-```rust
-struct ConsumerState {
-    committer_handle: Option<tokio::task::JoinHandle<()>>,
-}
+- Add a benchmark scenario that sweeps backpressure parameters (queue_depth: 100, 500, 1000, 5000; concurrent_handlers: 1, 5, 10, 50)
+- Find the inflection point where throughput degrades; that is the optimal backpressure threshold
+- Report optimal thresholds per workload profile (throughput-heavy vs. latency-sensitive)
 
-impl ConsumerState {
-    pub fn stop(&self) {
-        if let Some(handle) = self.committer_handle.take() {
-            handle.abort();
-        }
-    }
-}
-```
-
-**Phase to address:**
-Phase 33 (Graceful Shutdown Coordinator) -- `ShutdownCoordinator` must own and abort all spawned tasks.
+**Detection:**
+- Backpressure configuration is not mentioned in benchmark output --> arbitrary values were used
+- No sweep experiment exists --> optimal thresholds were not determined
 
 ---
 
-### Pitfall 11: `BatchAccumulator` Not Drained on Rebalance Revocation
+### Pitfall 9: Ignoring Memory Allocation Patterns
 
-**What goes wrong:**
-`BatchAccumulator` holds messages per-partition for performance. When a partition is revoked mid-batch, the accumulated messages for that partition are lost. The messages were dispatched to the accumulator but never processed.
+**What goes wrong:** Benchmark reports throughput but not memory allocations. Under sustained load, KafPy's message flow (`OwnedMessage` cloning, `Py<PyAny>` callback storage, `Vec` growth in dispatch channels) causes allocation pressure that manifests as GC-like stutters in production Python.
 
-**Why it happens:**
-`batch_worker_loop` handles `shutdown_token.cancelled()` by flushing all accumulators, but it has no awareness of rebalance. When a partition is revoked, the accumulator for that partition is not flushed.
-
-```rust
-// batch_worker_loop -- only handles full shutdown, not rebalance
-tokio::select! {
-    _ = shutdown_token.cancelled() => {
-        // Flushes ALL accumulators on full shutdown
-        let partitions = accumulator.flush_all();
-        // ... process and ack
-    }
-    // No rebalance-specific handling!
-}
-```
+**Why it happens:** Rust's ownership model hides allocation from the Python developer, but PyO3 bindings and message cloning do allocate. Benchmarks that measure throughput but not memory growth miss allocation-driven performance cliff at scale.
 
 **Prevention:**
-Add rebalance event handling to `batch_worker_loop`:
-```rust
-tokio::select! {
-    _ = rebalance_tx.recv() => {
-        // Flush accumulators for revoked partitions
-        let revoked = partition_ownership.revoking_partitions();
-        for (topic, partition) in revoked {
-            if let Some(batch) = accumulator.flush_partition(partition) {
-                // Process and ack, or mark for re-queue
-            }
-        }
-    }
-}
-```
+- Track peak RSS memory and allocation rate alongside throughput and latency in benchmark output
+- Run sustained-load scenario: 10M messages through the system; measure memory delta between start and end
+- Identify allocation hotspots via `dhat` or `cargo alloc`; optimize before they become production issues
+- KafPy's existing `RuntimeSnapshot` tracks queue_depth; benchmark should extend this with memory snapshots
 
-**Phase to address:**
-Phase 35 (Integration) -- batch accumulator must integrate with `PartitionOwnership`.
+**Detection:**
+- If benchmark output does not include memory usage, allocation patterns are unknown
+- Sustained-load scenario (>1M messages) is missing --> memory cliff at production scale is undetected
 
 ---
 
-### Pitfall 12: Forgetting `biased` in `tokio::select!` for Rebalance Handling
+### Pitfall 10: Handler Mode Benchmark Without Realistic Python Handler Implementation
 
-**What goes wrong:**
-`tokio::select!` without `biased` chooses branches randomly when multiple are ready. On a busy consumer, the rebalance branch may never be selected, causing rebalance events to be delayed indefinitely.
+**What goes wrong:** The four `HandlerMode` variants (SingleSync, SingleAsync, BatchSync, BatchAsync) are benchmarked, but the Python handler implementations used in the benchmark are trivially different (e.g., just `pass`). Real-world Python handlers have varying computation costs, I/O patterns, and GIL hold durations that dramatically affect the relative performance of handler modes.
 
-**Why it happens:**
-`select!` without `biased` uses random fairness. If both a rebalance event and a message arrive simultaneously, the rebalance may not be processed until many message iterations.
+**Why it happens:** Benchmarking handler modes requires running actual Python code. Implementing realistic Python handlers is more effort than using `pass`-style stubs. Results are misleading because real handler code changes the GIL hold time and async behavior.
 
-**Current correct usage in KafPy:**
-`ConsumerRunner::run()` uses `biased`:
-```rust
-tokio::select! {
-    biased;
-    _ = shutdown_rx.recv() => { break; }
-    message_result = consumer.recv() => { /* ... */ }
-}
-```
+**Consequences:**
+- BatchAsync looks fastest in benchmark, but a real-world async handler that calls a sync DB library performs worse than BatchSync due to executor inversion
+- The benchmark validates handler mode performance with trivial handlers, not realistic ones
+- Users make architectural decisions based on benchmark results that do not apply to their workload
 
 **Prevention:**
-Always use `biased` in shutdown/rebalance-sensitive `select!` loops:
-```rust
-tokio::select! {
-    biased;
-    _ = shutdown_token.cancelled() => { /* shutdown first */ }
-    _ = rebalance_rx.recv() => { /* rebalance second */ }
-    msg = rx.recv() => { /* messages last */ }
-}
-```
+- Define at least two Python handler implementations per mode: trivial (pass) and realistic (simulated I/O wait, computation)
+- Report results per handler type separately
+- In benchmark report, explicitly state which Python handler implementation was used and what it does
 
-**Phase to address:**
-Phase 33/34 -- audit all `select!` usage for shutdown and rebalance paths.
+**Detection:**
+- If Python handler code is not shown in the benchmark methodology, assume trivial handlers were used
+- If handler mode results do not vary by handler implementation complexity, benchmarks are incomplete
 
 ---
 
-## Minor Pitfalls
+### Pitfall 11: Confusing Benchmark Warmup with Actual Measurements
 
-### Pitfall 13: Thread Safety of `parking_lot::Mutex` in Async Context
+**What goes wrong:** The first N messages processed during "warmup" are included in the benchmark measurement, skewing results because JIT compilation, cache warming, and pool initialization are all happening during measurement.
 
-**What goes wrong:**
-`parking_lot::Mutex` is used in async contexts (e.g., `PartitionOwnership::assignment`). When an async task holds the mutex across an `.await` point, other async tasks are blocked. Since `parking_lot::Mutex` is not async-aware, it blocks the Tokio thread, preventing other tasks from running.
-
-**Why it happens:**
-`parking_lot::Mutex` is not designed for async -- it blocks the thread, not just the task. `tokio::sync::Mutex` yields the task, allowing other tasks to run.
-
-**Current KafPy usage:**
-```rust
-// PartitionOwnership uses parking_lot::RwLock
-pub struct PartitionOwnership {
-    assignment: parking_lot::RwLock<HashMap<String, Vec<i32>>>,
-    revoking: parking_lot::RwLock<HashMap<String, Vec<i32>>>,
-}
-
-// BUT: if async code holds these across .await:
-// async fn handle_rebalance(&self) {
-//     let guard = self.assignment.read(); // Mutex held
-//     self.process_assignment(guard).await; // DANGEROUS: other tasks blocked
-// }
-```
+**Why it happens:** Criterion.rs handles warmup internally for Rust benchmarks, but Python-level benchmarks (via pytest-benchmark or custom scripts) often do not. PyO3's GIL acquisition, Python bytecode interpretation warmup, and Tokio task spawning all have initialization costs that should be excluded from measurements.
 
 **Prevention:**
-Use `tokio::sync::RwLock` for async-accessed state:
-```rust
-pub struct PartitionOwnership {
-    // Use tokio RwLock for async context safety
-    assignment: tokio::sync::RwLock<HashMap<String, Vec<i32>>>,
-    revoking: tokio::sync::RwLock<HashMap<String, Vec<i32>>>,
-}
-```
+- Implement explicit warmup phase in Python benchmark scripts: run at least 1000 messages before starting measurement timer
+- Verify warmup is complete by checking that throughput is stable across consecutive measurement windows
+- Use Criterion.rs for Rust-native benchmarks (handles warmup statistically)
+- Track warmup separately and report it; never include warmup messages in throughput calculations
 
-**Phase to address:**
-Phase 34 (Rebalance Handling) -- if `PartitionOwnership` is accessed from async contexts, use `tokio::sync::RwLock`.
+**Detection:**
+- If first 100 messages show lower throughput than subsequent ones, warmup is leaking into measurements
+- If no warmup phase is documented, measurements include compilation effects
 
 ---
 
-### Pitfall 14: No Timeout on `store_offset` + `commit` During Shutdown
+### Pitfall 12: Measuring Only Absolute Throughput, Not Per-Resource Efficiency
 
-**What goes wrong:**
-During `graceful_shutdown()`, `store_offset()` and `commit()` are called without timeouts. If the Kafka broker is slow or unreachable, shutdown hangs indefinitely even though `ShutdownCoordinator` has a drain timeout.
+**What goes wrong:** Benchmark reports messages/second but not CPU per message, memory per message, or network per message. A benchmark showing 100k msg/sec could be using 8 cores to achieve that vs. another configuration achieving 80k msg/sec on 2 cores (higher efficiency).
 
-**Why it happens:**
-```rust
-// graceful_shutdown -- no timeout on individual operations
-impl OffsetTracker {
-    fn graceful_shutdown(&self) {
-        for (topic, partition) in self.all_partitions() {
-            runner_arc.store_offset(topic, partition, offset); // May hang!
-            runner_arc.commit(); // May hang!
-        }
-    }
-}
-```
+**Why it happens:** Absolute throughput is the easiest metric to measure. Normalizing by resource consumption requires more instrumentation (CPU usage, memory delta, network I/O) that is often skipped.
 
 **Prevention:**
-Use `tokio::time::timeout` for each commit operation:
-```rust
-async fn commit_with_timeout(&self, topic: &str, partition: i32, offset: i64) {
-    let store_result = tokio::time::timeout(
-        Duration::from_secs(5),
-        self.runner.store_offset(topic, partition, offset)
-    ).await;
+- Report throughput per CPU core: `messages_per_second_per_core = throughput / num_cpus_used`
+- Report memory per message: `bytes_per_message = peak_rss / total_messages`
+- Report network per message if Kafka broker network is a bottleneck
+- Include resource efficiency in the benchmark report alongside absolute throughput
 
-    if store_result.is_err() {
-        tracing::warn!("store_offset timed out for {}:{}", topic, partition);
-    }
-    // Similar for commit()
-}
-```
-
-**Phase to address:**
-Phase 33 (Graceful Shutdown Coordinator) -- add timeouts to all I/O operations during shutdown.
+**Detection:**
+- If benchmark report shows only msg/sec without resource normalization, efficiency comparisons are missing
+- If machine spec (CPU cores, RAM) is not in the report, per-resource efficiency cannot be calculated
 
 ---
 
-### Pitfall 15: `has_terminal` Blocking Commit Indefinitely on Rebalance
+## Phase-Specific Warnings
 
-**What goes wrong:**
-`OffsetTracker::should_commit()` returns `false` when `has_terminal=true` for a partition. During rebalance, if a terminal failure occurred on a partition that is being revoked, the partition's committed offset never advances. On re-acquisition, the consumer starts from the old committed offset, potentially skipping messages.
-
-**Why it happens:**
-```rust
-// offset_tracker.rs
-pub fn should_commit(&self, topic: &str, partition: i32) -> bool {
-    guard.get(&key).is_some_and(|s| {
-        if s.has_terminal {
-            return false; // Terminal failures block commit FOREVER
-        }
-        s.pending_offsets.contains(&(s.committed_offset + 1))
-    })
-}
-```
-
-**Prevention:**
-Commit all non-failed offsets regardless of `has_terminal` during shutdown:
-```rust
-fn graceful_shutdown(&self) {
-    for (topic, partition) in self.all_partitions() {
-        // Always commit the highest contiguous, even if has_terminal
-        if let Some(offset) = self.highest_contiguous(topic, partition) {
-            // ... commit regardless of has_terminal state
-        }
-    }
-}
-```
-
-**Phase to address:**
-Phase 33 (Graceful Shutdown Coordinator) -- override `has_terminal` gating during shutdown commit.
+| Phase Topic | Likely Pitfall | Mitigation |
+|-------------|---------------|------------|
+| Benchmark scenario definition | Scenarios too simple (happy-path only) | Include failure injection, backpressure, and rebalance scenarios |
+| Benchmark runner infrastructure | Hot-path contamination in measurement | Route all metrics via existing MetricsSink; aggregate off hot path |
+| Memory/latency/throughput measurement | No sustained-load scenario | Add 10M message sustained-load scenario; track memory delta |
+| Result models + CSV/JSON output | Non-reproducible format (ad hoc schema) | Define `BenchmarkResult` schema upfront; version it |
+| Hardening checks | Arbitrary thresholds without measurement basis | Sweep parameters in benchmark before setting thresholds |
+| Example scripts | Scripts not integrated in CI | Single entrypoint; CI runs on every PR |
 
 ---
 
-## Phase-Specific Warning Matrix
+## Prior Work: Observability Pitfalls Not Replicated Here
 
-| Pitfall | Phase 33 (Shutdown) | Phase 34 (Rebalance) | Phase 35 (Integration) |
-|---------|---------------------|---------------------|----------------------|
-| Premature revocation before commit | **PRIMARY** -- commit before revoke | Coordinates with commit trigger | Wired to lifecycle |
-| Unsafe offset on revoked partition | Add ownership check in record_ack | Implement is_owned guard | Validate integration |
-| Race between rebalance and dispatch | N/A | **PRIMARY** -- atomic state transitions | Test with concurrent events |
-| Deadlock during shutdown | **PRIMARY** -- correct shutdown order | N/A | Stress test |
-| Lost in-flight on shutdown | **PRIMARY** -- drain-before-cancel | N/A | Integration test |
-| Boolean flag soup | Define LifecycleState enum | Use across all rebalance code | Enforce at boundaries |
-| Mixing lifecycle and business | Enforce separation | Enforce at boundaries | Validate no cross-talk |
-| Heavy rebalance callbacks | N/A | **PRIMARY** -- fast-path + background | Monitor rebalance duration |
-| In-flight on revoked that can't complete | N/A | **PRIMARY** -- per-partition cancel + timeout | DLQ integration |
-| OffsetCommitter independent | **PRIMARY** -- abort on shutdown | N/A | N/A |
-| BatchAccumulator not drained on revoke | N/A | Add revoke handling | **PRIMARY** |
-| Missing `biased` select | Audit shutdown paths | Audit rebalance paths | N/A |
-| Thread safety in async | N/A | Use tokio::sync primitives | Validate Send+Sync |
-| No timeout on commit | **PRIMARY** -- add timeouts | N/A | N/A |
-| has_terminal blocking commit | **PRIMARY** -- override on shutdown | N/A | N/A |
+The existing PITFALLS.md (v1.7 observability milestone) covers:
+- Async span lifetime across await points
+- Global subscriber conflict
+- PyO3 GIL bindings breaking span continuity
+- Metrics lost before recorder installation
+- Label ordering inconsistency (solved by `MetricLabels`)
+- Span creation overhead in hot paths (solved by `debug_span!`)
+- Memory leaks from span context retention
+- Library code setting global observability state
 
----
-
-## Warning Signs to Log
-
-Add structured log events for these conditions to aid debugging:
-
-```rust
-// On rebalance event received
-tracing::warn!(
-    event_type = %event.type(),
-    newly_revoked = ?event.newly_revoked(),
-    newly_owned = ?event.newly_owned(),
-    "Rebalance event received"
-);
-
-// On partition enter revoking state
-tracing::info!(
-    topic = %topic,
-    partition = partition,
-    pending_offsets = ?pending_count,
-    inflight = ?inflight_count,
-    "Partition entering revoking state"
-);
-
-// On shutdown drain timeout
-tracing::error!(
-    elapsed_ms = elapsed.as_millis(),
-    still_active = still_active_count,
-    "Shutdown drain timeout exceeded"
-);
-
-// On ack for non-owned partition (warning, not error -- expected during rebalance)
-tracing::warn!(
-    topic = %topic,
-    partition = partition,
-    offset = offset,
-    "Ack received for partition not currently owned"
-);
-```
+These are **not** repeated here. The benchmark/hardening pitfalls above are orthogonal: they address the infrastructure for measuring and hardening the system, not the observability instrumentation itself.
 
 ---
 
 ## Sources
 
-- [rdkafka Rust consumer rebalance documentation](https://docs.rs/rdkafka/latest/rdkafka/consumer/trait.Consumer.html) -- assignment/rebalance callbacks (HIGH)
-- [rdkafka StreamConsumer](https://docs.rs/rdkafka/latest/rdkafka/consumer/struct.StreamConsumer.html) -- polling-based rebalance detection (HIGH)
-- [tokio CancellationToken](https://docs.rs/tokio-util/latest/tokio_util/sync/struct.CancellationToken.html) -- shutdown signaling (HIGH)
-- [tokio select! biased](https://docs.rs/tokio/latest/tokio/macro.select.html) -- priority ordering (HIGH)
-- [parking_lot Mutex vs tokio sync Mutex](https://docs.rs/parking_lot/latest/parking_lot/struct.Mutex.html) -- async context safety (HIGH)
-- [Kafka consumer group rebalance protocol](https://kafka.apache.org/documentation/#impl_rebalance) -- rebalance timeout semantics (MEDIUM)
-- [Apache Kafka Javadoc RebalanceCallback](https://kafka.apache.org/10/javadoc/org/apache/kafka/clients/consumer/ConsumerRebalanceListener.html) -- Java semantics reference (MEDIUM)
-- [Confluent blog:_rebalance handling](https://www.confluent.io/blog/kafka-rebalance-listener-java-tutorial-2/) -- common patterns (MEDIUM)
-
----
-
-## Open Questions Requiring Deeper Research
-
-1. **rdkafka rebalance detection granularity**: Does rdkafka expose whether a rebalance event is an assignment vs revocation at the Rust level, or only the resulting assignment diff?
-
-2. **OffsetCommitter abort safety**: When `OffsetCommitter` is aborted mid-commit, the offset may be partially committed. Need to verify idempotency of `store_offset` + `commit` with Kafka.
-
-3. **BatchAccumulator + rebalance interaction**: Does the current `flush_all()` on shutdown correctly handle per-partition revocation, or does it need a targeted `flush_partition()` approach?
-
-4. **Python handler timeout enforcement**: Can Python handlers specify timeouts, or does KafPy need to enforce them from the Rust side via `tokio::time::timeout` on the `spawn_blocking` call?
-
----
-
-*Pitfalls research for: KafPy v1.8 Graceful Shutdown & Rebalance Handling*
-*Researched: 2026-04-19*
+- [Criterion RS documentation](https://bheisler.github.io/criterion.rs/book/) -- benchmarking framework for Rust (HIGH)
+- [PyO3 documentation](https://pyo3.rs/) -- Python extension framework (HIGH)
+- [metrics crate documentation](https://docs.rs/metrics/latest/metrics/) -- zero-cost facade (HIGH)
+- KafPy `src/observability/metrics.rs` -- existing MetricsSink + MetricLabels pattern (HIGH)
+- KafPy `src/observability/runtime_snapshot.rs` -- polling-based snapshot design (10s interval, off hot path) (HIGH)
+- KafPy `src/consumer/` -- pure-Rust consumer core (basis for Rust-native benchmark) (HIGH)
+- [Prometheus label cardinality best practices](https://prometheus.io/docs/practices/naming/) (HIGH)
+- [rdkafka documentation](https://docs.confluent.io/platform/current/clients/librdkafka/html/) (MEDIUM)
+- [Rust dhat memory profiler](https://www.github.com/khvzak/dhat-rs) -- allocation analysis (MEDIUM)

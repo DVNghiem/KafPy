@@ -9,4 +9,4 @@ pub mod router;
 
 pub use metadata::DlqMetadata;
 pub use produce::SharedDlqProducer;
-pub use router::{DefaultDlqRouter, DlqRouter, TopicPartition};
+pub use router::{DefaultDlqRouter, DlqRouter};

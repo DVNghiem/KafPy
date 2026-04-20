@@ -10,7 +10,7 @@
 
 KafPy is a Python-facing Kafka framework where Rust provides the runtime/core engine and Python holds the business logic. PyO3 bridges the two. The pure-Rust consumer core handles Kafka protocol, while Python registers handlers/callbacks via bindings.
 
-Current status (after Milestone v1.7):
+Current status (after Milestone v1.4):
 - `src/consumer/` — pure-Rust consumer core: `ConsumerConfigBuilder`, `OwnedMessage`, `ConsumerRunner`, `ConsumerStream`, `ConsumerTask`
 - `src/dispatcher/` — message dispatcher: `Dispatcher`, `QueueManager`, `BackpressurePolicy`, `BackpressureAction`, `ConsumerDispatcher`
 - `src/python/` — Python execution lane: `PythonHandler`, `WorkerPool`, `ExecutionContext`, `ExecutionResult`, `Executor` trait
@@ -18,7 +18,6 @@ Current status (after Milestone v1.7):
 - `src/failure/` — failure classification: `FailureReason`, `FailureCategory`, `FailureClassifier` trait
 - `src/retry/` — retry policy: `RetryPolicy`, `RetrySchedule` with exponential backoff + jitter
 - `src/dlq/` — DLQ routing: `DlqRouter` trait, `DlqMetadata`, `SharedDlqProducer`
-- `src/observability/` — metrics, tracing, logging infrastructure (MetricsSink, PrometheusMetricsSink, RuntimeSnapshot)
 - `src/pyconsumer.rs` — PyO3 bridge: `Consumer` pyclass wrapping `ConsumerRunner`
 - `src/config.rs` — Python-facing `ConsumerConfig` / `ProducerConfig` (PyO3)
 - `src/kafka_message.rs` — PyO3 `KafkaMessage` wrapping `OwnedMessage`
@@ -63,28 +62,26 @@ Current status (after Milestone v1.7):
 
 **Milestone v1.3:** Offset commit coordinator — per-topic-partition ack tracking via `OffsetTracker`, highest-contiguous-offset commit logic via `OffsetCommitter`, out-of-order completion handling, `store_offset()` + `commit()` coordination for at-least-once delivery.
 
-**Milestone v1.4:** Failure Handling & DLQ — FailureReason taxonomy, RetryPolicy with exponential backoff, DLQ routing with metadata envelope, per-partition commit gating with terminal state tracking, graceful shutdown DLQ flush.
+**Milestone v1.4:** Failure Handling & DLQ — Phases 17-20 complete. FailureReason taxonomy, RetryPolicy with exponential backoff, DLQ routing with metadata envelope, per-partition commit gating with terminal state tracking, graceful shutdown DLQ flush.
 
-**v1.5 shipped:** Extensible Routing — Pattern/header/key routing with Python fallback, RoutingChain wired into ConsumerDispatcher with all 4 RoutingDecision variants (Route→handler queue, Drop→offset advance, Reject→DLQ, Defer→default).
+**Current milestone (v1.5):** Extensible Routing — Pattern/header/key routing with optional Python fallback, Rust as fast-path owner.
+
+**v1.5 shipped:** Phase 21 (RoutingCore), Phase 22 (PythonRouter), Phase 23 (DispatcherIntegration). RoutingChain wired into ConsumerDispatcher with all 4 RoutingDecision variants handled (Route→handler queue, Drop→offset advance, Reject→DLQ, Defer→default).
 
 **v1.6 shipped:** Phase 24 (HandlerMode foundation), Phase 25 (BatchAccumulator), Phase 26 (Async Python handlers), Phase 27 (Shutdown drain verification). HandlerMode enum with 4 variants, BatchAccumulator with fixed-window flush, PythonAsyncFuture with custom CFFI bridge, all 4 execution modes working.
 
-**v1.7 shipped:** Phase 28 (Metrics Infrastructure), Phase 29 (Tracing Infrastructure), Phase 30 (Kafka-Level Metrics), Phase 31 (Runtime Introspection), Phase 32 (Structured Logging). MetricsSink trait, Prometheus adapter, OTLP tracing with W3C context propagation, KafkaMetrics with consumer lag gauges, RuntimeSnapshot with get_runtime_snapshot(), structured logging with LogTracer forwarding.
+## Current Milestone: v1.9 Benchmark & Hardening
 
-**v1.8: Graceful Shutdown & Rebalance Handling**
-Goal: Framework behaves safely during process shutdown, rebalance events, and partition revocation/reassignment — preserving delivery guarantees and avoiding unsafe offset advancement.
+**Goal:** Production hardening plus credible benchmark infrastructure and reports — measurable, reproducible performance characterization across handler modes, retry scenarios, and workload profiles.
 
 **Target features:**
-- Graceful shutdown: stop intake → drain queues → commit safe offsets → stop components in order
-- Rebalance handling: Assign/Revoke/Error events, partition ownership state, prevent unsafe dispatch
-- Partition state coordination: assigned / paused / draining / revoked per TP
-- Integration with: offset manager, retry/DLQ, worker execution, batching, observability
-
-**Design constraints:**
-- Explicit lifecycle states over boolean flags
-- Close-and-drain over abrupt drops
-- Lightweight rebalance callbacks triggering meaningful state transitions
-- Observable through existing tracing/logging
+- Benchmark scenario definitions and workload profiles
+- Benchmark runner with memory/latency/throughput measurement
+- Result models with CSV/JSON output
+- Hardening/validation checks
+- Example benchmark scripts covering throughput, latency, failure/retry, batch vs sync vs async
+- Machine-readable result files + human-readable summary/report
+- Benchmark methodology note and practical tuning checklist
 
 ## Validated Requirements
 
@@ -127,23 +124,27 @@ Goal: Framework behaves safely during process shutdown, rebalance events, and pa
 - ✓ Routing precedence: pattern → header → key → python → default — v1.5
 - ✓ RoutingDecision trait: route, drop, reject, defer — v1.5
 - ✓ Integration with existing handler queues + backpressure — v1.5
-- ✓ HandlerMode enum with 4 variants (SingleSync, SingleAsync, BatchSync, BatchAsync) — v1.6
-- ✓ BatchAccumulator with fixed-window timeout flush — v1.6
+
+- ✓ HandlerMode enum (SingleSync, SingleAsync, BatchSync, BatchAsync) — v1.6
+- ✓ BatchAccumulator with fixed-window flush (size + timeout) — v1.6
+- ✓ Sync Python handlers via spawn_blocking — v1.6
 - ✓ Async Python handlers via pyo3-async-runtimes into_future — v1.6
+- ✓ BatchExecutionResult (AllSuccess / AllFailure / PartialFailure) — v1.6
 - ✓ GIL never held across Rust-side orchestration — v1.6
-- ✓ Batch result model: AllSuccess/AllFailure/PartialFailure — v1.6
-- ✓ MetricsSink trait + PrometheusMetricsSink adapter with zero-cost facade — v1.7
-- ✓ Tracing infrastructure: ObservabilityConfig, enable_otel_tracing(), W3C tracecontext propagation — v1.7
-- ✓ KafkaMetrics with consumer_lag/assignment_size/committed_offset gauges, background polling — v1.7
-- ✓ RuntimeSnapshot with get_runtime_snapshot() PyO3, Consumer.status() Python method — v1.7
-- ✓ Structured logging with consistent field names, per-component log levels, Python log forwarding — v1.7
+- ✓ Graceful shutdown drain: flush pending + commit before exit — v1.6
+
+- ✓ MetricsSink trait with zero-cost facade (metrics crate) — v1.7
+- ✓ Prometheus adapter (HandlerMetrics + KafkaMetrics per TP) — v1.7
+- ✓ MetricLabels with lexicographically sorted label ordering — v1.7
+- ✓ OTLP tracing via opentelemetry-otlp with W3C tracecontext propagation — v1.7
+- ✓ Span context propagates at spawn_blocking boundary — v1.7
+- ✓ Consumer lag, assignment size, committed offset gauges via rdkafka stats — v1.7
+- ✓ RuntimeSnapshot (zero-cost when not called) — v1.7
+- ✓ Structured logging with LogTracer, per-component levels, consistent field names — v1.7
 
 ## Active Requirements
 
-- [ ] OTLP exporter sink implementing MetricsSink for unified OTLP metrics+traces (OBS-F2)
-- [ ] Pre-built Prometheus alerting rules for consumer lag, error rate, batch size thresholds (OBS-F3)
-- [ ] Trace context injection into Kafka headers for cross-service correlation (OBS-F1)
-- [ ] Sliding window latency percentiles p50/p95/p99 (OBS-F4)
+- TBD — v1.9 requirements to be defined (Benchmark & Hardening)
 
 ## Out of Scope
 
@@ -172,4 +173,4 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-*Last updated: 2026-04-19 after v1.7 milestone*
+*Last updated: 2026-04-20 after v1.7 milestone (starting v1.8 Public API Foundation)*

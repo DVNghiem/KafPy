@@ -6,15 +6,26 @@
 
 KafPy is a high-performance Apache Kafka consumer and producer library for Python, built with Rust using PyO3. It provides an asynchronous, efficient, and easy-to-use interface for consuming messages from Kafka topics.
 
-## Features
+## Quick Start
 
-- 🚀 **High Performance**: Built with Rust for maximum speed and efficiency
-- ⚡ **Async Support**: Fully asynchronous API using Python's asyncio
-- 🔧 **Flexible Configuration**: Environment-based or programmatic configuration
-- 🎯 **Topic Routing**: Register different handlers for different topics
-- 🔒 **Thread-Safe**: Safe concurrent message processing
-- 📊 **Production Ready**: Manual offset commit control, graceful shutdown, and error handling
-- 🔐 **Security**: Support for SASL authentication and SSL/TLS encryption
+```python
+import kafpy
+
+config = kafpy.ConsumerConfig(
+    bootstrap_servers="localhost:9092",
+    group_id="my-group",
+    topics=["my-topic"],
+)
+consumer = kafpy.Consumer(config)
+app = kafpy.KafPy(consumer)
+
+@app.handler(topic="my-topic")
+def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerResult:
+    print(msg.payload)
+    return kafpy.HandlerResult(action="ack")
+
+app.run()
+```
 
 ## Table of Contents
 
@@ -68,56 +79,34 @@ pip install target/wheels/kafpy-*.whl
 
 ## Quick Start
 
-Here's a simple example to get you started:
-
 ```python
-import asyncio
-from kafpy import Consumer, ConsumerConfig, KafkaMessage
+import kafpy
 
-# Create Kafka configuration
-kafka_config = ConsumerConfig(
-    brokers="localhost:9092",
-    group_id="my-consumer-group",
+config = kafpy.ConsumerConfig(
+    bootstrap_servers="localhost:9092",
+    group_id="my-group",
     topics=["my-topic"],
-    auto_offset_reset="earliest",
-    enable_auto_commit=False,
-    session_timeout_ms=30000,
-    heartbeat_interval_ms=3000,
-    max_poll_interval_ms=300000,
-    security_protocol=None,
-    sasl_mechanism=None,
-    sasl_username=None,
-    sasl_password=None,
-    fetch_min_bytes=1,
-    max_partition_fetch_bytes=1048576,
-    partition_assignment_strategy="roundrobin",
-    retry_backoff_ms=100,
-    message_batch_size=100
 )
+consumer = kafpy.Consumer(config)
+app = kafpy.KafPy(consumer)
 
-# Define message handler
-def handle_message(message: KafkaMessage):
-    print(f"Received message from {message.topic}:")
-    print(f"  Partition: {message.partition}")
-    print(f"  Offset: {message.offset}")
-    print(f"  Key: {message.key}")
-    print(f"  Payload: {message.payload}")
-    print(f"  Headers: {message.headers}")
+@app.handler(topic="my-topic")
+def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerResult:
+    print(msg.payload)
+    return kafpy.HandlerResult(action="ack")
 
-# Create consumer and register handler
-consumer = Consumer(kafka_config)
-consumer.add_handler("my-topic", handle_message)
-
-# Start consuming
-async def main():
-    try:
-        await consumer.start()
-    except KeyboardInterrupt:
-        consumer.stop()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+app.run()
 ```
+
+## Features
+
+- High-performance Kafka consumer built with Rust and PyO3
+- Synchronous, asynchronous, and batch handler support
+- Decorator-based and explicit handler registration
+- Configurable retry with exponential backoff and DLQ
+- Instance-based configuration (no global state)
+- Structured logging and observability metrics
+- Graceful shutdown with drain
 
 ## Configuration
 

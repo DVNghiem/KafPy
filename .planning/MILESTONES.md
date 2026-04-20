@@ -1,5 +1,18 @@
 # Milestones
 
+## v1.8 Public API Foundation (Shipped: 2026-04-20)
+
+**Phases completed:** 5 phases, 6 plans, 9 tasks
+
+**Key accomplishments:**
+
+- Public __all__ defined in kafpy/__init__.py with all 16 PKG-01 types (5 current + 11 future-phase placeholders), informative module docstring, and no raw Rust names
+- Plan:
+- Completed:
+- Completed:
+
+---
+
 ## v1.7 Observability Layer (Shipped: 2026-04-18)
 
 **Phases completed:** 5 phases, 7 plans, 7 tasks
