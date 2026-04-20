@@ -1,123 +1,109 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-status: executing
-stopped_at: Phase 33 context gathered
-last_updated: "2026-04-20T04:57:18.180Z"
+milestone: v1.9
+milestone_name: Benchmark & Hardening
+status: defining
+stopped_at: Not started
+last_updated: "2026-04-20"
 last_activity: 2026-04-20
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 6
-  completed_plans: 6
-  percent: 100
+  total_phases: 6
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-18)
+See: .planning/PROJECT.md (updated 2026-04-20)
 
 **Core value:** High-performance Rust Kafka client with idiomatic Python API
-**Current focus:** Phase 36 — Error Handling
+**Current focus:** Phase 38 — Result Models & Measurement Infrastructure
 
 ## Current Position
 
-Milestone: v1.8 (in progress)
-Phase: 37
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-04-20
+Milestone: v1.9 (in progress)
+Phase: Not started
+Plan: —
+Status: Roadmap created, ready for Phase 38 planning
+Last activity: 2026-04-20 — Milestone v1.9 roadmap created
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 24
-- Total milestones: 7 (including v1.7)
+- Total phases completed: 37
+- Total milestones: 8 (including v1.9 in progress)
 
 **By Milestone:**
 
-| Milestone | Phases | Plans |
-|-----------|--------|-------|
-| v1.0 | 5 | — |
-| v1.1 | 3 | — |
-| v1.2 | 2 | — |
-| v1.3 | 6 | — |
-| v1.4 | 4 | 8 |
-| v1.5 | 3 | 5 |
-| v1.6 | 4 | 7 |
-| v1.7 | 5 | 7 |
-| v1.8 | 5 | TBD |
+| Milestone | Phases | Status |
+|-----------|--------|--------|
+| v1.0 | 5 | Shipped 2026-04-15 |
+| v1.1 | 3 | Shipped 2026-04-16 |
+| v1.2 | 2 | Shipped 2026-04-16 |
+| v1.3 | 6 | Shipped 2026-04-17 |
+| v1.4 | 4 | Shipped 2026-04-17 |
+| v1.5 | 3 | Shipped 2026-04-18 |
+| v1.6 | 4 | Shipped 2026-04-18 |
+| v1.7 | 5 | Shipped 2026-04-18 |
+| v1.8 | 5 | Shipped 2026-04-20 |
+| v1.9 | 6 | In progress |
 
 ## Accumulated Context
 
 ### Decisions
 
-- **v1.4**: RetryCoordinator 3-tuple (should_retry, should_dlq, delay)
-- **v1.4**: has_terminal per-partition gating (once terminal, blocks commit for that partition)
-- **v1.4**: fire-and-forget DLQ produce (bounded mpsc channel ~100)
-- **v1.4**: configurable DLQ topic naming (dlq_topic_prefix, default "dlq.")
-- **v1.5**: Routing precedence: pattern -> header -> key -> python -> default
-- **v1.5**: Rust is fast-path owner; Python routing is optional fallback only
-- **v1.5**: RoutingDecision: Route(handler_id), Drop, Reject(reason), Defer
-- **v1.5**: No payload copies in routing path
-- **v1.5**: RoutingChain chains routers with precedence enforcement
-- **v1.6**: HandlerMode enum (SingleSync, SingleAsync, BatchSync, BatchAsync) as gating abstraction
-- **v1.6**: BatchAccumulator with fixed-window timeout (not sliding)
-- **v1.6**: pyo3-async-runtimes into_future for async Python handlers
-- **v1.6**: BatchExecutionResult::AllSuccess/AllFailure/PartialFailure
-- **v1.6**: GIL never held across Rust-side orchestration
-- **v1.7**: metrics crate facade (zero-cost when no recorder installed)
-- **v1.7**: KafPy never calls set_global_default() or set_global_recorder()
-- **v1.7**: MetricLabels enforces lexicographically sorted label ordering
-- **v1.7**: Span context propagates via W3C tracecontext headers at spawn_blocking boundary
-- **v1.7**: Kafka metrics polling-based (not per-message) to avoid hot-path overhead
-- **v1.7**: RuntimeSnapshot zero-cost when not called (no atomic updates on hot path)
-- **v1.8**: Instance-based config (no globals) — all runtime state in instance objects
-- **v1.8**: Decorator + explicit handler registration as primary Python API patterns
-- **v1.8**: Rust internals private by default; only explicitly pub items accessible from Python
-- **v1.8**: kafpy.exceptions as sole public import path for exceptions
-- **v1.8**: Dual Consumer + KafPy wrapper: consumer = kafpy.Consumer(config) → Rust Consumer; app = kafpy.KafPy(consumer) → Python wrapper
-- **v1.8**: Callable type detection via inspect.iscoroutinefunction/isasyncgenfunction/isgeneratorfunction
-- **v1.8**: HandlerContext/HandlerResult stub frozen dataclasses (full impl in Phase 36+)
+- **v1.9**: Benchmark infrastructure in src/benchmark/ as pub(crate) module, invisible to Python API
+- **v1.9**: All measurements aggregate off hot path via background task (no per-message overhead)
+- **v1.9**: Measurement via existing MetricsSink facade (zero-cost when not recording)
+- **v1.9**: Warmup phase exclusion: first N messages (default 1000) excluded from latency/throughput metrics
+- **v1.9**: t-digest histogram for accurate high-percentile computation at scale
+- **v1.9**: Scenario trait + BenchmarkResult model separation (Scenario defines WHAT, result reporters handle HOW)
+- **v1.9**: HardeningRunner.run_all() validates production readiness post-benchmark
+
+### Phase Dependencies
+
+```
+Phase 38 (Result Models + Measurement)
+    ├── Phase 39 (Scenario Definitions) depends on Phase 38
+    ├── Phase 40 (Benchmark Runner) depends on Phase 38 + Phase 39
+    ├── Phase 41 (Result Output) depends on Phase 38
+    └── Phase 42 (Hardening Checks) depends on Phase 38
+Phase 43 (Python API + Docs) depends on Phase 40 + Phase 41 + Phase 42
+```
 
 ### Pending Todos
 
-- Phase 33: Public API Conventions — COMPLETE
-- Phase 34: Configuration Model — COMPLETE
-- Phase 35: Handler Registration & Runtime — COMPLETE
-- Phase 36: Error Handling — NEXT
-- Phase 37: Documentation & Packaging — TBD
+- Phase 38: Result Models & Measurement Infrastructure — NEXT
+- Phase 39: Scenario Definitions — After Phase 38
+- Phase 40: Benchmark Runner — After Phase 39
+- Phase 41: Result Output — After Phase 38
+- Phase 42: Hardening Checks — After Phase 38
+- Phase 43: Python API & Methodology Docs — After Phases 40-42
 
 ### Blockers/Concerns
 
-- PyO3 linking error in test binary (pre-existing)
+- None identified yet
 
 ## Deferred Items
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| Advanced rebalance | Rebalance interfaces | Deferred | v1.0 |
-| Schema registry | Avro support | Deferred | v1.0 |
-| Content-based routing | Payload parsing | Python fallback only | v1.5 |
-| Multi-handler fan-out | Single handler per message | Deferred | v1.5 |
-| PartialFailure tracking | Per-message outcome within batch | v1.7+ | v1.6 |
-| Cross-partition batch | Batch aggregation across partitions | Deferred | v1.6 |
-| Sliding window batch | Sliding window batch timeout | Deferred | v1.6 |
-| Async Python event loop | Event loop lifecycle management | Deferred | v1.6 |
-| Streaming batch | Batch handlers as generators | Deferred | v1.6 |
-| OTLP exporter sink | Full OTLP protocol metrics export | v1.8+ | v1.7 |
-| Alerting rules library | Pre-built Prometheus alerting rules | v1.8+ | v1.7 |
-| Trace context into Kafka headers | Cross-service correlation | v1.8+ | v1.7 |
-| Python-side tracing | Python tracing conventions differ | v1.8+ | v1.7 |
-| Sliding window latency | p50, p95, p99 percentiles | v1.8+ | v1.7 |
-| Public API stability | No underscore-prefixed items in __all__ | v1.8 | v1.8 |
+| Cross-partition aggregation benchmarks | Future milestone | Deferred | v1.9 |
+| Sliding window latency percentiles | Future milestone | Deferred | v1.9 |
+| CI regression detection | Future milestone | Deferred | v1.9 |
+| Alerting rules library export | Future milestone | Deferred | v1.9 |
+| Embedded Kafka testcontainers | Assumes existing Kafka cluster | Out of Scope | v1.9 |
+| Schema registry benchmarks | Deferred to schema support milestone | Out of Scope | v1.9 |
+| Multi-cluster federation benchmarks | Single cluster only | Out of Scope | v1.9 |
+| Custom metric exporters beyond JSON/CSV | Prometheus already available | Out of Scope | v1.9 |
 
 ## Session Continuity
 
-Last session: 2026-04-20T02:24:30.499Z
-Stopped at: Phase 33 context gathered
-Resume file: .planning/phases/33-public-api-conventions/33-CONTEXT.md
+Last session: 2026-04-20T14:30:00.000Z
+Stopped at: Milestone v1.9 roadmap created
+Resume file: .planning/milestones/v1.9-ROADMAP.md

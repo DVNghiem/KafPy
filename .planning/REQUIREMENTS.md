@@ -103,58 +103,58 @@
 
 | REQ-ID | Phase | Description |
 |--------|-------|-------------|
-| SCEN-01 | TBD | |
-| SCEN-02 | TBD | |
-| SCEN-03 | TBD | |
-| SCEN-04 | TBD | |
-| SCEN-05 | TBD | |
-| SCEN-06 | TBD | |
-| SCEN-07 | TBD | |
-| SCEN-08 | TBD | |
-| RES-01 | TBD | |
-| RES-02 | TBD | |
-| RES-03 | TBD | |
-| RES-04 | TBD | |
-| RES-05 | TBD | |
-| RES-06 | TBD | |
-| MEAS-01 | TBD | |
-| MEAS-02 | TBD | |
-| MEAS-03 | TBD | |
-| MEAS-04 | TBD | |
-| MEAS-05 | TBD | |
-| MEAS-06 | TBD | |
-| MEAS-07 | TBD | |
-| MEAS-08 | TBD | |
-| RUN-01 | TBD | |
-| RUN-02 | TBD | |
-| RUN-03 | TBD | |
-| RUN-04 | TBD | |
-| RUN-05 | TBD | |
-| RUN-06 | TBD | |
-| RUN-07 | TBD | |
-| OUT-01 | TBD | |
-| OUT-02 | TBD | |
-| OUT-03 | TBD | |
-| OUT-04 | TBD | |
-| OUT-05 | TBD | |
-| OUT-06 | TBD | |
-| HARD-01 | TBD | |
-| HARD-02 | TBD | |
-| HARD-03 | TBD | |
-| HARD-04 | TBD | |
-| HARD-05 | TBD | |
-| HARD-06 | TBD | |
-| HARD-07 | TBD | |
-| HARD-08 | TBD | |
-| PY-01 | TBD | |
-| PY-02 | TBD | |
-| PY-03 | TBD | |
-| PY-04 | TBD | |
-| PY-05 | TBD | |
-| NOTE-01 | TBD | |
-| NOTE-02 | TBD | |
-| NOTE-03 | TBD | |
-| NOTE-04 | TBD | |
+| SCEN-01 | Phase 39 | Scenario trait defines WHAT to benchmark |
+| SCEN-02 | Phase 39 | WorkloadProfile enum variants |
+| SCEN-03 | Phase 39 | ThroughputScenario implementation |
+| SCEN-04 | Phase 39 | LatencyScenario implementation |
+| SCEN-05 | Phase 39 | FailureScenario implementation |
+| SCEN-06 | Phase 39 | BatchVsSyncScenario implementation |
+| SCEN-07 | Phase 39 | AsyncVsSyncScenario implementation |
+| SCEN-08 | Phase 39 | Scenarios configurable via Python dict or TOML |
+| RES-01 | Phase 38 | BenchmarkResult struct fields |
+| RES-02 | Phase 38 | AggregatedResult for multi-run aggregation |
+| RES-03 | Phase 38 | PercentileBuckets struct |
+| RES-04 | Phase 38 | ScenarioConfig in result for reproducibility |
+| RES-05 | Phase 38 | serde Serialize/Deserialize on result types |
+| RES-06 | Phase 38 | CsvSerializable trait for tabular output |
+| MEAS-01 | Phase 38 | MeasurementStats struct |
+| MEAS-02 | Phase 38 | HistogramRecorder t-digest implementation |
+| MEAS-03 | Phase 38 | LatencyTimer using Instant |
+| MEAS-04 | Phase 38 | ThroughputMeter tracking |
+| MEAS-05 | Phase 38 | MemorySnapshot using RuntimeSnapshot |
+| MEAS-06 | Phase 38 | Measurement code off hot path |
+| MEAS-07 | Phase 38 | Warmup phase exclusion |
+| MEAS-08 | Phase 38 | MetricLabels reuse from observability |
+| RUN-01 | Phase 40 | BenchmarkRunner orchestrator |
+| RUN-02 | Phase 40 | run_scenario entry point |
+| RUN-03 | Phase 40 | MetricsSink acceptance |
+| RUN-04 | Phase 40 | BenchmarkContext passed to scenario |
+| RUN-05 | Phase 40 | Graceful termination |
+| RUN-06 | Phase 40 | BenchmarkRunner is Send + Sync |
+| RUN-07 | Phase 40 | Python CLI entry point |
+| OUT-01 | Phase 41 | JSON output file naming |
+| OUT-02 | Phase 41 | CSV output file |
+| OUT-03 | Phase 41 | BenchmarkReport markdown summary |
+| OUT-04 | Phase 41 | compare() function |
+| OUT-05 | Phase 41 | Output path configurable |
+| OUT-06 | Phase 41 | Machine-readable diff output |
+| HARD-01 | Phase 42 | HardeningCheck enum |
+| HARD-02 | Phase 42 | ValidationResult struct |
+| HARD-03 | Phase 42 | HardeningRunner::run_all() |
+| HARD-04 | Phase 42 | Backpressure threshold validation |
+| HARD-05 | Phase 42 | Memory leak check |
+| HARD-06 | Phase 42 | Graceful shutdown check |
+| HARD-07 | Phase 42 | DLQ drain check |
+| HARD-08 | Phase 42 | Retry budget check |
+| PY-01 | Phase 43 | kafpy.benchmark module public API |
+| PY-02 | Phase 43 | ScenarioConfig dataclass |
+| PY-03 | Phase 43 | BenchmarkReport dataclass |
+| PY-04 | Phase 43 | Result types frozen after construction |
+| PY-05 | Phase 43 | kafpy.benchmark __all__ |
+| NOTE-01 | Phase 43 | BENCHMARK-METHODOLOGY.md |
+| NOTE-02 | Phase 43 | TUNING.md |
+| NOTE-03 | Phase 43 | Methodology doc coverage |
+| NOTE-04 | Phase 43 | Assumptions documented |
 
 ---
 
