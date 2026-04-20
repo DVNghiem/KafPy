@@ -1,555 +1,496 @@
-# Architecture Research: KafPy Observability Layer
+# Architecture Research: Benchmark & Hardening Integration
 
-**Domain:** Rust/PyO3 Kafka Consumer Observability Integration
-**Researched:** 2026-04-18
+**Project:** KafPy v1.9 Benchmark & Hardening
+**Researched:** 2026-04-20
 **Confidence:** HIGH
 
 ## Executive Summary
 
-KafPy's observability layer integrates three complementary systems: structured logging via the existing `tracing` facade, metrics via the `metrics` crate facade, and OpenTelemetry tracing via `tracing-opentelemetry`. The architecture follows a facade/abstraction pattern so users can wire their own backends. Key integration points are the `worker_loop` (handler invocation), `BatchAccumulator` (batch-level metrics), `ConsumerDispatcher` (Kafka-level metrics), and `QueueManager` (queue introspection).
+The benchmark and hardening system integrates with the existing KafPy Rust architecture through four well-defined interfaces: `MetricsSink` (zero-cost metrics collection), `RuntimeSnapshot` (memory/latency state sampling), `ConsumerRunner` (message source for throughput tests), and the `RetryCoordinator`/`DlqRouter` pair (failure injection for retry/retry tests). Scenario definition is cleanly separated from result reporting via a `Scenario` trait + `BenchmarkResult` model structure. New modules live in `src/benchmark/` as `pub(crate)` internals, invisible to the Python API, with PyO3 bindings exposed only for the runner control plane.
 
-## Existing Architecture
+## Integration Strategy
 
-```
-ConsumerDispatcher
-    └── ConsumerRunner (Kafka stream)
-    └── Dispatcher
-            └── QueueManager (queue_depth, inflight atomics)
-                    └── HandlerEntry { sender, metadata }
-    └── RoutingChain (optional)
+### Guiding Principle: Observe, Don't Contaminate
 
-WorkerPool
-    └── worker_loop / batch_worker_loop
-            └── PythonHandler (invoke_mode dispatch)
-            └── Executor (post-execution policy)
-            └── OffsetCoordinator (ack tracking)
-            └── RetryCoordinator (retry state)
-            └── DlqRouter + SharedDlqProducer
-    └── CancellationToken (shutdown)
-```
+The benchmark system must not alter production code paths. Instead it:
+1. Wraps or observes existing observable surfaces
+2. Injects failures through the same interfaces production code uses (RetryCoordinator, DlqRouter)
+3. Samples state via RuntimeSnapshot without adding overhead to hot paths
 
-**Current logging:** `tracing` facade with `tracing-subscriber` fmt layer. Structured fields via `tracing::info!`, `tracing::warn!`, `tracing::error!` macros scattered throughout `worker_loop`, `ConsumerDispatcher::run`, and `OffsetTracker`.
+This means benchmark code is structurally similar to observability code - it reads from existing instrumentation, it does not add new instrumentation into critical paths.
 
-**Current metrics:** None -- queue depth and inflight tracked via `AtomicUsize` but not exposed as metrics.
+### Existing Observable Surfaces
 
----
+| Surface | What It Provides | Benchmark Use |
+|---------|-----------------|---------------|
+| `MetricsSink` trait | Handler latency histograms, invocation counters, batch size histograms | Record benchmark measurements |
+| `RuntimeSnapshot` | Zero-cost memory/latency snapshots when called | Sample RSS, heap, queue depths at measurement points |
+| `ConsumerRunner` | Message stream from Kafka | Drive throughput/latency benchmarks |
+| `ConsumerDispatcher` | Dispatch cycle with backpressure signals | Measure dispatch overhead, queue depth under load |
+| `RetryCoordinator` | Per-message retry state machine | Trigger retry scenarios, measure retry cost |
+| `DlqRouter` | DLQ routing decisions | Verify DLQ correctness under failure conditions |
+| `WorkerPool` | Python handler invocation | Measure handler throughput per mode |
+| `tracing::Span` | Structured spans with fields | Annotate benchmark phases, propagate context |
 
-## Recommended Observability Architecture
-
-### System Overview
+### Integration Points Summary
 
 ```
-+-------------------------------------------------------------------------+
-|                         KafPy Observability Layer                        |
-+-------------------------------------------------------------------------+
-|                                                                          |
-|  +-------------------------------------------------------------------+  |
-|  |                    Metrics Recorder (Facade)                      |  |
-|  |  +----------+  +----------+  +----------+  +----------+           |  |
-|  |  | Handler  |  |  Batch   |  |  Kafka   |  | Worker   |           |  |
-|  |  | Metrics  |  | Metrics  |  | Metrics  |  |  Pool    |           |  |
-|  |  +----+-----+  +----+-----+  +----+-----+  +----+-----+           |  |
-|  |       |             |             |             |                  |  |
-|  |  +----+-------------+-------------+-------------+----+             |  |
-|  |  |              Metrics Trait Objects                |             |  |
-|  |  |     (Counter, Histogram, Gauge per handler)      |             |  |
-|  |  +----------------------+--------------------------+             |  |
-|  +--------------------------+---------------------------------------+  |
-|                             |                                               |
-|  +--------------------------+---------------------------------------+  |
-|  |         Tracing Layer     |  (tracing + tracing-opentelemetry)   |  |
-|  |  +-----------------------+------------------------+             |  |
-|  |  |              OpenTelemetry Spans                  |             |  |
-|  |  |  per message  |  per handler invoke  |  per batch |             |  |
-|  |  +-------------------------------------------------+             |  |
-|  +-------------------------------------------------------------------+  |
-|                                                                          |
-|  +-------------------------------------------------------------------+  |
-|  |                      Structured Log Sink                            |  |
-|  |         (tracing-subscriber Layer -> user-configured backend)       |  |
-|  +-------------------------------------------------------------------+  |
-|                                                                          |
-+-------------------------------------------------------------------------+
+Benchmark Runner
+    ├── Scenario::execute() -> drives ConsumerRunner + Dispatcher
+    │   ├── uses MetricsSink adapter to record measurements
+    │   ├── uses RuntimeSnapshot::sample() at measurement points
+    │   └── injects failures via RetryCoordinator.record_failure()
+    │
+    ├── Scenario::validate() -> checks hardening requirements
+    │   ├── verifies DlqRouter correctness
+    │   ├── checks RetryCoordinator state
+    │   └── validates queue depth / inflight invariants
+    │
+    └── Results::serialize() -> outputs CSV/JSON via serde
 ```
 
-### Component Responsibilities
+## Module Structure
 
-| Component | Responsibility | Implementation |
-|-----------|----------------|----------------|
-| `Observable` trait | Defines metrics + tracing contract for all instrumented components | New trait in `src/observability/` |
-| `HandlerMetrics` | Per-handler: invocation count, latency histogram, error count, batch size | `metrics` crate counters + histograms |
-| `BatchMetrics` | Per-batch: size distribution, flush reason, accumulation time | `metrics` crate histograms |
-| `KafkaMetrics` | Kafka-level: consumer lag per TP, assignment size, committed vs HW | `rdkafka` stats callback + `metrics` gauges |
-| `WorkerPoolMetrics` | Pool-level: idle/active/busy workers, queue depths | `metrics` gauges |
-| `TracingLayer` | Bridges `tracing` spans to OpenTelemetry via `tracing-opentelemetry` | `tracing_subscriber::Layer` |
-| `MetricsLayer` | Exposes `metrics` recordings via OpenTelemetry Meter | `tracing-opentelemetry::MetricsLayer` |
-| `ObservableDecorator` | Attaches metrics + span context to `ExecutionContext` | New struct wrapping context |
+### New Module: `src/benchmark/`
 
----
+```
+src/benchmark/
+├── mod.rs              # Public exports: Runner, Scenario trait, Result types
+├── scenario.rs         # Scenario trait, WorkloadProfile, HandlerModeProfile
+├── runner.rs           # BenchmarkRunner orchestrator, measurement loop
+├── measurement.rs     # Timer, CounterSnapshot, LatencySnapshot helpers
+├── results.rs          # BenchmarkResult, BenchmarkMetrics, Serializers
+└── validation.rs       # HardeningChecks, ValidationResult, invariants
+```
 
-## New Components
+**Visibility:** `pub(crate)` - internal to the Rust crate, invisible to Python API.
+**Python-facing control plane:** Thin PyO3 bindings in `src/pyconsumer.rs` that delegate to `BenchmarkRunner`.
 
-### 1. `src/observability/mod.rs` -- Observability Module Root
+### Module Responsibilities
 
+| File | Responsibility | Public API |
+|------|---------------|------------|
+| `scenario.rs` | Defines WHAT to test: workload profile, handler modes, failure scenarios | `Scenario` trait, `WorkloadProfile`, `ScenarioConfig` |
+| `runner.rs` | Orchestrates benchmark execution: runs scenario, collects measurements | `BenchmarkRunner::run()`, `BenchmarkRunner::stop()` |
+| `measurement.rs` | HOW to measure: Timer (wall/CPU), CounterSnapshot, LatencySnapshot | `Timer`, `MeasurementCollector` |
+| `results.rs` | WHAT was measured: result models + serialization | `BenchmarkResult`, `BenchmarkMetrics`, `CsvSerializer`, `JsonSerializer` |
+| `validation.rs` | Hardening checks: DLQ correctness, retry behavior, queue invariants | `HardeningCheck`, `ValidationResult` |
+
+### Separation: Scenario vs Result Reporting
+
+**Scenario** (`scenario.rs`) describes test configuration:
 ```rust
-//! Observability facade -- metrics, tracing, and structured logging.
-//!
-//! Provides a pluggable backend architecture:
-//! - Metrics: `metrics` crate facade (noop when no recorder installed)
-//! - Tracing: `tracing` facade + optional OpenTelemetry layer
-//! - Logging: `tracing-subscriber` layered on top of `tracing`
-
-pub mod metrics;
-pub mod tracing;
-pub mod facade;
-```
-
-### 2. `src/observability/metrics.rs` -- Metrics Domain
-
-```rust
-/// Per-handler metric instruments.
-/// All metrics use a "kafpy.handler." prefix with handler_id label.
-pub struct HandlerMetrics {
-    /// Number of handler invocations (success + error separately).
-    pub invocations: Counter,
-    /// Latency from message dispatch to execution complete.
-    pub latency_ms: Histogram,
-    /// Batch sizes observed at invocation time.
-    pub batch_size: Histogram,
-    /// Current inflight messages for this handler (gauge).
-    pub inflight: Gauge,
-    /// Queue depth at dispatch time.
-    pub queue_depth: Gauge,
-}
-
-/// Kafka-level metrics.
-/// Prefix: "kafpy.kafka."
-pub struct KafkaMetrics {
-    /// Consumer lag per topic-partition (high_watermark - committed_offset).
-    pub consumer_lag: IntGauge,
-    /// Number of assigned partitions.
-    pub assignment_size: Gauge,
-    /// Committed offset per topic-partition.
-    pub committed_offset: IntGauge,
-}
-
-/// Worker pool metrics.
-/// Prefix: "kafpy.pool."
-pub struct WorkerPoolMetrics {
-    pub idle_workers: Gauge,
-    pub active_workers: Gauge,
-    pub busy_workers: Gauge,
+pub trait Scenario: Send + Sync {
+    fn name(&self) -> &str;
+    fn workload(&self) -> &WorkloadProfile;
+    fn handler_mode(&self) -> HandlerModeProfile;
+    fn failure_scenario(&self) -> Option<&FailureScenario>;
+    async fn execute(&self, runner: &BenchmarkRunner) -> ScenarioOutcome;
+    fn validate(&self, outcome: &ScenarioOutcome) -> ValidationResult;
 }
 ```
 
-**Integration:** `HandlerMetrics` is created per `handler_id` via `Arc<MetricsGuard>` stored in `ExecutionContext`. The guard holds weak references; actual recording happens only if a global recorder is installed (facade pattern).
-
-### 3. `src/observability/tracing.rs` -- OpenTelemetry Tracing Integration
-
+**Result Model** (`results.rs`) captures measurements:
 ```rust
-/// Initializes OpenTelemetry tracing with OTLP exporter.
-/// Call once at module init, before creating any consumers.
-pub fn init_otel_tracing(service_name: &str, endpoint: &str) -> Result<(), ObservabilityError> {
-    // 1. Build OTLP exporter (grpc-tonic)
-    // 2. Create SdkTracerProvider with batch processor
-    // 3. Create tracing-opentelemetry::layer()
-    // 4. Compose with existing tracing_subscriber layers
-    // 5. Set global tracer + propagator
-}
-
-/// Span names follow semantic conventions:
-/// - "kafpy.handler.invoke" -- handler execution
-/// - "kafpy.batch.invoke" -- batch execution
-/// - "kafpy.dlq.produce" -- DLQ produce
-/// - "kafpy.offset.commit" -- offset commit
-/// - "kafpy.dispatcher.dispatch" -- message dispatch
-```
-
-**Key insight:** `tracing-opentelemetry` `MetricsLayer` (with `metrics` feature) automatically converts specially-named `tracing` events to OpenTelemetry metrics. This bridges the `metrics` facade to OpenTelemetry without double-instrumentation.
-
-### 4. `src/observability/runtime.rs` -- Runtime Introspection
-
-```rust
-/// Exposes internal state for debugging/monitoring.
-/// Thread-safe snapshot of WorkerPool + QueueManager + OffsetTracker state.
-pub struct RuntimeSnapshot {
-    pub workers: Vec<WorkerState>,  // idle / active / busy
-    pub handlers: Vec<HandlerState>, // queue_depth, inflight, capacity
-    pub partitions: Vec<PartitionState>, // committed_offset, pending, failed
-}
-
-/// Python-callable via PyO3 so users can inspect state from Python.
-pub fn get_runtime_snapshot() -> Py<PyDict>;
-```
-
----
-
-## Modified Components
-
-### 1. `ExecutionContext` (in `src/python/context.rs`)
-
-**Change:** Add optional metrics guard and span context.
-
-```rust
-pub struct ExecutionContext {
-    pub topic: String,
-    pub partition: i32,
-    pub offset: i64,
-    pub worker_id: usize,
-    // NEW:
-    pub metrics: Option<Arc<HandlerMetrics>>,
-    pub span: Option<Span>,
+pub struct BenchmarkResult {
+    pub scenario_name: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub duration_secs: f64,
+    pub throughput: ThroughputMetrics,
+    pub latency: LatencyMetrics,
+    pub memory: MemoryMetrics,
+    pub correctness: CorrectnessMetrics,
 }
 ```
 
-**Rationale:** `ExecutionContext` already flows through `worker_loop` and `batch_worker_loop`. Attaching metrics here means every handler invocation automatically gets instrumentation without changing call signatures.
+This separation ensures:
+- Scenario authors define WHAT to test without knowing HOW results are formatted
+- Result reporters can output CSV, JSON, or custom formats without knowing scenario internals
+- Different scenarios produce comparable metrics through the shared `BenchmarkResult` structure
 
-### 2. `worker_loop` (in `src/worker_pool/mod.rs`)
+## Measurement Boundaries
 
-**Change:** Record metrics at key points. Wrap handler invocation in a span.
+### Measurement Points
 
+```
+Benchmark Run
+├── setup phase          -> configure consumer, handlers, scenario
+├── warmup phase         -> run N messages without measuring (establish steady state)
+├── measurement phase    -> run N messages, record measurements
+│   ├── message dispatch -> Timer.start() at dispatch, Timer.end() at ack
+│   ├── handler invoke  -> recorded via MetricsSink facade (existing HandlerMetrics)
+│   ├── queue depth     -> sampled via QueueManager::snapshot() every interval
+│   └── memory/RSS      -> sampled via RuntimeSnapshot::sample() every interval
+├── teardown phase       -> drain pending, commit offsets, shutdown
+└── report phase         -> aggregate measurements, serialize
+```
+
+### Measurement Collectors
+
+**Timer** - wall-clock and CPU time for benchmark phases:
 ```rust
-async fn worker_loop(...) {
-    // At message pickup:
-    let span = tracer.span_builder("kafpy.handler.invoke")
-        .with_attribute("handler_id", handler_id.clone())
-        .with_attribute("topic", msg.topic.clone())
-        .with_attribute("partition", msg.partition)
-        .start(&tracer);
-
-    let result = handler.invoke_mode(&ctx, msg.clone()).instrument(span).await;
-
-    // After execution, record metrics:
-    metrics.latency_ms.record(elapsed_ms as f64, &[
-        KeyValue::new("handler_id", handler_id.clone()),
-        KeyValue::new("result", result.variant_name()),
-    ]);
-    metrics.invocations.increment(&[
-        KeyValue::new("handler_id", handler_id.clone()),
-        KeyValue::new("result", result.variant_name()),
-    ]);
+pub struct Timer {
+    start: Instant,
+    cpu_start: std::time::ProcessTime,
+}
+impl Timer {
+    pub fn elapsed(&self) -> Duration;
+    pub fn cpu_elapsed(&self) -> Duration;
 }
 ```
 
-**Rationale:** `worker_loop` is the hot path. Instrumenting here covers all 4 `HandlerMode` variants since `invoke_mode` is the single dispatch point.
-
-### 3. `batch_worker_loop` (in `src/worker_pool/mod.rs`)
-
-**Change:** Record batch-size histogram and flush-reason counter.
-
+**LatencyCollector** - p50/p95/p99/p999 latency from handler invocations:
 ```rust
-// At flush:
-metrics.batch_size.record(batch.len() as f64, &[
-    KeyValue::new("handler_id", handler_id.clone()),
-    KeyValue::new("flush_reason", flush_reason.as_str()), // "size" | "deadline" | "shutdown"
-]);
-
-// Track accumulation time per partition:
-let accumulation_time_ms = deadline.map(|d| d.elapsed().as_millis() as f64).unwrap_or(0.0);
-metrics.accumulation_ms.record(accumulation_time_ms, &[
-    KeyValue::new("handler_id", handler_id.clone()),
-]);
-```
-
-### 4. `ConsumerDispatcher::run` (in `src/dispatcher/mod.rs`)
-
-**Change:** Add dispatch span with topic/partition/offset attributes.
-
-```rust
-// Around each send_with_policy call:
-let span = tracer.span_builder("kafpy.dispatcher.dispatch")
-    .with_attribute("topic", msg.topic.clone())
-    .with_attribute("partition", msg.partition)
-    .with_attribute("offset", msg.offset)
-    .start(&tracer);
-
-let (outcome, pause_signal) = self.dispatcher.send_with_policy_and_signal(msg, policy)
-    .instrument(span).await;
-```
-
-### 5. `QueueManager` (in `src/dispatcher/queue_manager.rs`)
-
-**Change:** Expose queue depth and inflight as `metrics::Gauge` readings via periodic sweep.
-
-```rust
-impl QueueManager {
-    /// Returns snapshot of all handler queue states for metrics recording.
-    pub fn queue_snapshots(&self) -> Vec<HandlerQueueSnapshot> {
-        let guard = self.handlers.lock();
-        guard.iter().map(|(id, entry)| HandlerQueueSnapshot {
-            handler_id: id.clone(),
-            queue_depth: entry.metadata.get_queue_depth(),
-            inflight: entry.metadata.get_inflight(),
-            capacity: entry.metadata.capacity,
-        }).collect()
-    }
+pub struct LatencyCollector {
+    samples: Vec<Duration>,
+}
+impl LatencyCollector {
+    pub fn record(&mut self, duration: Duration);
+    pub fn percentiles(&self) -> LatencyPercentiles;
 }
 ```
 
-**Rationale:** `QueueManager` already has all this data in atomic counters. Exposing snapshots enables a periodic metrics recorder (e.g., every 10s) to update gauges without adding polling infrastructure to the hot path.
-
-### 6. `OffsetTracker` (in `src/coordinator/offset_tracker.rs`)
-
-**Change:** Expose committed offset + consumer lag via `KafkaMetrics`.
-
+**ThroughputCollector** - messages/second measured over sliding window:
 ```rust
-/// Periodic snapshot for metrics -- called by a background task.
-/// Returns (topic, partition, committed_offset, high_watermark).
-pub fn offset_snapshots(&self) -> Vec<PartitionOffsetSnapshot> {
-    // Iterate all partitions, look up high watermark from runner
+pub struct ThroughputCollector {
+    window_duration: Duration,
+    window_messages: AtomicUsize,
+    total_messages: AtomicUsize,
 }
 ```
 
-**Note:** High watermark requires `ConsumerRunner::position()` or stats callback. `OffsetTracker` already holds `Arc<ConsumerRunner>` for commits; expose it for lag calculation.
+### Memory Measurement
 
-### 7. `PythonHandler` (in `src/python/handler.rs`)
-
-**Change:** No structural change. The `invoke_mode` method is already the instrumented entry point from `worker_loop`. Metrics recording happens at the `worker_loop` call site, not inside `PythonHandler` itself.
-
-### 8. `lib.rs` / `logging.rs`
-
-**Change:** Refactor `Logger::init()` to accept an optional `ObservabilityConfig` that configures OTLP, Prometheus, or user-provided exporters.
-
+Uses `RuntimeSnapshot` (existing infrastructure):
 ```rust
-/// Observability configuration -- passed to Logger::init() or a new Observability::init()
-pub struct ObservabilityConfig {
-    pub service_name: String,
-    pub otlp_endpoint: Option<String>,      // OTLP gRPC endpoint
-    pub prometheus_port: Option<u16>,        // Prometheus scrape endpoint
-    pub log_format: LogFormat,              // json / pretty / simple
-    pub log_level: String,                   // env-filter string
-}
+let snapshot = RuntimeSnapshot::sample();
+// snapshot.rss_bytes, snapshot.heap_bytes, snapshot.active_tasks
+// Zero-cost when not called - only measures when explicitly sampled
 ```
 
----
+### Queue Depth Measurement
 
-## Data Flow Changes
+Uses `QueueManager` (existing infrastructure):
+```rust
+// QueueManager already tracks queue_depth and inflight per handler via atomics
+// Benchmark runner samples these atomics every N ms during measurement phase
+```
 
-### Message Flow with Observability
+## Component Boundaries
+
+### BenchmarkRunner
+
+Owns benchmark orchestration. Coordinates:
+- ConsumerRunner (message source)
+- Dispatcher (dispatch measurement)
+- WorkerPool (handler invocation measurement via MetricsSink)
+- RetryCoordinator (failure injection)
+- DlqRouter (correctness verification)
+
+**Key invariant:** BenchmarkRunner does NOT import or modify any production module's internal state. It only:
+1. Calls public APIs on existing modules
+2. Reads from MetricsSink facade
+3. Calls RuntimeSnapshot::sample() at measurement points
+
+### Scenario Executor
+
+Runs inside the benchmark loop. Each scenario:
+1. Configures consumer + handlers from WorkloadProfile
+2. Injects failures if FailureScenario is set
+3. Collects measurements via MeasurementCollector
+4. Returns ScenarioOutcome (raw data)
+
+### Result Aggregator
+
+Aggregates ScenarioOutcome into BenchmarkResult:
+- Computes percentiles, means, stddev
+- Produces CSV/JSON output
+- Runs HardeningChecks against ScenarioOutcome
+
+## Data Flow
 
 ```
-Kafka Message
+ScenarioConfig
     |
     v
-ConsumerDispatcher::run()
-    | span: "kafpy.dispatcher.dispatch" {topic, partition, offset}
-    v
-Dispatcher::send_with_policy()
-    | record: queue_depth gauge (snapshot)
-    v
-QueueManager -> HandlerChannel
+BenchmarkRunner::run(config)
     |
-    v
-worker_loop picks up message
-    | span: "kafpy.handler.invoke" {handler_id, topic, partition}
-    | record: latency_ms start_time
-    v
-PythonHandler::invoke_mode()
+    ├── ConsumerRunner::new()  --> Kafka
+    |                                |
+    ├── Dispatcher::new()            |
+    |    |                           |
+    |    └── register_handler() --> HandlerQueue
     |
-    +-- SingleSync -> invoke() -> spawn_blocking -> Python callback
-    +-- SingleAsync -> invoke_async() -> PythonAsyncFuture
-    +-- BatchSync -> invoke_batch() -> spawn_blocking
-    +-- BatchAsync -> invoke_batch_async() -> PythonAsyncFuture
+    ├── WorkerPool::new() --> PythonHandler (via spawn_blocking)
     |
-    v
-ExecutionResult
-    | span: set_status(Ok | Error)
-    | record: latency_ms (stopwatch), invocations counter, batch_size histogram
-    v
-Executor::execute() -> OffsetCoordinator::record_ack / record_failure
+    └── RetryCoordinator::new() --> DlqRouter
+                                         |
+                                         v
+Scenario::execute() --> measurement_loop
     |
-    v
-OffsetTracker
-    | span: "kafpy.offset.commit" (at commit time)
-    | record: committed_offset gauge, consumer_lag gauge
-    v
-QueueManager::ack()
-    | record: inflight gauge (decrement)
-    v
-DLQ routing if needed
-    | span: "kafpy.dlq.produce"
+    ├── every N ms: RuntimeSnapshot::sample() -> memory
+    ├── every N ms: QueueManager::snapshot()  -> queue_depth
+    ├── per message: Timer.start() / Timer.end() -> latency
+    └── per ack: MetricsSink facade -> throughput
+                          |
+                          v
+              MeasurementCollector (in-memory)
+                          |
+                          v
+              Aggregator::aggregate() -> BenchmarkResult
+                          |
+                          v
+              Serializer::to_csv() / Serializer::to_json()
 ```
 
----
+## Integration with Existing Modules
 
-## Architectural Patterns
+### ConsumerRunner - Message Source
 
-### Pattern 1: Metrics Facade with Lazy Initialization
-
-**What:** Use the `metrics` crate facade. Instrumented code records through `metrics::counter!()`, `metrics::histogram!()` macros. Actual recording happens only if a global recorder is installed.
-
-**When:** For library code like KafPy where you don't know what backend the user will choose.
-
-**Trade-offs:**
-- Pro: Zero overhead when no recorder (noop implementation is atomic load + compare)
-- Pro: Users choose their own backend (Prometheus, OpenTelemetry, Datadog, etc.)
-- Con: Labels (handler_id, topic, partition) must be provided at every call site
-
-**Example:**
+Benchmark wraps `ConsumerRunner` to drive messages through the system:
 ```rust
-// In worker_loop:
-metrics::histogram!("kafpy.handler.latency_ms", elapsed_ms as f64, "handler_id" => handler_id.clone());
+// Benchmark creates a ConsumerRunner from scenario config
+let runner = ConsumerRunner::new(consumer_config)?;
 
-// At startup (user code):
-metrics::_recorder(MetricsRecorder::OpenTelemetry(meter));
+// Benchmark drives the stream, measuring dispatch latency
+let stream = runner.stream();
+while let Some(msg) = stream.next().await {
+    let timer = Timer::start();
+    // dispatch to handler...
+    timer.record_dispatch_end();
+}
 ```
 
-### Pattern 2: Tracing Span Hierarchy
+**No modifications to `ConsumerRunner`** - benchmark uses existing public API.
 
-**What:** Parent span = dispatch, child span = handler invocation, nested child = Python callback. `tracing`'s `instrument()` combinator propagates context automatically.
+### Dispatcher - Dispatch Measurement
 
-**When:** For correlating metrics across async boundaries.
-
-**Trade-offs:**
-- Pro: Automatic span propagation through `spawn_blocking` and `tokio::select!`
-- Pro: `tracing-opentelemetry` `MetricsLayer` converts events to metrics without double instrumentation
-- Con: Span lifetime must outlive the async operation -- use `Span::current()` for spawned tasks
-
-### Pattern 3: Snapshot-Based Polling for Gauge Metrics
-
-**What:** Gauge metrics (queue depth, inflight, worker state) are recorded by periodically sweeping the source of truth and recording the snapshot. Not updated inline on every operation.
-
-**When:** For high-frequency counters that don't need per-event granularity (queue depths, pool state).
-
-**Trade-offs:**
-- Pro: No performance impact on hot path (atomics already exist, no extra work)
-- Con: Slight staleness (10s polling interval typical)
-- Con: Requires background task or periodic callback
-
-**Example:**
+Benchmark measures dispatch overhead via `DispatchOutcome`:
 ```rust
-// Background task every 10s:
-tokio::spawn(async {
-    let mut interval = tokio::time::interval(Duration::from_secs(10));
-    loop {
-        interval.tick().await;
-        for snapshot in queue_manager.queue_snapshots() {
-            GAUGE_QUEUE_DEPTH.set(snapshot.queue_depth as f64, &["handler_id" => snapshot.handler_id]);
+let outcome = dispatcher.send(message)?;
+benchmark.record_dispatch(
+    outcome.offset,
+    outcome.queue_depth,
+    timer.elapsed(),
+);
+```
+
+Backpressure events are tracked:
+```rust
+if outcome.is_err() {
+    // BackpressureEvent recorded
+}
+```
+
+### MetricsSink - Handler Measurement
+
+Benchmark uses the existing `MetricsSink` facade:
+```rust
+// Benchmark provides a MetricsSink implementation that records to local collector
+struct BenchmarkMetricsSink {
+    latency_collector: Arc<Mutex<LatencyCollector>>,
+}
+
+impl MetricsSink for BenchmarkMetricsSink {
+    fn record_histogram(&self, name: &str, value: f64, labels: &[(&str, &str)]) {
+        if name == "kafpy.handler.latency" {
+            self.latency_collector.lock().unwrap().record(Duration::from_secs_f64(value));
         }
     }
-});
+    // ...
+}
 ```
 
-### Pattern 4: OpenTelemetry Layer as Backend Bridge
+This is the same interface production Prometheus adapter uses - benchmark uses a different implementation that records locally instead of exporting to Prometheus.
 
-**What:** `tracing-opentelemetry::layer()` + `SdkTracerProvider` + OTLP exporter bridges `tracing` spans to any OTLP-compatible backend (Jaeger, Tempo, CloudWatch, etc.). `MetricsLayer` bridges `tracing` events named `otel.*` to OpenTelemetry metrics.
+### RuntimeSnapshot - Memory Sampling
 
-**When:** For zero-vendor lock-in observability with a standard protocol.
+```rust
+// At each sampling interval during measurement phase
+let mem_snap = RuntimeSnapshot::sample();
+benchmark.record_memory(mem_snap.rss_bytes, mem_snap.heap_bytes);
+```
 
-**Trade-offs:**
-- Pro: Industry standard, many compatible backends
-- Pro: Single instrumented codebase produces traces + metrics + logs
-- Con: OTLP overhead (batch processing mitigates this)
-- Con: Semantic conventions require discipline
+Zero-cost when not called - only samples when benchmark explicitly requests it.
 
----
+### RetryCoordinator - Failure Injection
 
-## Anti-Patterns to Avoid
+Benchmark injects failures to test retry behavior:
+```rust
+// In failure scenario, after handler executes, simulate a failure
+let reason = FailureReason::Retryable(RetryableKind::NetworkTimeout);
+let (should_retry, should_dlq, delay) = retry_coordinator.record_failure(
+    topic, partition, offset, &reason,
+);
+```
 
-### Anti-Pattern 1: Double Instrumentation
+This is the same `RetryCoordinator` used in production - benchmark triggers the same state machine.
 
-**What:** Instrumenting the same operation both with `metrics` counters AND with `tracing` events that carry metric names for `MetricsLayer`.
+### DlqRouter - Correctness Verification
 
-**Why:** Causes inflated counts or confusing data when both paths are active.
+After benchmark run, verify DLQ correctness:
+```rust
+let check = HardeningCheck::dlq_routing_correctness(
+    &dlq_router,
+    expected_routing,
+    actual_routing,
+);
+```
 
-**Do this instead:** Choose one -- use `metrics` facade for numerical data, use `tracing` for categorical events (error types, retry reasons, routing decisions). `MetricsLayer` converts the latter to metrics automatically if you follow naming conventions.
+### WorkerPool - Throughput Per Handler Mode
 
-### Anti-Pattern 2: Blocking in Span Enter/Exit
+Benchmark exercises all 4 `HandlerMode` variants:
+- `SingleSync` - one message, spawn_blocking
+- `SingleAsync` - one message, into_future
+- `BatchSync` - fixed-window batch, spawn_blocking
+- `BatchAsync` - fixed-window batch, into_future
 
-**What:** Performing I/O or expensive computation inside `Span::enter()` guards.
+Throughput is measured as messages/second per mode.
 
-**Why:** `Span::enter()` is synchronous. Blocking there blocks the async executor.
+## New vs Modified
 
-**Do this instead:** Create spans using `tracer.span_builder()` + `.start()` outside the async task. Use `.instrument(future)` to attach the span to an async operation.
+### New Modules
 
-### Anti-Pattern 3: Storing Metric State in Instrumented Components
+| Module | Lines | Purpose |
+|--------|-------|---------|
+| `src/benchmark/` | ~600-800 | All benchmark infrastructure |
 
-**What:** Adding `metrics::Counter` fields directly to `PythonHandler`, `QueueManager`, etc.
+### Modified Modules
 
-**Why:** Pollutes domain structs with observability concerns. Metrics should be external and looked up by ID.
+| Module | Change | Rationale |
+|--------|--------|-----------|
+| `src/lib.rs` | Add `pub(crate) mod benchmark` | Expose benchmark module to internal Rust code |
+| `src/pyconsumer.rs` | Add `BenchmarkRunner` pyclass | Python API for benchmark control |
+| `src/observability/metrics.rs` | Add `BenchmarkMetricsSink` impl | MetricsSink impl for local measurement collection |
 
-**Do this instead:** Use the `metrics` global facade. Components don't know about metrics. Call sites use `metrics::histogram!()` with labels.
-
-### Anti-Pattern 4: Missing Span Context on Spawned Tasks
-
-**What:** Spawning a `tokio::spawn` without attaching the current span context.
-
-**Why:** Child tasks appear as orphan spans in the trace.
-
-**Do this instead:** Use `tracing::TaskContext::current()` or `tracing::future::Instrument::instrument(spawned, Span::current())`.
-
----
+**No production modules modified** - benchmark system uses only public/semi-public interfaces.
 
 ## Build Order
 
-### Phase 1: Metrics Infrastructure (Foundation)
-1. Add `metrics` crate dependency
-2. Create `src/observability/metrics.rs` with `HandlerMetrics`, `KafkaMetrics`, `WorkerPoolMetrics` structs
-3. Add `MetricsGuard` registry that creates instruments lazily per handler_id
-4. Modify `worker_loop` to record `latency_ms` histogram and `invocations` counter at invocation result
-5. Add `QueueManager::queue_snapshots()` for polling-based gauge updates
+### Phase 1: Result Models & Measurement Helpers
 
-**Rationale:** Metrics are the most impactful observability signal. Start here to establish the recording pattern before adding tracing.
+1. `src/benchmark/results.rs` - `BenchmarkResult`, `BenchmarkMetrics`, serialization traits
+2. `src/benchmark/measurement.rs` - `Timer`, `LatencyCollector`, `ThroughputCollector`
+3. `src/benchmark/mod.rs` - module structure
 
-### Phase 2: Tracing Infrastructure
-1. Add `opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp` dependencies
-2. Create `src/observability/tracing.rs` with `init_otel_tracing()` function
-3. Add `tracing-opentelemetry::layer()` to subscriber stack in `Logger::init()`
-4. Wrap `worker_loop` handler invocation in `span.instrument(future)`
-5. Add dispatch span in `ConsumerDispatcher::run()`
+**Rationale:** No dependencies on existing production modules. Pure data structures and math.
 
-**Rationale:** Tracing spans provide correlation context for metrics. The span hierarchy (dispatch -> handler -> offset commit) enables distributed-tracing-style analysis.
+### Phase 2: Scenario Definitions
 
-### Phase 3: Kafka-Level Metrics
-1. Wire `rdkafka` stats callback to `KafkaMetrics` consumer_lag and assignment_size gauges
-2. Add `OffsetTracker::offset_snapshots()` for committed_offset per TP
-3. Implement background polling task (10s interval) to update lag gauges
+4. `src/benchmark/scenario.rs` - `Scenario` trait, `WorkloadProfile`, `ScenarioConfig`
 
-**Rationale:** Consumer lag is the most important Kafka-specific metric. Requires `rdkafka` integration.
+**Depends on:** Phase 1 (uses `BenchmarkResult` for `ScenarioOutcome`)
 
-### Phase 4: Runtime Introspection API
-1. Create `src/observability/runtime.rs` with `RuntimeSnapshot` struct
-2. Add `get_runtime_snapshot()` PyO3 function
-3. Expose worker pool state (idle/active/busy) via `WorkerPoolMetrics`
+### Phase 3: Benchmark Runner Core
 
-**Rationale:** Python users need runtime visibility. PyO3 bridge enables `consumer.runtime_snapshot()` API.
+5. `src/benchmark/runner.rs` - `BenchmarkRunner` orchestrator
 
-### Phase 5: Structured Logging Refinement
-1. Refactor `logging.rs` into `ObservabilityConfig` with OTLP + Prometheus + log format options
-2. Ensure all `tracing::info!` / `warn!` / `error!` calls in hot paths use structured fields
-3. Add `LogFormat::Json` with OTLP-compatible field names
+**Depends on:** Phase 1 + 2, plus existing modules: `ConsumerRunner`, `Dispatcher`, `MetricsSink`, `RuntimeSnapshot`
 
-**Rationale:** Structured logs complement metrics/tracing. Ensure fields are consistent across all three signals.
+### Phase 4: Hardening Validation
 
----
+6. `src/benchmark/validation.rs` - `HardeningCheck`, `ValidationResult`
 
-## Integration Points Summary
+**Depends on:** Phase 1 (uses `BenchmarkResult`)
 
-| Component | What Changes | Metrics Recorded | Tracing Spans |
-|-----------|-------------|------------------|---------------|
-| `ConsumerDispatcher::run` | Dispatch span added | None (Kafka metrics handle this) | `kafpy.dispatcher.dispatch` |
-| `Dispatcher::send_with_policy` | Snapshot recording | `queue_depth` gauge | None |
-| `worker_loop` | Latency + count recording, span wrapping | `latency_ms`, `invocations`, `batch_size` | `kafpy.handler.invoke` |
-| `batch_worker_loop` | Flush reason recording, accumulation time | `batch_size`, flush reason counter, `accumulation_ms` | `kafpy.batch.invoke` |
-| `QueueManager` | `queue_snapshots()` method added | `inflight`, `queue_depth` gauges | None |
-| `OffsetTracker` | `offset_snapshots()` method added | `committed_offset`, `consumer_lag` gauges | `kafpy.offset.commit` |
-| `ExecutionContext` | `metrics: Option<Arc<HandlerMetrics>>` field | Carried through call chain | Span context field |
-| `PythonHandler` | No change (instrumented at call site) | -- | -- |
-| `Logger::init` | Refactored to `ObservabilityConfig` | None | Sets up global tracer |
+### Phase 5: Integration
 
----
+7. `src/lib.rs` - add `pub(crate) mod benchmark`
+8. `src/pyconsumer.rs` - add `BenchmarkRunner` pyclass
+
+**Depends on:** All above phases
+
+## Hardening Validation Design
+
+### Validation Checks
+
+```rust
+pub enum HardeningCheck {
+    DlqRoutingCorrectness,
+    RetryBehaviorMatchesPolicy,
+    QueueDepthInvariant,
+    MemoryGrowthWithinBounds,
+    HandlerLatencySla,
+    NoMessageLoss,
+}
+```
+
+### ValidationResult
+
+```rust
+pub struct ValidationResult {
+    pub checks: Vec<CheckResult>,
+    pub passed: bool,
+    pub summary: String,
+}
+
+pub struct CheckResult {
+    pub check: HardeningCheck,
+    pub passed: bool,
+    pub details: String,
+    pub measured_value: Option<f64>,
+    pub expected_value: Option<f64>,
+}
+```
+
+### DLQ Routing Check
+
+```rust
+// Verify: all terminal failures routed to DLQ, no retryable failures incorrectly DLQ'd
+pub fn check_dlq_routing_correctness(
+    dlq_router: &dyn DlqRouter,
+    expected: &[(topic, partition, offset, FailureReason)],
+    actual: &[(topic, partition, offset)],
+) -> CheckResult
+```
+
+### Queue Depth Invariant
+
+```rust
+// Verify: queue depth never exceeds capacity, inflight never exceeds concurrency limit
+pub fn check_queue_depth_invariant(
+    queue_manager: &QueueManager,
+    capacity_per_topic: &HashMap<String, usize>,
+) -> CheckResult
+```
+
+## Anti-Patterns to Avoid
+
+### No Direct Instrumentation in Hot Paths
+
+**Bad:** Adding benchmark-specific counters inside `Dispatcher::send_with_policy`
+**Why:** Would add atomic increments to every message dispatch in production
+**Good:** Record measurements via existing MetricsSink facade, which already has atomic operations for production metrics
+
+### No Forking or Splicing Production Code
+
+**Bad:** Copy-pasting Dispatcher code into benchmark module and adding measurement code
+**Why:** Diverges from production over time, adds maintenance burden
+**Good:** Use the existing Dispatcher with a benchmark-provided MetricsSink adapter
+
+### No Shared Mutable State Between Benchmark Phases
+
+**Bad:** BenchmarkRunner storing results in a static counter that accumulates across runs
+**Why:** Contamination between scenarios
+**Good:** Each scenario run produces a fresh `BenchmarkResult`, aggregator combines at the end
+
+### No PyO3 Dependency in Benchmark Core
+
+**Bad:** `src/benchmark/runner.rs` importing `pyo3::prelude`
+**Why:** Contaminates pure-Rust benchmark logic with PyO3, complicates testing
+**Good:** `BenchmarkRunner` lives in pure Rust, PyO3 binding in `src/pyconsumer.rs` calls it
+
+## Scalability Considerations
+
+| Concern | At 100 messages | At 1M messages | At 10M messages |
+|---------|-----------------|-----------------|------------------|
+| Memory | All samples in vec | Periodic flush to disk | Streaming serializer, keep summary only |
+| Latency percentiles | Exact (all samples) | T-digest approximation | T-digest with bounded memory |
+| Queue depth sampling | Every message | Every 100ms | Every 1s, trending only |
+| Result file size | <1KB JSON | ~10MB JSON | ~100MB CSV with summary |
 
 ## Sources
 
-- [OpenTelemetry Rust Getting Started](https://opentelemetry.io/docs/languages/rust/getting-started/) -- SDK initialization, tracer provider
-- [OpenTelemetry Rust Exporters](https://opentelemetry.io/docs/languages/rust/exporters/) -- OTLP exporter setup
-- [tracing crate docs](https://docs.rs/tracing/latest/tracing/) -- Span, instrument macro, semantic conventions
-- [tracing-subscriber Layer docs](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/layer/) -- layer composition, filtering
-- [tracing-opentelemetry docs](https://docs.rs/tracing-opentelemetry/latest/tracing_opentelemetry/) -- OpenTelemetryLayer, MetricsLayer
-- [opentelemetry_sdk metrics docs](https://docs.rs/opentelemetry_sdk/latest/opentelemetry_sdk/metrics/) -- Meter, Counter, Histogram, SdkMeterProvider
-- [metrics crate docs](https://docs.rs/metrics/latest/metrics/) -- Counter, Gauge, Histogram, Recorder trait, facade pattern
-
----
-
-*Architecture research for: KafPy Observability Layer*
-*Researched: 2026-04-18*
+- Confluence: KafPy v1.9 milestone definition (internal)
+- Code review: `src/dispatcher/mod.rs`, `src/python/execution_result.rs`, `src/observability/metrics.rs`, `src/consumer/runner.rs`, `src/coordinator/retry_coordinator.rs`
