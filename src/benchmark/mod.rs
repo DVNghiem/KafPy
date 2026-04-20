@@ -14,5 +14,12 @@ pub use measurement::{
 // Re-export MetricLabels from observability for benchmark label construction
 pub use crate::observability::MetricLabels;
 
-// re-export result types andCsvSerializable trait for convenience
+// re-export result types and CsvSerializable trait for convenience
 pub use results::{AggregatedResult, BenchmarkResult, CsvSerializable, PercentileBuckets, ScenarioConfig};
+
+// Scenario definitions — WHAT to benchmark (consumed by BenchmarkRunner in Phase 40)
+pub(crate) mod scenarios;
+
+pub use scenarios::{
+    LatencyScenario, Scenario, ThroughputScenario, WorkloadProfile,
+};

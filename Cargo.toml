@@ -71,6 +71,5 @@ panic = "abort"
 strip = true
 debug = true
 
-[profile.dev]
-opt-level = 0
-debug = true
+[dev-dependencies]
+serde_json = "1.0"
