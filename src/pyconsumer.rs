@@ -1,8 +1,7 @@
 //! Python-facing consumer that delegates to the pure-Rust consumer core.
 //!
 //! Bridges the PyO3 boundary: accepts Python callbacks, delegates message
-//! ingestion to `ConsumerRunner`, converts `OwnedMessage` → `KafkaMessage`,
-//! then dispatches to the Python handler.
+//! ingestion to `RuntimeBuilder`, which assembles the full runtime.
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -10,13 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::config::ConsumerConfig;
-use crate::consumer::{ConsumerConfigBuilder, ConsumerRunner};
-use crate::coordinator::ShutdownCoordinator;
-use crate::dispatcher::ConsumerDispatcher;
-use crate::dlq::{DefaultDlqRouter, DlqRouter, SharedDlqProducer};
-use crate::python::handler::PythonHandler;
-use crate::python::{DefaultExecutor, Executor};
-use crate::worker_pool::WorkerPool;
+use crate::runtime::{Runtime, RuntimeBuilder};
 
 /// Python-callable consumer. Use `add_handler` to register a topic → callback
 /// mapping, then `start()` to begin consumption.
@@ -58,130 +51,11 @@ impl Consumer {
         let shutdown_token = self.shutdown_token.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            // Build pure-Rust config from the PyO3 config fields
-            let rust_config = ConsumerConfigBuilder::new()
-                .brokers(&config.brokers)
-                .group_id(&config.group_id)
-                .topics(config.topics.iter().map(|s| s.as_str()))
-                .auto_offset_reset(match config.auto_offset_reset.as_str() {
-                    "earliest" => crate::consumer::AutoOffsetReset::Earliest,
-                    _ => crate::consumer::AutoOffsetReset::Latest,
-                })
-                .enable_auto_commit(config.enable_auto_commit)
-                .session_timeout(std::time::Duration::from_millis(
-                    config.session_timeout_ms as u64,
-                ))
-                .heartbeat_interval(std::time::Duration::from_millis(
-                    config.heartbeat_interval_ms as u64,
-                ))
-                .max_poll_interval(std::time::Duration::from_millis(
-                    config.max_poll_interval_ms as u64,
-                ))
-                .build()
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-
-            let default_retry_policy = rust_config.default_retry_policy.clone();
-            let runner = ConsumerRunner::new(rust_config.clone(), None)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-
-            // BRIDGE-01 + D-02: Create OffsetTracker and wire ConsumerRunner before pool
-            let runner_arc: std::sync::Arc<ConsumerRunner> = std::sync::Arc::new(runner);
-            let offset_tracker = std::sync::Arc::new(crate::coordinator::OffsetTracker::new());
-            offset_tracker.set_runner(std::sync::Arc::clone(&runner_arc));
-
-            // Create ConsumerDispatcher (owned, not stored in Consumer struct)
-            let dispatcher = ConsumerDispatcher::new((*runner_arc).clone());
-
-            // Collect receivers from all registered handlers
-            let receivers: Vec<_> = {
-                let handlers_guard = handlers.lock().unwrap();
-                handlers_guard
-                    .keys()
-                    .map(|topic| dispatcher.register_handler(topic.clone(), 100, None))
-                    .collect()
-            };
-
-            // Build PythonHandler from the registered callbacks
-            let handler_arc: Arc<PythonHandler> = {
-                let handlers_guard = handlers.lock().unwrap();
-                let first_handler = handlers_guard
-                    .values()
-                    .next()
-                    .expect("at least one handler must be registered");
-                Arc::new(PythonHandler::new(
-                    first_handler.clone(),
-                    Some(default_retry_policy),
-                    crate::python::handler::HandlerMode::SingleSync,
-                    None,
-                ))
-            };
-
-            let executor_arc: Arc<dyn Executor> = Arc::new(DefaultExecutor::default());
-            let queue_manager_arc = dispatcher.queue_manager();
-            let retry_coordinator =
-                std::sync::Arc::new(crate::coordinator::RetryCoordinator::new(&rust_config));
-
-            // Create DLQ producer and router from config
-            let dlq_producer = std::sync::Arc::new(
-                SharedDlqProducer::new(&rust_config).expect("Failed to create DLQ producer"),
-            );
-            let dlq_router: std::sync::Arc<dyn DlqRouter> =
-                std::sync::Arc::new(DefaultDlqRouter::new(rust_config.dlq_topic_prefix.clone()));
-
-            let n_workers = 4; // EXEC-08: configurable
-
-            // LSC-01: Create shutdown coordinator with configured drain timeout
-            let coordinator = std::sync::Arc::new(ShutdownCoordinator::new(rust_config.drain_timeout_secs));
-
-            let pool = WorkerPool::new(
-                n_workers,
-                receivers,
-                handler_arc,
-                executor_arc,
-                queue_manager_arc.clone(),
-                offset_tracker.clone(),
-                retry_coordinator,
-                dlq_producer,
-                dlq_router,
-                shutdown_token.clone(),
-                std::sync::Arc::clone(&coordinator),
-            );
-
-            // OBS-31: Spawn RuntimeSnapshotTask for introspection (global singleton)
-            let _snapshot_task = crate::observability::RuntimeSnapshotTask::spawn(
-                Some(queue_manager_arc.clone()),
-                Some(offset_tracker.clone()),
-                Some(std::sync::Arc::clone(&pool.worker_pool_state)),
-                std::time::Duration::from_secs(10),
-            );
-
-            // BRIDGE-01 + D-02: Create OffsetCommitter and spawn as Tokio task
-            let committer = crate::coordinator::OffsetCommitter::new(
-                std::sync::Arc::clone(&runner_arc),
-                std::sync::Arc::clone(&offset_tracker),
-                crate::coordinator::CommitConfig::default(),
-                std::sync::Arc::clone(&coordinator),
-            );
-            let (tx, rx) =
-                tokio::sync::watch::channel(crate::coordinator::TopicPartition::new("", 0));
-            let committer_handle = tokio::spawn(async move {
-                committer.run(rx).await;
-            });
-            drop(tx);
-
-            // Run dispatcher and pool concurrently
-            let dispatcher_handle = tokio::spawn(async move {
-                dispatcher
-                    .run(&crate::dispatcher::DefaultBackpressurePolicy)
-                    .await;
-            });
-
-            pool.run().await;
-
-            // Keep handles alive until pool completes
-            let _ = dispatcher_handle;
-            let _ = committer_handle;
-
+            let builder = RuntimeBuilder::new(config, handlers, shutdown_token);
+            let runtime = builder.build().await.map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
+            })?;
+            runtime.run().await;
             Ok(())
         })
         .map(|b| b.unbind())
@@ -192,14 +66,6 @@ impl Consumer {
     }
 
     /// Returns the current runtime status as a Python dict.
-    ///
-    /// Contains:
-    /// - worker_states: dict of worker_id -> state dict
-    /// - queue_depths: dict of handler_id -> {queue_depth, inflight}
-    /// - accumulator_info: dict of handler_id -> {total_messages, partitions: {partition -> {message_count, has_deadline, deadline_ms_remaining}}}
-    /// - consumer_lag_summary: {total_lag, per_topic: {topic -> {total_lag, partitions: {partition -> {consumer_lag, committed_offset}}}}
-    ///
-    /// This is a convenience method that calls get_runtime_snapshot().
     pub fn status(&self) -> PyResult<Py<PyAny>> {
         get_runtime_snapshot()
     }
