@@ -83,7 +83,7 @@ fn _kafpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// Returns:
 ///     JSON string with BenchmarkResult fields
 #[pyfunction]
-fn run_scenario_py(py: Python<'_>, scenario_name: &str, config_json: &str) -> PyResult<String> {
+fn run_scenario_py(_py: Python<'_>, scenario_name: &str, config_json: &str) -> PyResult<String> {
     // Deserialize scenario config
     let scenario: Box<dyn benchmark::scenarios::Scenario> = match scenario_name {
         "throughput" => {

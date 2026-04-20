@@ -1,3 +1,3 @@
 pub mod policy;
 
-pub use policy::{RetryPolicy, RetrySchedule};
+pub use policy::RetryPolicy;

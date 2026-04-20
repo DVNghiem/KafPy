@@ -10,7 +10,6 @@ pub mod offset_tracker;
 pub mod retry_coordinator;
 
 pub use commit_task::{CommitConfig, OffsetCommitter, TopicPartition};
-pub use error::CoordinatorError;
 pub use offset_coordinator::OffsetCoordinator;
-pub use offset_tracker::{OffsetTracker, PartitionState};
+pub use offset_tracker::OffsetTracker;
 pub use retry_coordinator::RetryCoordinator;

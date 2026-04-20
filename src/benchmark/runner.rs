@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::benchmark::measurement::{
-    AggregatedStatsSnapshot, BackgroundAggregator, LatencyTimer, ThroughputMeter,
+    AggregatedStatsSnapshot, BackgroundAggregator,
 };
 use crate::benchmark::results::{BenchmarkResult, ScenarioConfig};
 use crate::benchmark::scenarios::Scenario;

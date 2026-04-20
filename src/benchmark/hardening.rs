@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::benchmark::results::{BenchmarkResult, PercentileBuckets, ScenarioConfig};
+use crate::benchmark::results::BenchmarkResult;
 
 // ─── HardeningCheck Enum (HARD-01) ────────────────────────────────────────────
 
@@ -283,6 +283,8 @@ fn check_retry_budget(result: &BenchmarkResult) -> ValidationResult {
 
 #[cfg(test)]
 mod tests {
+    use crate::benchmark::results::{PercentileBuckets, ScenarioConfig};
+
     use super::*;
 
     fn make_result(
