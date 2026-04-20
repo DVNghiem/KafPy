@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use tokio::select;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -17,7 +16,7 @@ use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::python::executor::Executor;
 use crate::python::handler::PythonHandler;
 use crate::worker_pool::batch_loop::batch_worker_loop;
-use crate::worker_pool::worker_loop;
+use crate::worker_pool::worker::worker_loop;
 
 /// WorkerPool — manages N Tokio workers via `JoinSet`.
 ///
@@ -175,9 +174,8 @@ impl WorkerPool {
 mod tests {
     use super::*;
     use crate::coordinator::OffsetCoordinator;
-    use crate::coordinator::RetryCoordinator;
     use crate::dispatcher::queue_manager::QueueManager;
-    use crate::dlq::DefaultDlqRouter;
+    use crate::dlq::router::DefaultDlqRouter;
     use crate::python::DefaultExecutor;
     use pyo3::prelude::*;
     use std::sync::Arc;

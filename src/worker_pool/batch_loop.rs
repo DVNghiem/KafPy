@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use tokio::select;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -20,9 +19,7 @@ use crate::python::context::ExecutionContext;
 use crate::python::execution_result::BatchExecutionResult;
 use crate::python::executor::Executor;
 use crate::python::handler::PythonHandler;
-use crate::worker_pool::handle_execution_failure;
 use crate::worker_pool::state::BatchState;
-use crate::worker_pool::ExecutionAction;
 use crate::worker_pool::HANDLER_METRICS;
 
 /// Flushes a single partition batch through the Python handler.
@@ -30,7 +27,7 @@ use crate::worker_pool::HANDLER_METRICS;
 /// Common helper used by all 6 flush sites in batch_worker_loop:
 /// - deadline expiry, backpressure flush, preemptive flush, max_batch_size flush,
 ///   channel-closed drain, shutdown drain.
-pub async fn flush_partition_batch(
+pub(crate) async fn flush_partition_batch(
     partition: i32,
     batch: Vec<OwnedMessage>,
     handler: Arc<PythonHandler>,
@@ -92,7 +89,7 @@ pub async fn flush_partition_batch(
 /// Per D-01: BatchAccumulator is a dedicated struct (separate from worker_loop).
 /// Per D-02: Fixed-window timer — deadline set on first message, never recalculated.
 /// Per D-04: Inline iteration for batch results in this function.
-pub async fn batch_worker_loop(
+pub(crate) async fn batch_worker_loop(
     mut rx: mpsc::Receiver<OwnedMessage>,
     handler: Arc<PythonHandler>,
     executor: Arc<dyn Executor>,
@@ -293,7 +290,7 @@ pub async fn batch_worker_loop(
 /// Per D-04: Inline iteration in worker_loop.
 /// AllSuccess → record_ack per message individually.
 /// AllFailure → record_failure per message individually (routes to RetryCoordinator).
-pub async fn handle_batch_result_inline(
+pub(crate) async fn handle_batch_result_inline(
     result: BatchExecutionResult,
     batch: Vec<OwnedMessage>,
     topic: &str,

@@ -11,7 +11,6 @@ use crate::coordinator::OffsetCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqRouter, SharedDlqProducer};
-use crate::failure::FailureReason;
 use crate::observability::metrics::MetricLabels;
 use crate::observability::NoopSink;
 use crate::observability::runtime_snapshot::WorkerPoolState;
@@ -34,7 +33,7 @@ use crate::worker_pool::HANDLER_METRICS;
 /// When a message is picked up it is processed before polling again.
 /// `WorkerState` tracks in-flight work — the cancelled branch only fires when
 /// `WorkerState::Idle`, ensuring graceful shutdown waits for in-flight completion (EXEC-12).
-pub async fn worker_loop(
+pub(crate) async fn worker_loop(
     mut rx: mpsc::Receiver<OwnedMessage>,
     handler: Arc<PythonHandler>,
     executor: Arc<dyn Executor>,
@@ -238,10 +237,9 @@ pub async fn worker_loop(
 mod tests {
     use super::*;
     use crate::coordinator::OffsetCoordinator;
-    use crate::coordinator::RetryCoordinator;
     use crate::dispatcher::queue_manager::QueueManager;
     use crate::dispatcher::OwnedMessage;
-    use crate::dlq::DefaultDlqRouter;
+    use crate::dlq::router::DefaultDlqRouter;
     use crate::python::DefaultExecutor;
     use crate::observability::runtime_snapshot::WorkerPoolState;
     use pyo3::prelude::*;

@@ -7,6 +7,3 @@ pub mod commit_task;
 pub mod offset_coordinator;
 pub mod offset_tracker;
 
-pub use commit_task::{CommitConfig, OffsetCommitter, TopicPartition};
-pub use offset_coordinator::OffsetCoordinator;
-pub use offset_tracker::OffsetTracker;

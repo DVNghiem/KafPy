@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::config::ConsumerConfig;
-use crate::runtime::{Runtime, RuntimeBuilder};
+use crate::runtime::RuntimeBuilder;
 
 /// Python-callable consumer. Use `add_handler` to register a topic → callback
 /// mapping, then `start()` to begin consumption.

@@ -4,7 +4,7 @@
 pub(crate) mod results;
 
 // Benchmark infrastructure — measurement types, latency/throughput tracking
-pub(crate) mod output;
+// (output.rs deleted — all items had zero internal references)
 
 // Hardening validation checks (HARD-01 through HARD-08)
 pub(crate) mod hardening;

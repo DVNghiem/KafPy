@@ -1,10 +1,7 @@
 //! WorkerPool — manages N Tokio workers polling handler queues.
 
 use std::sync::Arc;
-use tokio::sync::mpsc;
 use crate::coordinator::RetryCoordinator;
-use crate::coordinator::ShutdownCoordinator;
-use crate::coordinator::OffsetCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
@@ -20,12 +17,6 @@ pub mod batch_loop;
 pub mod pool;
 pub mod state;
 pub mod worker;
-
-pub use accumulator::PerPartitionBuffer;
-pub use batch_loop::{batch_worker_loop, flush_partition_batch, handle_batch_result_inline};
-pub use pool::WorkerPool;
-pub use state::{BatchState, WorkerState};
-pub use worker::worker_loop;
 
 // ─── Execution Action ─────────────────────────────────────────────────────────
 
@@ -43,7 +34,7 @@ pub enum ExecutionAction {
 /// Handles retry/DLQ routing for Error and Rejected execution results.
 /// Called after `offset_coordinator.mark_failed()` has recorded the failure.
 /// Note: `msg` is borrowed, not consumed — caller retains ownership for retry re-enqueue.
-pub async fn handle_execution_failure(
+pub(crate) async fn handle_execution_failure(
     ctx: &ExecutionContext,
     msg: &OwnedMessage,
     reason: &FailureReason,

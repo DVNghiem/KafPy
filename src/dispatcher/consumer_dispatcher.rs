@@ -3,9 +3,9 @@
 //! Owns `ConsumerRunner + Dispatcher` and orchestrates the async message loop.
 
 use crate::consumer::runner::ConsumerRunner;
-use crate::consumer::{ConsumerConfigBuilder, MessageTimestamp, OwnedMessage};
+use crate::consumer::OwnedMessage;
 use crate::dispatcher::backpressure::{
-    BackpressureAction, BackpressurePolicy, DefaultBackpressurePolicy,
+    BackpressureAction, BackpressurePolicy,
 };
 use crate::dispatcher::error::DispatchError;
 use crate::dispatcher::{Dispatcher, DispatchOutcome, QueueManager};
@@ -13,7 +13,6 @@ use crate::observability::tracing::KafpySpanExt;
 use crate::routing::chain::RoutingChain;
 use crate::routing::context::RoutingContext;
 use crate::routing::decision::RoutingDecision;
-use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -311,6 +310,8 @@ impl ConsumerDispatcher {
 
 #[cfg(test)]
 mod tests {
+    use crate::dispatcher::DefaultBackpressurePolicy;
+
     use super::*;
 
     // DISP-17: Owned types - compile-time verification
@@ -414,6 +415,8 @@ mod tests {
 #[cfg(test)]
 impl OwnedMessage {
     pub(crate) fn fake(topic: &str, partition: i32, offset: i64) -> Self {
+        use crate::consumer::MessageTimestamp;
+
         OwnedMessage {
             topic: topic.to_string(),
             partition,

@@ -11,10 +11,9 @@ pub use crate::offset::offset_coordinator::OffsetCoordinator;
 pub use crate::offset::offset_tracker::OffsetTracker;
 
 // Re-export from shutdown/ submodule
-pub use crate::shutdown::{ShutdownCoordinator, ShutdownPhase};
+pub use crate::shutdown::ShutdownCoordinator;
 
 // Re-export from retry/ submodule
-pub use crate::retry::{RetryCoordinator, RetryPolicy, RetryState};
+pub use crate::retry::RetryCoordinator;
 
 // Re-export error types at coordinator/ level for backward compatibility
-pub use thiserror::Error;

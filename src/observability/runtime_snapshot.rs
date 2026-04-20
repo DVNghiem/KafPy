@@ -210,16 +210,6 @@ impl StatusCallbackRegistry {
         let mut guard = self.callbacks.write();
         guard.push(py_callback);
     }
-
-    /// Returns the number of registered callbacks.
-    pub fn len(&self) -> usize {
-        self.callbacks.read().len()
-    }
-
-    /// Returns true if no callbacks are registered.
-    pub fn is_empty(&self) -> bool {
-        self.callbacks.read().is_empty()
-    }
 }
 
 impl Default for StatusCallbackRegistry {

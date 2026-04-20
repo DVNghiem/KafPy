@@ -130,7 +130,7 @@ impl ConsumerRunner {
         if let Some(ref coord) = self.coordinator {
             // LSC-02/03: Begin draining phase FIRST, then signal dispatcher.
             // This prevents circular wait: dispatcher must stop before workers drain.
-            let (dispatcher_cancel, _worker_cancel, _committer_cancel) =
+            let (_dispatcher_cancel, _worker_cancel, _committer_cancel) =
                 coord.begin_draining();
             // Dispatcher cancel is sent to interrupt the dispatcher loop.
             // Worker and committer cancels are passed to their respective owners.

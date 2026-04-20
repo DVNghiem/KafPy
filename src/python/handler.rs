@@ -298,7 +298,7 @@ impl PythonHandler {
     /// GIL release on each poll. The GIL is held only during coroutine.send(None).
     pub async fn invoke_async(
         &self,
-        ctx: &ExecutionContext,
+        _ctx: &ExecutionContext,
         message: OwnedMessage,
     ) -> ExecutionResult {
         let callback = Arc::clone(&self.callback);
@@ -328,7 +328,7 @@ impl PythonHandler {
     /// Returns BatchExecutionResult instead of ExecutionResult.
     pub async fn invoke_batch_async(
         &self,
-        ctx: &ExecutionContext,
+        _ctx: &ExecutionContext,
         messages: Vec<OwnedMessage>,
     ) -> BatchExecutionResult {
         let callback = Arc::clone(&self.callback);

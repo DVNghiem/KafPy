@@ -149,7 +149,7 @@ impl RetryCoordinator {
                 let retry_state = entry.get();
                 if let RetryState::Retrying {
                     attempt,
-                    last_failure,
+                    last_failure: _,
                     first_failure,
                     ..
                 } = retry_state

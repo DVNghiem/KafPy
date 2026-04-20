@@ -18,7 +18,6 @@
 //! 14. Return `Runtime`; caller invokes `runtime.run()`
 
 use crate::config::ConsumerConfig;
-use crate::consumer::config::BuildError;
 use crate::consumer::error::ConsumerError;
 use crate::consumer::{ConsumerConfigBuilder, ConsumerRunner};
 use crate::coordinator::{OffsetCommitter, RetryCoordinator, ShutdownCoordinator, CommitConfig, OffsetTracker};
@@ -30,7 +29,7 @@ use crate::dlq::DlqRouter;
 use crate::observability::runtime_snapshot::RuntimeSnapshotTask;
 use crate::python::handler::PythonHandler;
 use crate::python::{DefaultExecutor, Executor};
-use crate::worker_pool::WorkerPool;
+use crate::worker_pool::pool::WorkerPool;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;

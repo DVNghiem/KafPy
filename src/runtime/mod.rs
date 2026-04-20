@@ -5,4 +5,4 @@
 
 pub mod builder;
 
-pub use builder::{Runtime, RuntimeBuilder};
+pub use builder::RuntimeBuilder;
