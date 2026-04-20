@@ -51,7 +51,8 @@
   2. Handler callable signature is def handler(msg: KafkaMessage, ctx: HandlerContext) -> HandlerResult
   3. Sync, async, and batch handlers all use the same registration API
   4. app.start() begins consuming; app.stop() initiates graceful drain and shutdown; app.run() blocks until stop()
-**Plans**: TBD
+**Plans**: 1 plan
+- [ ] 35-01-PLAN.md — Handler registration and KafPy runtime
 
 ### Phase 36: Error Handling
 **Goal**: Python exception hierarchy (KafPyError base), Rust-to-Python translation at PyO3 boundary, meaningful Python exceptions.
@@ -63,7 +64,8 @@
   3. Rust errors are translated to Python exceptions at the PyO3 boundary with context-preserving messages
   4. KafkaMessage access errors (missing key, wrong type) raise HandlerError, not raw Rust panics
   5. kafpy.exceptions is the only public import path for exceptions; nothing from _kafpy or kafpy._rust leaks
-**Plans**: TBD
+**Plans**: 1 plan
+- [ ] 36-01-PLAN.md — Python exception hierarchy and KafkaMessage access errors
 
 ### Phase 37: Documentation & Packaging
 **Goal**: README/quickstart, docs/ directory, kafpy/guides/ module with markdown guides, full docstrings, maturin/pyproject.toml packaging.
@@ -103,9 +105,9 @@
 | 33. Public API Conventions | v1.8 | 2/2 | Complete | 2026-04-20 |
 | 34. Configuration Model | v1.8 | 1/1 | Complete | 2026-04-20 |
 | 35. Handler Registration & Runtime | v1.8 | 1/1 | Complete | 2026-04-20 |
-| 36. Error Handling | v1.8 | 0/1 | Not started | - |
+| 36. Error Handling | v1.8 | 1/1 | Not started | - |
 | 37. Documentation & Packaging | v1.8 | 0/1 | Not started | - |
 
 ---
 
-*Last updated: 2026-04-20 after Phase 35 complete*
+*Last updated: 2026-04-20 after Phase 36 planning*
