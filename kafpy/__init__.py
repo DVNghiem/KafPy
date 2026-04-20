@@ -38,9 +38,12 @@ try:
         ProducerConfig,
         Producer,
     )
+    from ._kafpy import run_scenario_py, run_hardening_checks_py
 except ModuleNotFoundError:
     ProducerConfig = None  # type: ignore
     Producer = None  # type: ignore
+    run_scenario_py = None  # type: ignore
+    run_hardening_checks_py = None  # type: ignore
 
 # Configuration classes (Python wrapper, Phase 34)
 from .config import (
@@ -73,10 +76,17 @@ from .exceptions import (
     ConfigurationError,
 )
 
+# Benchmark types (Phase 43)
+from .benchmark import BenchmarkResult
+
 __all__ = [
     # Rust extension types (available when _kafpy is built)
     "ProducerConfig",
     "Producer",
+    "run_scenario_py",
+    "run_hardening_checks_py",
+    # Benchmark result types — Phase 43
+    "BenchmarkResult",
     # Configuration types — Phase 34
     "ConsumerConfig",
     "RoutingConfig",
