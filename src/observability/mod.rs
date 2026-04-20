@@ -10,4 +10,5 @@ pub mod tracing;
 
 pub use config::{LogFormat, ObservabilityConfig};
 pub use metrics::MetricLabels;
+pub use metrics::noop_sink::NoopSink;
 pub use runtime_snapshot::RuntimeSnapshotTask;

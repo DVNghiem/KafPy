@@ -22,6 +22,7 @@ use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
 use crate::failure::FailureReason;
 use crate::observability::metrics::{HandlerMetrics, MetricLabels};
+use crate::observability::NoopSink;
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
 use crate::python::context::ExecutionContext;
@@ -31,14 +32,6 @@ use crate::python::handler::PythonHandler;
 
 // Static shared handler metrics recorder (noop until a sink is installed)
 static HANDLER_METRICS: HandlerMetrics = HandlerMetrics;
-
-// Noop sink used when no metrics sink is configured
-struct NoopSink;
-impl crate::observability::metrics::MetricsSink for NoopSink {
-    fn record_counter(&self, _name: &str, _labels: &[(&str, &str)]) {}
-    fn record_histogram(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
-    fn record_gauge(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
-}
 
 // ─── Execution Action ─────────────────────────────────────────────────────────
 

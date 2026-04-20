@@ -85,6 +85,20 @@ impl Default for QueueSnapshot {
     }
 }
 
+/// No-op metrics sink used when no metrics backend is configured.
+///
+/// This is a zero-cost abstraction — all methods are no-ops.
+pub mod noop_sink {
+    /// A metrics sink that discards all recordings.
+    pub struct NoopSink;
+
+    impl super::MetricsSink for NoopSink {
+        fn record_counter(&self, _name: &str, _labels: &[(&str, &str)]) {}
+        fn record_histogram(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
+        fn record_gauge(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
