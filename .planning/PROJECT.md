@@ -70,21 +70,18 @@ Current status (after Milestone v1.4):
 
 **v1.6 shipped:** Phase 24 (HandlerMode foundation), Phase 25 (BatchAccumulator), Phase 26 (Async Python handlers), Phase 27 (Shutdown drain verification). HandlerMode enum with 4 variants, BatchAccumulator with fixed-window flush, PythonAsyncFuture with custom CFFI bridge, all 4 execution modes working.
 
-## Current Milestone: v1.8 Public API Foundation
+## Current Milestone: v1.9 Benchmark & Hardening
 
-**Goal:** Create a clean, Pythonic public API and packaging so developers can install KafPy, register handlers, configure the runtime, and run it ergonomically — without needing to understand Rust internals.
+**Goal:** Production hardening plus credible benchmark infrastructure and reports — measurable, reproducible performance characterization across handler modes, retry scenarios, and workload profiles.
 
 **Target features:**
-- Clean Python-facing framework API (not a thin binding dump)
-- Instance-based configuration (no globals)
-- Decorator + explicit handler registration patterns
-- Consumer app, routing, retry/batch/concurrency config, lifecycle exposed to Python
-- Python-side framework exceptions (meaningful names, not Rust enum variants)
-- Natural Python package structure with stable imports
-- PyO3 + maturin packaging layout
-- README/quickstart foundation with examples
-- Guides module (markdown documentation on API usage)
-- Full docstrings on public API
+- Benchmark scenario definitions and workload profiles
+- Benchmark runner with memory/latency/throughput measurement
+- Result models with CSV/JSON output
+- Hardening/validation checks
+- Example benchmark scripts covering throughput, latency, failure/retry, batch vs sync vs async
+- Machine-readable result files + human-readable summary/report
+- Benchmark methodology note and practical tuning checklist
 
 ## Validated Requirements
 
@@ -147,7 +144,7 @@ Current status (after Milestone v1.4):
 
 ## Active Requirements
 
-- TBD — v1.8 requirements to be defined (Public API Foundation)
+- TBD — v1.9 requirements to be defined (Benchmark & Hardening)
 
 ## Out of Scope
 

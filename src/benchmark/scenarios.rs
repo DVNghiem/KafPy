@@ -141,6 +141,196 @@ impl Scenario for LatencyScenario {
     }
 }
 
+// ─── RetryPolicy (local copy for serde) ───────────────────────────────────────
+
+/// Retry policy configuration for message processing.
+///
+/// # Defaults
+/// - max_attempts: 3
+/// - base_delay: 100ms
+/// - max_delay: 30s
+/// - jitter_factor: 0.1
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RetryPolicy {
+    pub max_attempts: usize,
+    pub base_delay: Duration,
+    pub max_delay: Duration,
+    pub jitter_factor: f64,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(100),
+            max_delay: Duration::from_secs(30),
+            jitter_factor: 0.1,
+        }
+    }
+}
+
+// ─── FailureScenario ────────────────────────────────────────────────────────────
+
+/// Failure scenario exercising retry behavior and DLQ routing (SCEN-05).
+///
+/// Configurable failure injection rate, retry policy, and DLQ topic routing.
+/// Verifies that failed messages route to DLQ after retry budget exhaustion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailureScenario {
+    /// Target topic for the primary message stream.
+    pub target_topic: String,
+    /// DLQ topic for routing failed messages after retry exhaustion.
+    pub dlq_topic: String,
+    /// Percentage of messages to inject failures on (0.0 to 1.0).
+    pub failure_rate: f64,
+    /// Retry policy for transient failures.
+    pub retry_policy: RetryPolicy,
+    pub payload_bytes: usize,
+    /// Total messages to send in this scenario.
+    pub num_messages: usize,
+    /// Warmup messages excluded from failure rate measurement.
+    pub warmup_messages: usize,
+}
+
+impl Scenario for FailureScenario {
+    fn scenario_name(&self) -> &str {
+        "failure"
+    }
+
+    fn build_config(&self) -> ScenarioConfig {
+        ScenarioConfig {
+            scenario_name: self.scenario_name().to_string(),
+            num_messages: self.num_messages,
+            payload_bytes: self.payload_bytes,
+            rate: None,
+            warmup_messages: self.warmup_messages,
+            failure_rate: self.failure_rate,
+        }
+    }
+
+    fn default_warmup_messages(&self) -> usize {
+        self.warmup_messages
+    }
+}
+
+impl Default for FailureScenario {
+    fn default() -> Self {
+        Self {
+            target_topic: "benchmark".to_string(),
+            dlq_topic: "benchmark-dlq".to_string(),
+            failure_rate: 0.05,
+            retry_policy: RetryPolicy::default(),
+            payload_bytes: 256,
+            num_messages: 100_000,
+            warmup_messages: 1000,
+        }
+    }
+}
+
+// ─── BatchVsSyncScenario ───────────────────────────────────────────────────────
+
+/// Batch vs synchronous handler mode comparison scenario (SCEN-06).
+///
+/// Compares BatchSync vs SingleSync handler modes under identical workload
+/// to measure the overhead/benefit of batch processing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchVsSyncScenario {
+    pub target_topic: String,
+    /// Steady message rate (messages/second) for background load.
+    pub messages_per_second: usize,
+    pub payload_bytes: usize,
+    /// Batch size for the BatchSync mode comparison.
+    pub batch_size: usize,
+    /// Total messages to send in the measurement window.
+    pub num_messages: usize,
+    pub warmup_messages: usize,
+}
+
+impl Scenario for BatchVsSyncScenario {
+    fn scenario_name(&self) -> &str {
+        "batch_vs_sync"
+    }
+
+    fn build_config(&self) -> ScenarioConfig {
+        // Include batch_size in name so results distinguish runs
+        ScenarioConfig {
+            scenario_name: format!("{}_{}", self.scenario_name(), self.batch_size),
+            num_messages: self.num_messages,
+            payload_bytes: self.payload_bytes,
+            rate: Some(self.messages_per_second),
+            warmup_messages: self.warmup_messages,
+            failure_rate: 0.0,
+        }
+    }
+
+    fn default_warmup_messages(&self) -> usize {
+        self.warmup_messages
+    }
+}
+
+impl Default for BatchVsSyncScenario {
+    fn default() -> Self {
+        Self {
+            target_topic: "benchmark".to_string(),
+            messages_per_second: 10_000,
+            payload_bytes: 256,
+            batch_size: 100,
+            num_messages: 100_000,
+            warmup_messages: 1000,
+        }
+    }
+}
+
+// ─── AsyncVsSyncScenario ────────────────────────────────────────────────────────
+
+/// Async vs synchronous handler mode comparison scenario (SCEN-07).
+///
+/// Compares SingleAsync vs SingleSync handler modes under identical workload
+/// to measure the overhead/benefit of async processing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsyncVsSyncScenario {
+    pub target_topic: String,
+    /// Steady message rate (messages/second) for background load.
+    pub messages_per_second: usize,
+    pub payload_bytes: usize,
+    /// Total messages to send in the measurement window.
+    pub num_messages: usize,
+    pub warmup_messages: usize,
+}
+
+impl Scenario for AsyncVsSyncScenario {
+    fn scenario_name(&self) -> &str {
+        "async_vs_sync"
+    }
+
+    fn build_config(&self) -> ScenarioConfig {
+        ScenarioConfig {
+            scenario_name: self.scenario_name().to_string(),
+            num_messages: self.num_messages,
+            payload_bytes: self.payload_bytes,
+            rate: Some(self.messages_per_second),
+            warmup_messages: self.warmup_messages,
+            failure_rate: 0.0,
+        }
+    }
+
+    fn default_warmup_messages(&self) -> usize {
+        self.warmup_messages
+    }
+}
+
+impl Default for AsyncVsSyncScenario {
+    fn default() -> Self {
+        Self {
+            target_topic: "benchmark".to_string(),
+            messages_per_second: 10_000,
+            payload_bytes: 256,
+            num_messages: 100_000,
+            warmup_messages: 1000,
+        }
+    }
+}
+
 // ─── Scenario Configurations for common use cases ───────────────────────────────
 
 impl Default for ThroughputScenario {

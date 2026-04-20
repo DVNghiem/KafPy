@@ -6,6 +6,7 @@ version = 4
 name = "KafPy"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-stream",
  "async-trait",
  "chrono",
@@ -26,6 +27,7 @@ dependencies = [
  "rdkafka",
  "regex",
  "serde",
+ "serde_json",
  "tdigest",
  "thiserror 2.0.17",
  "tokio",
