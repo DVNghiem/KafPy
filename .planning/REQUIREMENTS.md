@@ -1,161 +1,127 @@
-# Requirements: KafPy v1.9 — Benchmark & Hardening
+# Requirements: KafPy v2.0
 
-**Milestone:** v1.9
-**Goal:** Production hardening plus credible benchmark infrastructure and reports — measurable, reproducible performance characterization across handler modes, retry scenarios, and workload profiles.
+**Defined:** 2026-04-20
+**Core Value:** High-performance Rust Kafka client with idiomatic Python API
 
----
+## v1 Requirements
 
-## Scenario Definitions (SCEN-##)
+### Duplication Elimination (DUP)
 
-- [ ] **SCEN-01**: `Scenario` trait defines WHAT to benchmark: target topic, message rate, payload size, duration, warmup messages.
-- [ ] **SCEN-02**: `WorkloadProfile` enum variants: `ThroughputFocused`, `LatencyFocused`, `FailureFocused`, `BatchComparison`, `HandlerModeComparison`.
-- [ ] **SCEN-03**: `ThroughputScenario`: configurable messages_per_second, payload_bytes, num_messages or duration.
-- [ ] **SCEN-04**: `LatencyScenario`: single-message latency measurement under steady-state load.
-- [ ] **SCEN-05**: `FailureScenario`: configurable failure rate (%), retry behavior, DLQ routing exercised.
-- [ ] **SCEN-06**: `BatchVsSyncScenario`: compares `BatchSync` vs `SingleSync` handler modes under identical workload.
-- [ ] **SCEN-07**: `AsyncVsSyncScenario`: compares `SingleAsync` vs `SingleSync` under identical workload.
-- [ ] **SCEN-08**: All scenarios are configurable via Python dict or TOML file; new scenarios addable without touching runner core.
+- [ ] **DUP-01**: Extract `handle_execution_failure()` helper to reduce error/DLQ branch duplication in worker_pool
+- [ ] **DUP-02**: Extract `message_to_pydict()` helper to eliminate copied Python conversion logic
+- [ ] **DUP-03**: Extract `flush_partition_batch()` helper to consolidate batch flush boilerplate (6 repetitions)
+- [ ] **DUP-04**: Verify NoopSink duplication between worker_pool and observability — consolidate if redundant
 
-## Result Models (RES-##)
+### Module Split — worker_pool/ (SPLIT-A)
 
-- [ ] **RES-01**: `BenchmarkResult` struct captures per-run measurements: total_messages, duration_ms, throughput_msg_s, latency_p50_ms, latency_p95_ms, latency_p99_ms, error_rate, memory_delta_bytes.
-- [ ] **RES-02**: `AggregatedResult` for multi-run aggregation: mean, stddev, min, max across runs.
-- [ ] **RES-03**: `PercentileBuckets` struct with configurable percentiles (default: p50, p95, p99, p999).
-- [ ] **RES-04**: `ScenarioConfig` echoes the scenario parameters back in the result for reproducibility.
-- [ ] **RES-05**: All result types implement `Serialize`/`Deserialize` via `serde` for JSON output.
-- [ ] **RES-06**: `CsvSerializable` trait for tabular output; `BenchmarkResult` and `AggregatedResult` both implement it.
+- [ ] **SPLIT-A-01**: Extract `PartitionAccumulator` from worker_pool/mod.rs into new `batch/` module
+- [ ] **SPLIT-A-02**: Extract `batch_worker_loop()` to `batch.rs` in worker_pool
+- [ ] **SPLIT-A-03**: Extract `worker_loop()` to `worker.rs` in worker_pool
+- [ ] **SPLIT-A-04**: Extract `WorkerPool` struct to `pool.rs` in worker_pool
+- [ ] **SPLIT-A-05**: Rename `PartitionAccumulator` to clarify its general-purpose nature
+- [ ] **SPLIT-A-06**: Move `BatchAccumulator` to `python/batch.rs` (handler-mode specific)
 
-## Measurement Infrastructure (MEAS-##)
+### Module Split — dispatcher/ + runtime/ (SPLIT-B)
 
-- [ ] **MEAS-01**: `MeasurementStats` struct: counter, sum, sum_squared, min, max, count — for computing mean/variance/percentiles online.
-- [ ] **MEAS-02**: `HistogramRecorder` using t-digest algorithm for accurate high-percentile computation at scale.
-- [ ] **MEAS-03**: `LatencyTimer` scoped timer using `Instant` — records nanosecond precision latency samples.
-- [ ] **MEAS-04**: `ThroughputMeter` — tracks messages/bytes count and elapsed time; computes rate on demand.
-- [ ] **MEAS-05**: `MemorySnapshot` using `RuntimeSnapshot` — heap_allocated delta between two snapshots.
-- [ ] **MEAS-06**: All measurement code is off the hot path — aggregated via background task, not per-message.
-- [ ] **MEAS-07**: Warmup phase: first N messages (configurable, default 1000) are excluded from latency/throughput metrics.
-- [ ] **MEAS-08**: `MetricLabels` from existing observability subsystem reused for all benchmark metric labels.
+- [ ] **SPLIT-B-01**: Extract `ConsumerDispatcher` from dispatcher/mod.rs to own file
+- [ ] **SPLIT-B-02**: Extract `RuntimeBuilder` from pyconsumer.rs to new `runtime/` module
+- [ ] **SPLIT-B-03**: Verify PyO3 integration with new runtime/ builder pattern
+- [ ] **SPLIT-B-04**: Ensure runtime assembly order preserved (config → tracker → dispatcher → handler → worker → committer)
 
-## Benchmark Runner (RUN-##)
+### State Machine Extraction (STATE)
 
-- [ ] **RUN-01**: `BenchmarkRunner` orchestrates: scenario setup, warmup, measurement window, teardown.
-- [ ] **RUN-02**: `run_scenario(scenario: Scenario) -> BenchmarkResult` is the primary entry point.
-- [ ] **RUN-03**: Runner accepts a `MetricsSink` (existing interface) for metric emission; benchmark has its own sink for self-measurement.
-- [ ] **RUN-04**: `BenchmarkContext` passed to scenario: provides message generator, config access, result writer.
-- [ ] **RUN-05**: Graceful termination: runner drains inflight messages and commits offsets before shutting down.
-- [ ] **RUN-06**: `BenchmarkRunner` is `Send + Sync` so it can be used from Python async context via PyO3.
-- [ ] **RUN-07**: Python CLI entry point: `python -m kafpy.benchmark run --scenario throughput --output ./results`.
+- [ ] **STATE-01**: Replace `Option<OwnedMessage>` implicit state in worker_loop with explicit `WorkerState` enum
+- [ ] **STATE-02**: Replace `bool` backpressure flag in batch_worker_loop with explicit `BatchState` enum
+- [ ] **STATE-03**: Replace `bool`-like `ShutdownPhase` struct with explicit `ShutdownState` enum (follows PartitionState pattern)
+- [ ] **STATE-04**: Replace `bool`-like RetryCoordinator state with explicit `RetryState` enum
+- [ ] **STATE-05**: Verify all state enum variants have exhaustive match arms (no wildcard `_`)
 
-## Result Output (OUT-##)
+### Module Split — coordinator/ (SPLIT-C)
 
-- [ ] **OUT-01**: JSON output: one file per run, named `bench-{scenario}-{timestamp}.json`.
-- [ ] **OUT-02**: CSV output: `bench-{scenario}-{timestamp}.csv` with one row per measurement interval.
-- [ ] **OUT-03**: `BenchmarkReport` human-readable summary: Markdown table with scenario name, key metrics, comparison vs baseline (if baseline file present).
-- [ ] **OUT-04**: `compare(base: &BenchmarkResult, current: &BenchmarkResult) -> ComparisonReport` — shows delta %, highlights regressions.
-- [ ] **OUT-05**: Report output path configurable; defaults to `./benchmark_results/`.
-- [ ] **OUT-06**: Machine-readable diff output: `bench-diff-{scenario}-{timestamp}.json` with before/after values and delta.
+- [ ] **SPLIT-C-01**: Extract `OffsetTracker` + `OffsetCommitter` from coordinator/ to new `offset/` module
+- [ ] **SPLIT-C-02**: Extract `ShutdownCoordinator` from coordinator/ to new `shutdown/` module
+- [ ] **SPLIT-C-03**: Move `RetryCoordinator` from coordinator/ to existing `retry/` module (colocates with RetryPolicy)
+- [ ] **SPLIT-C-04**: Update all import paths after module moves
+- [ ] **SPLIT-C-05**: Verify offset commit semantics unchanged after split (highest-contiguous-offset, has_terminal gating)
 
-## Hardening Checks (HARD-##)
+### Type Safety (TYPES)
 
-- [ ] **HARD-01**: `HardeningCheck` enum with variants: `BackpressureThreshold`, `MemoryLeakCheck`, `GracefulShutdownCheck`, `DlqDrainCheck`, `RetryBudgetCheck`.
-- [ ] **HARD-02**: `ValidationResult` struct: check name, passed (bool), details (string), suggestions (Vec<String>).
-- [ ] **HARD-03**: `HardeningRunner::run_all() -> Vec<ValidationResult>` — runs all checks and returns results.
-- [ ] **HARD-04**: Backpressure threshold validation: consumer honors queue_depth limits without message loss under saturated load.
-- [ ] **HARD-05**: Memory leak check: no significant heap growth (> 1MB delta) over sustained 10M message run.
-- [ ] **HARD-06**: Graceful shutdown check: pending messages processed and offsets committed before exit on SIGINT.
-- [ ] **HARD-07**: DLQ drain check: all failed-messages delivered to DLQ topic after graceful shutdown.
-- [ ] **HARD-08**: Retry budget check: messages exhaust retry budget and route to DLQ (not infinite retry loop).
+- [ ] **TYPES-01**: Create `HandlerId` newtype wrapper (`struct HandlerId(String)`) replacing `String` type alias
+- [ ] **TYPES-02**: Verify `HandlerId` vs topic distinction — if always equal, consider removing newtype complexity
+- [ ] **TYPES-03**: Audit `RoutingContext` and all dispatch paths to use `HandlerId` type
+- [ ] **TYPES-04**: Consolidate error types — unified error module replacing scattered `error.rs` / `errors.rs`
+- [ ] **TYPES-05**: Verify Send+Sync guarantees after all refactoring via compile-time assertions
 
-## Python API Surface (PY-##)
+### Code Quality Gates (GATES)
 
-- [ ] **PY-01**: `kafpy.benchmark` module exposes: `run_scenario`, `BenchmarkResult`, `ScenarioConfig`, `BenchmarkReport`, `run_hardening_checks`.
-- [ ] **PY-02**: `ScenarioConfig` dataclass (Python): `scenario_type`, `num_messages`, `payload_bytes`, `rate`, `warmup_messages`, `failure_rate`.
-- [ ] **PY-03**: `BenchmarkReport` dataclass (Python): scenario name, metrics dict, passed checks, suggestions list.
-- [ ] **PY-04**: All benchmark result types frozen after construction; no mutation after result is written.
-- [ ] **PY-05**: `kafpy.benchmark` has its own `__all__` listing only intended public API.
+- [ ] **GATES-01**: Run `cargo clippy --all-targets` with `cognitive_complexity` and `type_complexity` lints — baseline before refactor
+- [ ] **GATES-02**: Run `cargo test --lib` — all tests pass after each phase
+- [ ] **GATES-03**: Run benchmark baseline — no regression after refactor
+- [ ] **GATES-04**: Run `cargo geiger` — unsafe code usage isolated and minimal
+- [ ] **GATES-05**: Verify no exported API changes (PyO3 boundary stable)
 
-## Benchmark Methodology Notes (NOTE-##)
+## v2 Requirements
 
-- [ ] **NOTE-01**: `BENCHMARK-METHODOLOGY.md` at repo root explaining: what is measured, how P50/P95/P99 are computed, assumptions and limitations.
-- [ ] **NOTE-02**: Tuning checklist: `TUNING.md` with practical guidance on queue_depth, concurrent_handlers, batch_size, timeout settings based on benchmark observations.
-- [ ] **NOTE-03**: Methodology doc covers: warmup exclusion, confidence intervals (when N runs > 1), reproducibility requirements (isolated Kafka, fixed partition count).
-- [ ] **NOTE-04**: Assumptions documented: Kafka broker under test, network latency contribution, payload size impact on results.
+### Structural Cleanup
 
----
-
-## Future Requirements (Deferred)
-
-- Cross-partition aggregation benchmarks (v1.10+)
-- Sliding window latency percentiles (p50/p95/p99/p999 in real-time) (v1.10+)
-- CI regression detection with baseline comparison (v1.10+)
-- Alerting rules library export from benchmark data (v1.10+)
+- **ARCH-01**: Evaluate `WorkerPoolState` / `WorkerState` location — define in worker_pool/state.rs with re-exports
+- **ARCH-02**: Evaluate `RuntimeSnapshotTask` location — runtime/ vs observability/
+- **ARCH-03**: Move `failure/tests.rs` to `tests/` at crate root or inline as `#[cfg(test)]` blocks
 
 ## Out of Scope
 
-- Embedded Kafka (testcontainers) provisioning — benchmark assumes existing Kafka cluster
-- Schema registry benchmarks (Avro/Protobuf) — deferred to schema registry support milestone
-- Multi-cluster federation benchmarks — single cluster only
-- Custom metric exporters beyond Prometheus-compatible (JSON/CSV only for v1.9)
-
----
+| Feature | Reason |
+|---------|--------|
+| Inter-module boundary changes | Module boundaries are well-designed; refactoring is intra-module |
+| PyO3 boundary changes | GIL boundary discipline is correct; no changes needed |
+| Behavioral changes | Refactor preserves behavior; no new features |
+| Performance optimization | Focus is code quality, not performance; benchmarks confirm no regression |
+| New public API surface | Public API is stable; no additions in v2.0 |
 
 ## Traceability
 
-| REQ-ID | Phase | Description |
-|--------|-------|-------------|
-| SCEN-01 | Phase 39 | Scenario trait defines WHAT to benchmark |
-| SCEN-02 | Phase 39 | WorkloadProfile enum variants |
-| SCEN-03 | Phase 39 | ThroughputScenario implementation |
-| SCEN-04 | Phase 39 | LatencyScenario implementation |
-| SCEN-05 | Phase 39 | FailureScenario implementation |
-| SCEN-06 | Phase 39 | BatchVsSyncScenario implementation |
-| SCEN-07 | Phase 39 | AsyncVsSyncScenario implementation |
-| SCEN-08 | Phase 39 | Scenarios configurable via Python dict or TOML |
-| RES-01 | Phase 38 | BenchmarkResult struct fields |
-| RES-02 | Phase 38 | AggregatedResult for multi-run aggregation |
-| RES-03 | Phase 38 | PercentileBuckets struct |
-| RES-04 | Phase 38 | ScenarioConfig in result for reproducibility |
-| RES-05 | Phase 38 | serde Serialize/Deserialize on result types |
-| RES-06 | Phase 38 | CsvSerializable trait for tabular output |
-| MEAS-01 | Phase 38 | MeasurementStats struct |
-| MEAS-02 | Phase 38 | HistogramRecorder t-digest implementation |
-| MEAS-03 | Phase 38 | LatencyTimer using Instant |
-| MEAS-04 | Phase 38 | ThroughputMeter tracking |
-| MEAS-05 | Phase 38 | MemorySnapshot using RuntimeSnapshot |
-| MEAS-06 | Phase 38 | Measurement code off hot path |
-| MEAS-07 | Phase 38 | Warmup phase exclusion |
-| MEAS-08 | Phase 38 | MetricLabels reuse from observability |
-| RUN-01 | Phase 40 | BenchmarkRunner orchestrator |
-| RUN-02 | Phase 40 | run_scenario entry point |
-| RUN-03 | Phase 40 | MetricsSink acceptance |
-| RUN-04 | Phase 40 | BenchmarkContext passed to scenario |
-| RUN-05 | Phase 40 | Graceful termination |
-| RUN-06 | Phase 40 | BenchmarkRunner is Send + Sync |
-| RUN-07 | Phase 40 | Python CLI entry point |
-| OUT-01 | Phase 41 | JSON output file naming |
-| OUT-02 | Phase 41 | CSV output file |
-| OUT-03 | Phase 41 | BenchmarkReport markdown summary |
-| OUT-04 | Phase 41 | compare() function |
-| OUT-05 | Phase 41 | Output path configurable |
-| OUT-06 | Phase 41 | Machine-readable diff output |
-| HARD-01 | Phase 42 | HardeningCheck enum |
-| HARD-02 | Phase 42 | ValidationResult struct |
-| HARD-03 | Phase 42 | HardeningRunner::run_all() |
-| HARD-04 | Phase 42 | Backpressure threshold validation |
-| HARD-05 | Phase 42 | Memory leak check |
-| HARD-06 | Phase 42 | Graceful shutdown check |
-| HARD-07 | Phase 42 | DLQ drain check |
-| HARD-08 | Phase 42 | Retry budget check |
-| PY-01 | Phase 43 | kafpy.benchmark module public API |
-| PY-02 | Phase 43 | ScenarioConfig dataclass |
-| PY-03 | Phase 43 | BenchmarkReport dataclass |
-| PY-04 | Phase 43 | Result types frozen after construction |
-| PY-05 | Phase 43 | kafpy.benchmark __all__ |
-| NOTE-01 | Phase 43 | BENCHMARK-METHODOLOGY.md |
-| NOTE-02 | Phase 43 | TUNING.md |
-| NOTE-03 | Phase 43 | Methodology doc coverage |
-| NOTE-04 | Phase 43 | Assumptions documented |
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| DUP-01 | Phase 1 | Pending |
+| DUP-02 | Phase 1 | Pending |
+| DUP-03 | Phase 1 | Pending |
+| DUP-04 | Phase 1 | Pending |
+| SPLIT-A-01 | Phase 2 | Pending |
+| SPLIT-A-02 | Phase 2 | Pending |
+| SPLIT-A-03 | Phase 2 | Pending |
+| SPLIT-A-04 | Phase 2 | Pending |
+| SPLIT-A-05 | Phase 2 | Pending |
+| SPLIT-A-06 | Phase 2 | Pending |
+| SPLIT-B-01 | Phase 3 | Pending |
+| SPLIT-B-02 | Phase 3 | Pending |
+| SPLIT-B-03 | Phase 3 | Pending |
+| SPLIT-B-04 | Phase 3 | Pending |
+| STATE-01 | Phase 4 | Pending |
+| STATE-02 | Phase 4 | Pending |
+| STATE-03 | Phase 4 | Pending |
+| STATE-04 | Phase 4 | Pending |
+| STATE-05 | Phase 4 | Pending |
+| SPLIT-C-01 | Phase 5 | Pending |
+| SPLIT-C-02 | Phase 5 | Pending |
+| SPLIT-C-03 | Phase 5 | Pending |
+| SPLIT-C-04 | Phase 5 | Pending |
+| SPLIT-C-05 | Phase 5 | Pending |
+| TYPES-01 | Phase 6 | Pending |
+| TYPES-02 | Phase 6 | Pending |
+| TYPES-03 | Phase 6 | Pending |
+| TYPES-04 | Phase 6 | Pending |
+| TYPES-05 | Phase 6 | Pending |
+| GATES-01 | All phases | Pending |
+| GATES-02 | All phases | Pending |
+| GATES-03 | All phases | Pending |
+| GATES-04 | All phases | Pending |
+| GATES-05 | All phases | Pending |
+
+**Coverage:**
+- v1 requirements: 31 total
+- Mapped to phases: 31
+- Unmapped: 0 ✓
 
 ---
-
-*Generated: 2026-04-20 — v1.9 Benchmark & Hardening*
+*Requirements defined: 2026-04-20*
+*Last updated: 2026-04-20 after v2.0 research synthesis*
