@@ -39,7 +39,8 @@
   2. RoutingConfig accepts routing_mode and fallback_handler; BatchConfig accepts max_batch_size and max_batch_timeout_ms
   3. RetryConfig and ConcurrencyConfig are immutable with max_attempts/base_delay/max_delay/jitter_factor and num_workers respectively
   4. ConsumerConfig is passed to KafPy constructor; per-handler config passed at registration time
-**Plans**: TBD
+**Plans**: 1 plan
+- [ ] 34-01-PLAN.md — Configuration model with 5 frozen dataclasses
 
 ### Phase 35: Handler Registration & Runtime
 **Goal**: Decorator-based and explicit handler registration, KafkaMessage/HandlerContext/HandlerResult types, KafPy runtime with start/stop/run lifecycle.
@@ -100,11 +101,11 @@
 | 31. Runtime Introspection | v1.7 | 1/1 | Complete | 2026-04-18 |
 | 32. Structured Logging | v1.7 | 1/1 | Complete | 2026-04-18 |
 | 33. Public API Conventions | v1.8 | 2/2 | Complete | 2026-04-20 |
-| 34. Configuration Model | v1.8 | 0/1 | Not started | - |
+| 34. Configuration Model | v1.8 | 1/1 | Planned | - |
 | 35. Handler Registration & Runtime | v1.8 | 0/1 | Not started | - |
 | 36. Error Handling | v1.8 | 0/1 | Not started | - |
 | 37. Documentation & Packaging | v1.8 | 0/1 | Not started | - |
 
 ---
 
-*Last updated: 2026-04-20 after v1.8 roadmap defined*
+*Last updated: 2026-04-20 after Phase 34 plan created*
