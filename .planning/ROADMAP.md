@@ -10,7 +10,7 @@
 - [x] **v1.5 Extensible Routing** — Phases 21-23 (shipped 2026-04-18)
 - [x] **v1.6 Execution Modes** — Phases 24-27 (shipped 2026-04-18)
 - [x] **v1.7 Observability Layer** — Phases 28-32 (shipped 2026-04-18)
-- [ ] **v1.8 Public API Foundation** — Phases 33-37 (not started)
+- [ ] **v1.8 Public API Foundation** — Phases 33-37 (in progress)
 
 ---
 
@@ -26,7 +26,9 @@
   3. Rust internals are private; only explicitly marked `pub` items are accessible
   4. Every public Python module defines `__all__` listing only intended public names
   5. No underscore-prefixed names in `__all__`, no raw Rust struct names exposed
-**Plans**: TBD
+**Plans**: 2 plans
+- [ ] 33-01-PLAN.md — Python API surface audit and __all__ definitions
+- [ ] 33-02-PLAN.md — Rust pub boundary audit
 
 ### Phase 34: Configuration Model
 **Goal**: Python-side configuration objects with immutable builders for ConsumerConfig, RoutingConfig, RetryConfig, BatchConfig, and ConcurrencyConfig.
@@ -97,7 +99,7 @@
 | 30. Kafka-Level Metrics | v1.7 | 1/1 | Complete | 2026-04-18 |
 | 31. Runtime Introspection | v1.7 | 1/1 | Complete | 2026-04-18 |
 | 32. Structured Logging | v1.7 | 1/1 | Complete | 2026-04-18 |
-| 33. Public API Conventions | v1.8 | 0/1 | Not started | - |
+| 33. Public API Conventions | v1.8 | 2/2 | In progress | - |
 | 34. Configuration Model | v1.8 | 0/1 | Not started | - |
 | 35. Handler Registration & Runtime | v1.8 | 0/1 | Not started | - |
 | 36. Error Handling | v1.8 | 0/1 | Not started | - |
