@@ -23,3 +23,9 @@ pub(crate) mod scenarios;
 pub use scenarios::{
     LatencyScenario, Scenario, ThroughputScenario, WorkloadProfile,
 };
+
+// BenchmarkRunner — orchestrates scenario setup, warmup, measurement, teardown (Phase 40)
+pub(crate) mod runner;
+
+// Re-export BenchmarkRunner and BenchmarkContext for consumers
+pub use runner::{BenchmarkContext, BenchmarkRunner};
