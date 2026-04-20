@@ -1,5 +1,19 @@
 # Milestones
 
+## v2.0 Code Quality Refactor (Shipped: 2026-04-20)
+
+**Phases completed:** 6 phases, 8 plans, 13 tasks
+
+**Key accomplishments:**
+
+- 4 helper functions extracted from worker_pool/mod.rs and python/handler.rs, consolidating ~150 lines of duplicated retry/DLQ routing, PyDict construction, and batch flush patterns
+- 1. mod.rs exceeds 50-line target (Rule 2 - Auto-add missing critical functionality)
+- One-liner:
+- Split coordinator/ into 3 responsibility-bound modules with backward-compatible re-exports
+- One-liner:
+
+---
+
 ## v1.8 Public API Foundation (Shipped: 2026-04-20)
 
 **Phases completed:** 5 phases, 6 plans, 9 tasks
