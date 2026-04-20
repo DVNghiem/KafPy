@@ -366,22 +366,22 @@ except ImportError:
 | A2 | `ConsumerError` is the appropriate Python exception for `Producer` errors (no separate `ProducerError` needed) | Standard Stack | If `ProducerError` is needed later, a breaking change to `ERR-01`/`ERR-03` is required |
 | A3 | `error_code` field uses integer Kafka error codes from `rdkafka` (e.g., 6 for `NOT_LEADER`) | Architecture Patterns | If Kafka error codes differ or are unavailable, the field type changes |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Producer errors:** Should `ProducerError` be a separate class or lumped into `ConsumerError`?
    - What we know: `PyError::Producer` variant exists in `src/errors.rs`
    - What's unclear: Whether a separate `ProducerError` is needed or if `ConsumerError` covers both
-   - Recommendation: Use `ConsumerError` for now; add `ProducerError` only if producer-side errors need distinct handling
+   - **Resolution:** Use `ConsumerError` for now; add `ProducerError` only if producer-side errors need distinct handling (decision: lump into `ConsumerError`)
 
 2. **PythonHandler dict vs KafkaMessage:** Should `invoke` pass `KafkaMessage` instances instead of `PyDict`?
    - What we know: Current `invoke` builds `PyDict` and passes to Python callback
    - What's unclear: Whether Phase 36 or 37 changes this to typed `KafkaMessage`
-   - Recommendation: Create `KafkaMessage` class in `kafpy/handlers.py` and add a `from_dict` classmethod for Phase 36; actual dict-to-object conversion is a follow-up
+   - **Resolution:** Create `KafkaMessage` class in `kafpy/handlers.py` and add a `from_dict` classmethod for Phase 36; actual dict-to-object conversion deferred to Phase 37
 
 3. **PyO3 import of Python exception classes:**
    - What we know: `pyconsumer.rs` uses `PyErr::new::<pyo3::exceptions::PyRuntimeError, _>`
    - What's unclear: Whether we can import `ConsumerError` etc. from Python into Rust for typed PyErr at boundary
-   - Recommendation: Use string-parsing approach (D-05/D-06) to map errors rather than importing Python classes into Rust — simpler and less brittle
+   - **Resolution:** Use string-parsing approach (D-05/D-06) to map errors rather than importing Python classes into Rust — simpler and less brittle
 
 ## Environment Availability
 
