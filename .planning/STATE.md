@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.8
 milestone_name: milestone
 status: in_progress
-stopped_at: v1.7 shipped — awaiting next milestone
-last_updated: "2026-04-20T02:05:00.000Z"
+stopped_at: Roadmap defined — Phase 33 plan 01 next
+last_updated: "2026-04-20T02:10:00.000Z"
 last_activity: 2026-04-20
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
-  total_plans: 0
+  total_plans: 5
   completed_plans: 0
   percent: 0
 ---
@@ -21,13 +21,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-18)
 
 **Core value:** High-performance Rust Kafka client with idiomatic Python API
-**Current focus:** Planning v1.8 milestone
+**Current focus:** Planning v1.8 milestone — Public API Foundation
 
 ## Current Position
 
 Milestone: v1.8 (not started)
-Status: Defining requirements
-Last activity: 2026-04-20 — Milestone v1.8 started
+Phase: 33
+Plan: 01
+Status: Defining roadmap
+Last activity: 2026-04-20 — Roadmap defined for v1.8
 
 ## Performance Metrics
 
@@ -48,7 +50,7 @@ Last activity: 2026-04-20 — Milestone v1.8 started
 | v1.5 | 3 | 5 |
 | v1.6 | 4 | 7 |
 | v1.7 | 5 | 7 |
-| v1.8 | TBD | TBD |
+| v1.8 | 5 | TBD |
 
 ## Accumulated Context
 
@@ -58,7 +60,7 @@ Last activity: 2026-04-20 — Milestone v1.8 started
 - **v1.4**: has_terminal per-partition gating (once terminal, blocks commit for that partition)
 - **v1.4**: fire-and-forget DLQ produce (bounded mpsc channel ~100)
 - **v1.4**: configurable DLQ topic naming (dlq_topic_prefix, default "dlq.")
-- **v1.5**: Routing precedence: pattern → header → key → python → default
+- **v1.5**: Routing precedence: pattern -> header -> key -> python -> default
 - **v1.5**: Rust is fast-path owner; Python routing is optional fallback only
 - **v1.5**: RoutingDecision: Route(handler_id), Drop, Reject(reason), Defer
 - **v1.5**: No payload copies in routing path
@@ -74,10 +76,18 @@ Last activity: 2026-04-20 — Milestone v1.8 started
 - **v1.7**: Span context propagates via W3C tracecontext headers at spawn_blocking boundary
 - **v1.7**: Kafka metrics polling-based (not per-message) to avoid hot-path overhead
 - **v1.7**: RuntimeSnapshot zero-cost when not called (no atomic updates on hot path)
+- **v1.8**: Instance-based config (no globals) — all runtime state in instance objects
+- **v1.8**: Decorator + explicit handler registration as primary Python API patterns
+- **v1.8**: Rust internals private by default; only explicitly pub items accessible from Python
+- **v1.8**: kafpy.exceptions as sole public import path for exceptions
 
 ### Pending Todos
 
-- v1.8: TBD — milestone planning not yet started
+- Phase 33: Public API Conventions — plan 01 TBD
+- Phase 34: Configuration Model — TBD
+- Phase 35: Handler Registration & Runtime — TBD
+- Phase 36: Error Handling — TBD
+- Phase 37: Documentation & Packaging — TBD
 
 ### Blockers/Concerns
 
@@ -101,9 +111,10 @@ Last activity: 2026-04-20 — Milestone v1.8 started
 | Trace context into Kafka headers | Cross-service correlation | v1.8+ | v1.7 |
 | Python-side tracing | Python tracing conventions differ | v1.8+ | v1.7 |
 | Sliding window latency | p50, p95, p99 percentiles | v1.8+ | v1.7 |
+| Public API stability | No underscore-prefixed items in __all__ | v1.8 | v1.8 |
 
 ## Session Continuity
 
-Last session: 2026-04-20T02:05:00.000Z
-Stopped at: v1.7 shipped — awaiting next milestone
+Last session: 2026-04-20T02:10:00.000Z
+Stopped at: Roadmap defined for v1.8 — Phase 33 plan 01 next
 Resume file: None
