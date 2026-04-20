@@ -11,6 +11,7 @@
 - [x] **v1.6 Execution Modes** — Phases 24-27 (shipped 2026-04-18)
 - [x] **v1.7 Observability Layer** — Phases 28-32 (shipped 2026-04-18)
 - [ ] **v1.8 Public API Foundation** — Phases 33-37 (in progress)
+- [ ] **v2.0 Code Quality Refactor** — Phases 01-06 (planned)
 
 ---
 
@@ -79,6 +80,50 @@
   5. pyproject.toml uses maturin backend; maturin develop works on a machine with librdkafka installed
 **Plans**: TBD
 
+### v2.0 Code Quality Refactor
+
+### Phase 01: Extract Duplicated Logic
+**Goal**: Extract duplicated helpers to reduce error/DLQ branch duplication in worker_pool and eliminate copied Python conversion logic.
+**Depends on**: Phase 37
+**Requirements**: DUP-01, DUP-02, DUP-03, DUP-04
+**Plans**: 1 plan
+- [ ] 01-01-PLAN.md — Extract handle_execution_failure, message_to_pydict, flush_partition_batch helpers
+
+### Phase 02: Split worker_pool/ God Module
+**Goal**: Extract PartitionAccumulator to batch/ module, extract batch_worker_loop and worker_loop to their own files.
+**Depends on**: Phase 01
+**Requirements**: SPLIT-A-01, SPLIT-A-02, SPLIT-A-03, SPLIT-A-04, SPLIT-A-05, SPLIT-A-06
+**Plans**: 2 plans
+- [ ] 02-01-PLAN.md — Extract PartitionAccumulator to worker_pool/accumulator.rs
+- [ ] 02-02-PLAN.md — Extract loop functions and WorkerPool to pool.rs
+
+### Phase 03: Split dispatcher/ and Extract runtime/
+**Goal**: Extract ConsumerDispatcher to own file; extract RuntimeBuilder from pyconsumer.rs to new runtime/ module.
+**Depends on**: Phase 02
+**Requirements**: SPLIT-B-01, SPLIT-B-02, SPLIT-B-03, SPLIT-B-04
+**Plans**: 1 plan
+- [x] 03-01-PLAN.md — Extract ConsumerDispatcher + create RuntimeBuilder
+
+### Phase 04: State Machine Extraction
+**Goal**: Replace implicit Option/Bool state in worker_loop and batch_worker_loop with explicit state enums.
+**Depends on**: Phase 03
+**Requirements**: STATE-01, STATE-02, STATE-03, STATE-04, STATE-05
+**Plans**: 2 plans
+- [ ] 04-01-PLAN.md — WorkerState enum (worker_loop), BatchState enum (batch_worker_loop)
+- [ ] 04-02-PLAN.md — RetryState enum (RetryCoordinator), exhaustive match verification
+
+### Phase 05: Split coordinator/ Module
+**Goal**: Extract OffsetTracker/OffsetCommitter to offset/, ShutdownCoordinator to shutdown/, RetryCoordinator to retry/.
+**Depends on**: Phase 04
+**Requirements**: SPLIT-C-01, SPLIT-C-02, SPLIT-C-03, SPLIT-C-04, SPLIT-C-05
+**Plans**: TBD
+
+### Phase 06: Type Safety
+**Goal**: Create HandlerId newtype wrapper, consolidate error types, verify Send+Sync guarantees.
+**Depends on**: Phase 05
+**Requirements**: TYPES-01, TYPES-02, TYPES-03, TYPES-04, TYPES-05
+**Plans**: TBD
+
 ---
 
 ## Progress
@@ -106,8 +151,14 @@
 | 34. Configuration Model | v1.8 | 1/1 | Complete | 2026-04-20 |
 | 35. Handler Registration & Runtime | v1.8 | 1/1 | Complete | 2026-04-20 |
 | 36. Error Handling | v1.8 | 1/1 | Not started | - |
-| 37. Documentation & Packaging | v1.8 | 1/1 | Complete    | 2026-04-20 |
+| 37. Documentation & Packaging | v1.8 | 1/1 | Complete | 2026-04-20 |
+| 01. Extract Duplicated Logic | v2.0 | 1/1 | Complete | 2026-04-20 |
+| 02. Split worker_pool/ | v2.0 | 2/2 | Complete | 2026-04-20 |
+| 03. Split dispatcher/ + Extract runtime/ | v2.0 | 1/1 | Planned | - |
+| 04. State Machine Extraction | v2.0 | 2/2 | Planned | - |
+| 05. Split coordinator/ | v2.0 | TBD | - | - |
+| 06. Type Safety | v2.0 | TBD | - | - |
 
 ---
 
-*Last updated: 2026-04-20 after Phase 36 planning*
+*Last updated: 2026-04-20 after Phase 04 planning*
