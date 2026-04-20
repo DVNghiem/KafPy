@@ -21,6 +21,7 @@ use crate::python::execution_result::BatchExecutionResult;
 use crate::python::executor::Executor;
 use crate::python::handler::PythonHandler;
 use crate::worker_pool::handle_execution_failure;
+use crate::worker_pool::state::BatchState;
 use crate::worker_pool::ExecutionAction;
 use crate::worker_pool::HANDLER_METRICS;
 
@@ -113,7 +114,7 @@ pub async fn batch_worker_loop(
         BatchAccumulator::new(batch_policy.max_batch_size, batch_policy.max_batch_wait_ms);
 
     // Track whether we are in a backpressure-blocking state
-    let mut backpressure_active = false;
+    let mut batch_state = BatchState::Normal;
 
     loop {
         // Determine the next deadline for the select! sleep
@@ -156,12 +157,12 @@ pub async fn batch_worker_loop(
                 match msg {
                     Some(msg) => {
                         // Backpressure check: if at capacity, flush first then block
-                        if !backpressure_active {
+                        if !batch_state.is_backpressure() {
                             if let Some(capacity) = queue_manager.get_capacity(&msg.topic) {
                                 if let Some(inflight) = queue_manager.get_inflight(&msg.topic) {
                                     if inflight >= capacity {
                                         // Flush current accumulator before blocking
-                                        backpressure_active = true;
+                                        batch_state = BatchState::Backpressure;
                                         let partitions = accumulator.flush_all();
                                         for (partition, batch) in partitions {
                                             flush_partition_batch(

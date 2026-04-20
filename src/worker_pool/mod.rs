@@ -18,11 +18,13 @@ pub(crate) static HANDLER_METRICS: HandlerMetrics = HandlerMetrics;
 pub mod accumulator;
 pub mod batch_loop;
 pub mod pool;
+pub mod state;
 pub mod worker;
 
 pub use accumulator::PerPartitionBuffer;
 pub use batch_loop::{batch_worker_loop, flush_partition_batch, handle_batch_result_inline};
 pub use pool::WorkerPool;
+pub use state::{BatchState, WorkerState};
 pub use worker::worker_loop;
 
 // ─── Execution Action ─────────────────────────────────────────────────────────

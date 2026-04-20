@@ -21,6 +21,7 @@ use crate::python::execution_result::ExecutionResult;
 use crate::python::executor::Executor;
 use crate::python::handler::PythonHandler;
 use crate::worker_pool::handle_execution_failure;
+use crate::worker_pool::state::WorkerState;
 use crate::worker_pool::ExecutionAction;
 use crate::worker_pool::HANDLER_METRICS;
 
@@ -31,9 +32,8 @@ use crate::worker_pool::HANDLER_METRICS;
 /// - `_ = shutdown_token.cancelled()` — exits gracefully
 ///
 /// When a message is picked up it is processed before polling again.
-/// `active_message: Option<OwnedMessage>` tracks in-flight work — the
-/// cancelled branch only fires when `active_message.is_none()`,
-/// ensuring graceful shutdown waits for in-flight completion (EXEC-12).
+/// `WorkerState` tracks in-flight work — the cancelled branch only fires when
+/// `WorkerState::Idle`, ensuring graceful shutdown waits for in-flight completion (EXEC-12).
 pub async fn worker_loop(
     mut rx: mpsc::Receiver<OwnedMessage>,
     handler: Arc<PythonHandler>,
@@ -49,14 +49,41 @@ pub async fn worker_loop(
 ) {
     tracing::info!(worker_id = worker_id, "worker started");
 
-    let mut active_message: Option<OwnedMessage> = None;
+    let mut state = WorkerState::Idle;
 
     loop {
-        // If there's an active message, process it without polling
-        if let Some(msg) = active_message.take() {
+        // Poll for a message or handle cancellation when idle
+        if matches!(state, WorkerState::Idle) {
+            select! {
+                Some(msg) = rx.recv() => {
+                    tracing::trace!(
+                        worker_id = worker_id,
+                        topic = %msg.topic,
+                        partition = msg.partition,
+                        offset = msg.offset,
+                        "worker picked up message"
+                    );
+                    worker_pool_state.set_active(
+                        worker_id,
+                        "shared".to_string(),
+                        msg.topic.clone(),
+                        msg.partition,
+                        msg.offset,
+                    );
+                    state = WorkerState::Processing(msg);
+                }
+                _ = shutdown_token.cancelled() => {
+                    tracing::info!(worker_id = worker_id, "worker stopped (cancelled, idle)");
+                    break;
+                }
+            }
+        }
+
+        // Process the current message if we have one
+        if let WorkerState::Processing(msg) = &state {
+            let msg = msg.clone();
             let ctx =
                 ExecutionContext::new(msg.topic.clone(), msg.partition, msg.offset, worker_id);
-            // Metrics: start latency timer and build labels before invoke
             let start = std::time::Instant::now();
             let invocation_labels = MetricLabels::new()
                 .insert("handler_id", ctx.topic.as_str())
@@ -69,7 +96,6 @@ pub async fn worker_loop(
                 ctx.offset,
                 handler.mode().as_str(),
             );
-            // OBS-36: Structured log at invoke start with consistent field names
             tracing::info!(
                 handler_id = %ctx.topic,
                 topic = %ctx.topic,
@@ -82,7 +108,6 @@ pub async fn worker_loop(
                 handler.invoke_mode(&ctx, msg.clone()).await
             }).await;
             let elapsed = start.elapsed();
-            // OBS-36: Structured log at invoke completion
             tracing::info!(
                 handler_id = %ctx.topic,
                 topic = %ctx.topic,
@@ -91,12 +116,9 @@ pub async fn worker_loop(
                 elapsed_ms = elapsed.as_millis() as u64,
                 "handler invoke complete"
             );
-            // Record invocation and latency after invoke returns
             HANDLER_METRICS.record_invocation(&NoopSink, &invocation_labels);
             HANDLER_METRICS.record_latency(&NoopSink, &invocation_labels, elapsed);
-            // Record error counter on non-ok results
             if !result.is_ok() {
-                // OBS-36: Structured log at invoke error with consistent field names
                 tracing::error!(
                     handler_id = %ctx.topic,
                     topic = %ctx.topic,
@@ -125,11 +147,7 @@ pub async fn worker_loop(
                     queue_manager.ack(&msg.topic, 1);
                     offset_coordinator.record_ack(&ctx.topic, ctx.partition, ctx.offset);
                 }
-                ExecutionResult::Error {
-                    ref reason,
-                    ref exception,
-                    ..
-                } => {
+                ExecutionResult::Error { ref reason, ref exception, .. } => {
                     tracing::warn!(
                         worker_id = worker_id,
                         topic = %ctx.topic,
@@ -157,7 +175,7 @@ pub async fn worker_loop(
                         ExecutionAction::Ack => {}
                         ExecutionAction::Retry { delay } => {
                             tokio::time::sleep(delay).await;
-                            active_message = Some(msg);
+                            state = WorkerState::Processing(msg);
                             continue;
                         }
                         ExecutionAction::Dlq => {}
@@ -192,7 +210,7 @@ pub async fn worker_loop(
                         ExecutionAction::Ack => {}
                         ExecutionAction::Retry { delay } => {
                             tokio::time::sleep(delay).await;
-                            active_message = Some(msg);
+                            state = WorkerState::Processing(msg);
                             continue;
                         }
                         ExecutionAction::Dlq => {}
@@ -205,40 +223,11 @@ pub async fn worker_loop(
                     worker_id = worker_id,
                     "worker stopped (cancelled after message)"
                 );
-                // Mark worker as idle before exiting
                 worker_pool_state.set_idle(worker_id);
                 break;
             }
-            // Mark worker as idle after processing completes (OBS-31)
             worker_pool_state.set_idle(worker_id);
-            continue;
-        }
-
-        // Idle — poll for a new message or cancellation
-        select! {
-            Some(msg) = rx.recv() => {
-                tracing::trace!(
-                    worker_id = worker_id,
-                    topic = %msg.topic,
-                    partition = msg.partition,
-                    offset = msg.offset,
-                    "worker picked up message"
-                );
-                // Mark worker as active for runtime introspection (OBS-31)
-                // handler_id is "shared" since PythonHandler is shared across topics
-                worker_pool_state.set_active(
-                    worker_id,
-                    "shared".to_string(),
-                    msg.topic.clone(),
-                    msg.partition,
-                    msg.offset,
-                );
-                active_message = Some(msg);
-            }
-            _ = shutdown_token.cancelled() => {
-                tracing::info!(worker_id = worker_id, "worker stopped (cancelled, idle)");
-                break;
-            }
+            state = WorkerState::Idle;
         }
     }
 }
