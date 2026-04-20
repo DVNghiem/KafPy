@@ -2,12 +2,12 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Code Quality Refactor
-status: defining_requirements
-stopped_at: Milestone v2.0 started
+status: planning
+stopped_at: Milestone v2.0 roadmap created
 last_updated: "2026-04-20T12:00:00.000Z"
-last_activity: 2026-04-20 — Milestone v2.0 started (Code Quality Refactor)
+last_activity: 2026-04-20 — Milestone v2.0 roadmap created
 progress:
-  total_phases: 0
+  total_phases: 6
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -25,11 +25,11 @@ See: .planning/PROJECT.md (updated 2026-04-20)
 
 ## Current Position
 
-Milestone: v2.0 (just started)
-Phase: Not started (defining requirements)
+Milestone: v2.0 (roadmap created)
+Phase: Not started
 Plan: —
-Status: Defining requirements
-Last activity: 2026-04-20 — Milestone v2.0 started
+Status: Ready for Phase 1 planning
+Last activity: 2026-04-20 — Milestone v2.0 roadmap created
 
 ## Performance Metrics
 
@@ -37,6 +37,7 @@ Last activity: 2026-04-20 — Milestone v2.0 started
 
 - Total phases completed: 43
 - Total milestones: 9 (v1.0 through v1.9 shipped)
+- v2.0 phases: 6 (just planned)
 
 **By Milestone:**
 
@@ -52,7 +53,7 @@ Last activity: 2026-04-20 — Milestone v2.0 started
 | v1.7 | 5 | Shipped 2026-04-18 |
 | v1.8 | 5 | Shipped 2026-04-20 |
 | v1.9 | 6 | Shipped 2026-04-20 |
-| v2.0 | TBD | In progress |
+| v2.0 | 6 | In progress |
 
 ## Accumulated Context
 
@@ -76,6 +77,20 @@ Last activity: 2026-04-20 — Milestone v2.0 started
 - Lower coupling, high cohesion
 - Stable public API (no behavior changes)
 
+### Critical Pitfalls (from research)
+
+1. **Send+Sync Guarantees** — Use `fn assert_send_sync<T: Send + Sync>()` compile-time checks
+2. **Channel Semantic Changes** — Never change mpsc capacity without documenting backpressure impact
+3. **PyO3 GIL Boundary** — All Python invocations must go through `spawn_blocking` or `PythonAsyncFuture`
+4. **Shutdown Ordering** — Maintain `biased` directive on `select!` in `ConsumerRunner::run()`
+5. **Offset Commit State Machine** — `has_terminal` gating must remain functional after split
+
+### Open Questions
+
+- HandlerId vs topic distinction: Are they always equal or conceptually distinct?
+- NoopSink duplication: Is worker_pool NoopSink identical to observability NoopSink?
+- PartitionAccumulator naming: Rename to PerPartitionBuffer?
+
 ## Deferred Items
 
 | Category | Item | Status | Deferred At |
@@ -91,5 +106,5 @@ Last activity: 2026-04-20 — Milestone v2.0 started
 ## Session Continuity
 
 Last session: 2026-04-20T12:00:00.000Z
-Stopped at: Milestone v2.0 started
-Resume file: None
+Stopped at: Milestone v2.0 roadmap created
+Resume file: .planning/milestones/v2.0-STATE.md
