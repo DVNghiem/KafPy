@@ -3,6 +3,9 @@
 
 pub(crate) mod results;
 
+// Benchmark infrastructure — measurement types, latency/throughput tracking
+pub(crate) mod output;
+
 pub mod measurement;
 
 pub use measurement::{
