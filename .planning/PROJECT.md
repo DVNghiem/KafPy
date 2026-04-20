@@ -10,47 +10,54 @@
 
 KafPy is a Python-facing Kafka framework where Rust provides the runtime/core engine and Python holds the business logic. PyO3 bridges the two. The pure-Rust consumer core handles Kafka protocol, while Python registers handlers/callbacks via bindings.
 
-Current status (after Milestone v1.4):
-- `src/consumer/` — pure-Rust consumer core: `ConsumerConfigBuilder`, `OwnedMessage`, `ConsumerRunner`, `ConsumerStream`, `ConsumerTask`
-- `src/dispatcher/` — message dispatcher: `Dispatcher`, `QueueManager`, `BackpressurePolicy`, `BackpressureAction`, `ConsumerDispatcher`
-- `src/python/` — Python execution lane: `PythonHandler`, `WorkerPool`, `ExecutionContext`, `ExecutionResult`, `Executor` trait
-- `src/coordinator/` — offset coordinator: `OffsetTracker`, `OffsetCommitter`, `OffsetCoordinator` trait
-- `src/failure/` — failure classification: `FailureReason`, `FailureCategory`, `FailureClassifier` trait
-- `src/retry/` — retry policy: `RetryPolicy`, `RetrySchedule` with exponential backoff + jitter
-- `src/dlq/` — DLQ routing: `DlqRouter` trait, `DlqMetadata`, `SharedDlqProducer`
-- `src/pyconsumer.rs` — PyO3 bridge: `Consumer` pyclass wrapping `ConsumerRunner`
-- `src/config.rs` — Python-facing `ConsumerConfig` / `ProducerConfig` (PyO3)
-- `src/kafka_message.rs` — PyO3 `KafkaMessage` wrapping `OwnedMessage`
-- `src/produce.rs` — PyO3 `PyProducer`
-- `kafpy/__init__.py` — public Python API
+**Current module structure:**
+- `src/consumer/` — ConsumerConfigBuilder, OwnedMessage, ConsumerRunner, ConsumerStream, ConsumerTask
+- `src/dispatcher/` — Dispatcher, QueueManager, BackpressurePolicy, ConsumerDispatcher
+- `src/worker_pool/` — WorkerPool, worker_loop, batch_worker_loop, PerPartitionBuffer, WorkerState, BatchState
+- `src/python/` — PythonHandler, WorkerPool, ExecutionContext, ExecutionResult, Executor trait
+- `src/offset/` — OffsetTracker, OffsetCoordinator, OffsetCommitter (split from coordinator/)
+- `src/shutdown/` — ShutdownCoordinator, ShutdownPhase (split from coordinator/)
+- `src/retry/` — RetryPolicy, RetryCoordinator (split from coordinator/)
+- `src/coordinator/` — thin re-export layer (backward-compatible)
+- `src/runtime/` — RuntimeBuilder for constructing ConsumerRuntime
+- `src/routing/` — RoutingChain, Router, HandlerId (newtype), RoutingDecision
+- `src/observability/` — MetricsSink, PrometheusMetricsSink, LogTracer, RuntimeSnapshot
+- `src/dlq/` — DlqRouter, DlqMetadata, SharedDlqProducer
+- `src/failure/` — FailureReason, FailureCategory, FailureClassifier
+- `src/error.rs` — unified error re-exports (DispatchError, ConsumerError, CoordinatorError, PyError)
+- `src/pyconsumer.rs` — PyO3 Consumer bridge (348→207 lines via RuntimeBuilder)
+- `kafpy/__init__.py` — public Python API with __all__
 
 ## Key Decisions
 
 | Decision | Rationale | Status |
 |----------|-----------|--------|
-| Rust core / Python business logic | Performance + idiomatic bindings | Active |
-| rdkafka for Kafka protocol | Battle-tested, async-capable | Active |
-| Tokio for async runtime | Native rdkafka compat, mpsc channels | Active |
-| StreamConsumer + mpsc channel | Owned message flow, no borrowed lifetimes | Active |
-| PyO3-free consumer core | Clean separation, testable without Python | Active |
-| Per-topic bounded queue dispatch | Isolated backpressure per topic | Active |
-| BackpressurePolicy trait | Extensible backpressure handling (Drop/Wait/FuturePausePartition) | Active |
-| ConsumerDispatcher composition | Owns both ConsumerRunner + Dispatcher, wires stream->dispatch | Active |
-| Py<PyAny> for callback storage | GIL-independent, sendable across threads | Active |
-| spawn_blocking for GIL | Minimal GIL hold window during Python execution | Active |
-| Executor trait | Future retry/commit/async/batch policies plug in here | Active |
-| OffsetCoordinator trait | Separates offset tracking from Executor policy | Active |
-| Highest contiguous offset commit | Only commit when all prior offsets acked | Active |
-| store_offset + commit coordination | enable.auto.offset.store=false, explicit coordination | Active |
-| RetryCoordinator 3-tuple | (should_retry, should_dlq, delay) controls retry and DLQ routing | Active (v1.4) |
-| has_terminal per-partition gating | Once terminal on a TP, that partition stops committing until restart | Active (v1.4) |
-| fire-and-forget DLQ produce | Bounded mpsc channel (~100), non-blocking, DLQ failures logged only | Active (v1.4) |
-| configurable DLQ topic naming | dlq_topic_prefix per consumer, default "dlq." | Active (v1.4) |
-| RoutingChain precedence | pattern→header→key→python→default with explicit default handler | Active (v1.5) |
-| RoutingDecision::Route(handler_id) | topic-based routing still determines queue; handler_id annotates | Active (v1.5) |
-| RoutingDecision::Drop | fast-path: drop + advance offset (no DLQ, no retry) | Active (v1.5) |
-| RoutingDecision::Reject | fast-path: direct to DLQ (no RetryCoordinator) | Active (v1.5) |
-| RoutingDecision::Defer | routing inconclusive → default handler dispatch | Active (v1.5) |
+| Rust core / Python business logic | Performance + idiomatic bindings | ✓ Validated |
+| rdkafka for Kafka protocol | Battle-tested, async-capable | ✓ Validated |
+| Tokio for async runtime | Native rdkafka compat, mpsc channels | ✓ Validated |
+| PyO3-free consumer core | Clean separation, testable without Python | ✓ Validated |
+| Per-topic bounded queue dispatch | Isolated backpressure per topic | ✓ Validated |
+| BackpressurePolicy trait | Extensible backpressure (Drop/Wait/FuturePausePartition) | ✓ Validated |
+| ConsumerDispatcher composition | Owns ConsumerRunner + Dispatcher, wires stream→dispatch | ✓ Validated |
+| Py<PyAny> for callback storage | GIL-independent, sendable across threads | ✓ Validated |
+| spawn_blocking for GIL | Minimal GIL hold window during Python execution | ✓ Validated |
+| Executor trait | Future retry/commit/async/batch policies plug in here | ✓ Validated |
+| OffsetCoordinator trait | Separates offset tracking from Executor policy | ✓ Validated |
+| Highest contiguous offset commit | Only commit when all prior offsets acked | ✓ Validated |
+| store_offset + commit coordination | enable.auto.offset.store=false, explicit coordination | ✓ Validated |
+| RetryCoordinator 3-tuple | (should_retry, should_dlq, delay) controls retry and DLQ routing | ✓ Validated |
+| has_terminal per-partition gating | Once terminal on a TP, that partition stops committing until restart | ✓ Validated |
+| fire-and-forget DLQ produce | Bounded mpsc channel (~100), non-blocking, DLQ failures logged only | ✓ Validated |
+| configurable DLQ topic naming | dlq_topic_prefix per consumer, default "dlq." | ✓ Validated |
+| RoutingChain precedence | pattern→header→key→python→default with explicit default handler | ✓ Validated |
+| RoutingDecision::Route(handler_id) | topic-based routing determines queue; handler_id annotates | ✓ Validated |
+| RoutingDecision::Drop | fast-path: drop + advance offset (no DLQ, no retry) | ✓ Validated |
+| RoutingDecision::Reject | fast-path: direct to DLQ (no RetryCoordinator) | ✓ Validated |
+| RoutingDecision::Defer | routing inconclusive → default handler dispatch | ✓ Validated |
+| HandlerId newtype wrapper | Prevents accidental interchange with topic names | ✓ Validated (v2.0) |
+| ExecutionAction enum | Consolidates Error/Rejected retry/DLQ branching | ✓ Validated (v2.0) |
+| coordinator/ split | offset/, shutdown/, retry/ with backward-compatible re-exports | ✓ Validated (v2.0) |
+| WorkerState/BatchState enums | Explicit state machines replace Option/Bool state flags | ✓ Validated (v2.0) |
 
 ## Context
 
@@ -62,23 +69,17 @@ Current status (after Milestone v1.4):
 
 **Milestone v1.3:** Offset commit coordinator — per-topic-partition ack tracking via `OffsetTracker`, highest-contiguous-offset commit logic via `OffsetCommitter`, out-of-order completion handling, `store_offset()` + `commit()` coordination for at-least-once delivery.
 
-**Milestone v1.4:** Failure Handling & DLQ — Phases 17-20 complete. FailureReason taxonomy, RetryPolicy with exponential backoff, DLQ routing with metadata envelope, per-partition commit gating with terminal state tracking, graceful shutdown DLQ flush.
+**Milestone v1.4:** Failure Handling & DLQ — FailureReason taxonomy, RetryPolicy with exponential backoff, DLQ routing with metadata envelope, per-partition commit gating with terminal state tracking, graceful shutdown DLQ flush.
 
-**Current milestone (v1.5):** Extensible Routing — Pattern/header/key routing with optional Python fallback, Rust as fast-path owner.
+**Milestone v1.5:** Extensible Routing — Pattern/header/key routing with optional Python fallback. RoutingChain wired into ConsumerDispatcher with all 4 RoutingDecision variants.
 
-**v1.5 shipped:** Phase 21 (RoutingCore), Phase 22 (PythonRouter), Phase 23 (DispatcherIntegration). RoutingChain wired into ConsumerDispatcher with all 4 RoutingDecision variants handled (Route→handler queue, Drop→offset advance, Reject→DLQ, Defer→default).
+**Milestone v1.6:** Execution Modes — HandlerMode enum with 4 variants (SingleSync, SingleAsync, BatchSync, BatchAsync), BatchAccumulator with fixed-window flush, PythonAsyncFuture for async handler support, graceful shutdown drain.
 
-**v1.6 shipped:** Phase 24 (HandlerMode foundation), Phase 25 (BatchAccumulator), Phase 26 (Async Python handlers), Phase 27 (Shutdown drain verification). HandlerMode enum with 4 variants, BatchAccumulator with fixed-window flush, PythonAsyncFuture with custom CFFI bridge, all 4 execution modes working.
+**Milestone v1.7:** Observability Layer — MetricsSink trait + Prometheus adapter, OTLP tracing with W3C tracecontext propagation, KafkaMetrics for consumer lag/assignment size, RuntimeSnapshot, structured logging with LogTracer.
 
-## Current Milestone: v2.0 Code Quality Refactor
+**Milestone v1.8:** Public API Foundation — PascalCase naming, snake_case methods, type hints, private Rust internals, `__all__` definitions, frozen configuration dataclasses, decorator-based handler registration, KafPy runtime lifecycle, Python exception hierarchy, README/guides packaging.
 
-**Goal:** Improve code quality without changing behavior — smaller focused modules, clear boundaries, less duplication, fewer god objects, explicit state models, cleaner naming, lower coupling, high cohesion.
-
-**Target features:**
-- Code smell identification (god objects, duplication, implicit state, naming issues)
-- Module structure redesign (high cohesion, low coupling)
-- Refactoring plan with clear boundaries preserved
-- No unnecessary abstraction or behavior changes
+**Milestone v2.0:** Code Quality Refactor — Consolidated worker_pool/ from 1309-line god module to 4 focused files (mod.rs 96 lines, accumulator.rs, worker.rs, batch_loop.rs, pool.rs, state.rs). Split coordinator/ into offset/, shutdown/, retry/ modules. Added HandlerId newtype for type safety. Unified error re-exports in src/error.rs. All behavior preserved, no API changes.
 
 ## Validated Requirements
 
@@ -116,12 +117,10 @@ Current status (after Milestone v1.4):
 - ✓ should_commit returns false when has_terminal=true (per-partition blocking) — v1.4
 - ✓ flush_failed_to_dlq drains all failed (retryable + terminal) to DLQ — v1.4
 - ✓ WorkerPool::shutdown calls flush_failed_to_dlq before graceful_shutdown — v1.4
-
 - ✓ Pattern/header/key routing with Python fallback — v1.5
 - ✓ Routing precedence: pattern → header → key → python → default — v1.5
 - ✓ RoutingDecision trait: route, drop, reject, defer — v1.5
 - ✓ Integration with existing handler queues + backpressure — v1.5
-
 - ✓ HandlerMode enum (SingleSync, SingleAsync, BatchSync, BatchAsync) — v1.6
 - ✓ BatchAccumulator with fixed-window flush (size + timeout) — v1.6
 - ✓ Sync Python handlers via spawn_blocking — v1.6
@@ -129,7 +128,6 @@ Current status (after Milestone v1.4):
 - ✓ BatchExecutionResult (AllSuccess / AllFailure / PartialFailure) — v1.6
 - ✓ GIL never held across Rust-side orchestration — v1.6
 - ✓ Graceful shutdown drain: flush pending + commit before exit — v1.6
-
 - ✓ MetricsSink trait with zero-cost facade (metrics crate) — v1.7
 - ✓ Prometheus adapter (HandlerMetrics + KafkaMetrics per TP) — v1.7
 - ✓ MetricLabels with lexicographically sorted label ordering — v1.7
@@ -138,26 +136,37 @@ Current status (after Milestone v1.4):
 - ✓ Consumer lag, assignment size, committed offset gauges via rdkafka stats — v1.7
 - ✓ RuntimeSnapshot (zero-cost when not called) — v1.7
 - ✓ Structured logging with LogTracer, per-component levels, consistent field names — v1.7
-
-## Current Milestone: v2.0 Code Quality Refactor
-
-**Goal:** Improve code quality without changing behavior — smaller focused modules, clear boundaries, less duplication, fewer god objects, explicit state models, cleaner naming, lower coupling, high cohesion.
-
-**Target features:**
-- Code smell identification (god objects, duplication, implicit state, naming issues)
-- Module structure redesign (high cohesion, low coupling)
-- Refactoring plan with clear boundaries preserved
-- No unnecessary abstraction or behavior changes
+- ✓ Public API conventions (PascalCase, snake_case, __all__, private internals) — v1.8
+- ✓ Frozen configuration dataclasses (ConsumerConfig, RoutingConfig, RetryConfig, BatchConfig, ConcurrencyConfig) — v1.8
+- ✓ Decorator-based and explicit handler registration — v1.8
+- ✓ KafPy runtime lifecycle (start/stop/run) — v1.8
+- ✓ Python exception hierarchy (KafPyError base) — v1.8
+- ✓ README, docs/, kafpy/guides/ packaging — v1.8
+- ✓ worker_pool/ split: mod.rs 1309→96 lines, accumulator/worker/batch_loop/pool/state files — v2.0
+- ✓ ExecutionAction enum + handle_execution_failure() helper extraction — v2.0
+- ✓ message_to_pydict() and flush_partition_batch() helper extractions — v2.0
+- ✓ ConsumerDispatcher extracted to own file — v2.0
+- ✓ RuntimeBuilder extracted to runtime/ module (pyconsumer.rs 348→207 lines) — v2.0
+- ✓ coordinator/ split into offset/, shutdown/, retry/ — v2.0
+- ✓ WorkerState and BatchState enums for explicit state machines — v2.0
+- ✓ RetryState enum in RetryCoordinator — v2.0
+- ✓ HandlerId newtype wrapper in routing/context.rs — v2.0
+- ✓ Unified error re-exports in src/error.rs — v2.0
+- ✓ Send+Sync compile-time assertions — v2.0
 
 ## Active Requirements
 
-- TBD — v2.0 requirements to be defined (Code Quality Refactor)
+- TBD — v3.0 requirements to be defined
 
 ## Out of Scope
 
 - Advanced rebalance logic — interfaces only, deferred
 - Schema registry / Avro support — deferred
 - Java/Node.js bindings — Python only
+- Multi-consumer groups — deferred
+- High-throughput producer — deferred
+- Admin client — deferred
+- Stream processing — deferred
 
 ---
 
@@ -180,4 +189,4 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-*Last updated: 2026-04-20 after v1.7 milestone (starting v1.8 Public API Foundation)*
+*Last updated: 2026-04-20 after v2.0 Code Quality Refactor milestone*
