@@ -32,12 +32,15 @@ For handler and message types, use ``kafpy.handlers``:
 
 __version__ = "0.1.0"
 
-# Re-export from Rust extension (_kafpy)
-from ._kafpy import (
-    ProducerConfig,
-    KafkaMessage,
-    Producer,
-)
+# Re-export from Rust extension (_kafpy) — conditional until extension is built
+try:
+    from ._kafpy import (
+        ProducerConfig,
+        Producer,
+    )
+except ModuleNotFoundError:
+    ProducerConfig = None  # type: ignore
+    Producer = None  # type: ignore
 
 # Configuration classes (Python wrapper, Phase 34)
 from .config import (
@@ -48,8 +51,9 @@ from .config import (
     ConcurrencyConfig,
 )
 
-# Handler types and registration (Phase 35)
+# Handler types and registration (Phase 35/36)
 from .handlers import (
+    KafkaMessage,
     HandlerContext,
     HandlerResult,
     register_handler,
@@ -61,25 +65,17 @@ from .consumer import Consumer
 # Runtime with KafPy class (Phase 35)
 from .runtime import KafPy
 
-# Exception types (Phase 36 — stub)
-try:
-    from .exceptions import (
-        KafPyError,
-        ConsumerError,
-        HandlerError,
-        ConfigurationError,
-    )
-except ImportError:
-    # Added in Phase 36 (Error Handling)
-    KafPyError = None
-    ConsumerError = None
-    HandlerError = None
-    ConfigurationError = None
+# Exception types (Phase 36)
+from .exceptions import (
+    KafPyError,
+    ConsumerError,
+    HandlerError,
+    ConfigurationError,
+)
 
 __all__ = [
-    # Rust extension types (available now)
+    # Rust extension types (available when _kafpy is built)
     "ProducerConfig",
-    "KafkaMessage",
     "Producer",
     # Configuration types — Phase 34
     "ConsumerConfig",
@@ -90,7 +86,8 @@ __all__ = [
     # Consumer wrapper and runtime — Phase 35
     "Consumer",
     "KafPy",
-    # Handler types and registration — Phase 35
+    # Handler types and registration — Phase 35/36
+    "KafkaMessage",
     "HandlerContext",
     "HandlerResult",
     "register_handler",
