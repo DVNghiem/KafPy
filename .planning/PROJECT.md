@@ -70,17 +70,21 @@ Current status (after Milestone v1.4):
 
 **v1.6 shipped:** Phase 24 (HandlerMode foundation), Phase 25 (BatchAccumulator), Phase 26 (Async Python handlers), Phase 27 (Shutdown drain verification). HandlerMode enum with 4 variants, BatchAccumulator with fixed-window flush, PythonAsyncFuture with custom CFFI bridge, all 4 execution modes working.
 
-**Current milestone (v1.7): Observability Layer**
+## Current Milestone: v1.8 Public API Foundation
 
-**Goal:** Provide structured logging, metrics, and runtime introspection for KafPy without coupling to a specific observability backend.
+**Goal:** Create a clean, Pythonic public API and packaging so developers can install KafPy, register handlers, configure the runtime, and run it ergonomically — without needing to understand Rust internals.
 
 **Target features:**
-- Structured logging facade with pluggable backend (e.g., loguru, standard logging)
-- Per-handler metrics: invocation count, latency histogram, error count, batch size distribution
-- Kafka-level metrics: consumer lag per topic-partition, assignment size, committed offset vs. high watermark
-- OpenTelemetry integration points (trace/span hooks) with zero-cost opt-in
-- Runtime introspection: WorkerPool status (idle/active/busy workers), accumulator depths, in-flight message counts
-- Facade/abstraction layer so users can wire their own observability backend
+- Clean Python-facing framework API (not a thin binding dump)
+- Instance-based configuration (no globals)
+- Decorator + explicit handler registration patterns
+- Consumer app, routing, retry/batch/concurrency config, lifecycle exposed to Python
+- Python-side framework exceptions (meaningful names, not Rust enum variants)
+- Natural Python package structure with stable imports
+- PyO3 + maturin packaging layout
+- README/quickstart foundation with examples
+- Guides module (markdown documentation on API usage)
+- Full docstrings on public API
 
 ## Validated Requirements
 
@@ -124,15 +128,26 @@ Current status (after Milestone v1.4):
 - ✓ RoutingDecision trait: route, drop, reject, defer — v1.5
 - ✓ Integration with existing handler queues + backpressure — v1.5
 
+- ✓ HandlerMode enum (SingleSync, SingleAsync, BatchSync, BatchAsync) — v1.6
+- ✓ BatchAccumulator with fixed-window flush (size + timeout) — v1.6
+- ✓ Sync Python handlers via spawn_blocking — v1.6
+- ✓ Async Python handlers via pyo3-async-runtimes into_future — v1.6
+- ✓ BatchExecutionResult (AllSuccess / AllFailure / PartialFailure) — v1.6
+- ✓ GIL never held across Rust-side orchestration — v1.6
+- ✓ Graceful shutdown drain: flush pending + commit before exit — v1.6
+
+- ✓ MetricsSink trait with zero-cost facade (metrics crate) — v1.7
+- ✓ Prometheus adapter (HandlerMetrics + KafkaMetrics per TP) — v1.7
+- ✓ MetricLabels with lexicographically sorted label ordering — v1.7
+- ✓ OTLP tracing via opentelemetry-otlp with W3C tracecontext propagation — v1.7
+- ✓ Span context propagates at spawn_blocking boundary — v1.7
+- ✓ Consumer lag, assignment size, committed offset gauges via rdkafka stats — v1.7
+- ✓ RuntimeSnapshot (zero-cost when not called) — v1.7
+- ✓ Structured logging with LogTracer, per-component levels, consistent field names — v1.7
+
 ## Active Requirements
 
-- Batch-capable handler registration (EXEC-01)
-- Batch accumulation until size or timeout (EXEC-02)
-- Sync Python handlers (EXEC-03)
-- Async Python handlers via pyo3-async-runtimes (EXEC-04)
-- Handler execution mode abstraction (EXEC-05)
-- GIL minimal usage across Rust orchestration (EXEC-06)
-- Batch result: full success / full failure model (EXEC-07)
+- TBD — v1.8 requirements to be defined (Public API Foundation)
 
 ## Out of Scope
 
@@ -161,4 +176,4 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-*Last updated: 2026-04-18 after v1.5 milestone*
+*Last updated: 2026-04-20 after v1.7 milestone (starting v1.8 Public API Foundation)*

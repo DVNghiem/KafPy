@@ -26,8 +26,8 @@ See: .planning/PROJECT.md (updated 2026-04-18)
 ## Current Position
 
 Milestone: v1.8 (not started)
-Status: Awaiting next milestone planning
-Last activity: 2026-04-20
+Status: Defining requirements
+Last activity: 2026-04-20 — Milestone v1.8 started
 
 ## Performance Metrics
 
