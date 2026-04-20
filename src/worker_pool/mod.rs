@@ -20,6 +20,7 @@ use crate::coordinator::OffsetCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
+use crate::failure::FailureReason;
 use crate::observability::metrics::{HandlerMetrics, MetricLabels};
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
@@ -37,6 +38,100 @@ impl crate::observability::metrics::MetricsSink for NoopSink {
     fn record_counter(&self, _name: &str, _labels: &[(&str, &str)]) {}
     fn record_histogram(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
     fn record_gauge(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
+}
+
+// ─── Execution Action ─────────────────────────────────────────────────────────
+
+/// Result of failure handling — returned by `handle_execution_failure` to tell
+/// the worker loop how to proceed after a handler error or rejection.
+#[derive(Debug)]
+pub enum ExecutionAction {
+    /// Message was processed (no retry, no DLQ) — caller should ack.
+    Ack,
+    /// Schedule retry with the given delay, then re-process the same message.
+    Retry { delay: std::time::Duration },
+    /// Message was routed to DLQ — caller should ack (DLQ is fire-and-forget).
+    Dlq,
+}
+
+/// Handles retry/DLQ routing for both Error and Rejected execution results.
+///
+/// Called after `offset_coordinator.mark_failed()` has recorded the failure.
+/// Returns an `ExecutionAction` so the caller can perform the appropriate side
+/// effects (sleep, ack) without duplicating the routing logic.
+///
+/// Note: `msg` is borrowed, not consumed — the caller retains ownership for
+/// potential retry re-enqueue.
+async fn handle_execution_failure(
+    ctx: &ExecutionContext,
+    msg: &OwnedMessage,
+    reason: &FailureReason,
+    retry_coordinator: Arc<RetryCoordinator>,
+    dlq_producer: Arc<SharedDlqProducer>,
+    dlq_router: Arc<dyn DlqRouter>,
+    queue_manager: Arc<QueueManager>,
+) -> ExecutionAction {
+    let (should_retry, should_dlq, delay) =
+        retry_coordinator.record_failure(&ctx.topic, ctx.partition, ctx.offset, reason);
+
+    if should_retry {
+        if let Some(d) = delay {
+            tracing::info!(
+                topic = %ctx.topic,
+                partition = ctx.partition,
+                offset = ctx.offset,
+                attempt = retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset),
+                delay_ms = d.as_millis(),
+                "scheduling retry"
+            );
+            return ExecutionAction::Retry { delay: d };
+        }
+    }
+
+    if should_dlq {
+        let metadata = DlqMetadata::new(
+            ctx.topic.clone(),
+            ctx.partition,
+            ctx.offset,
+            reason.to_string(),
+            retry_coordinator
+                .attempt_count(&ctx.topic, ctx.partition, ctx.offset)
+                as u32,
+            chrono::Utc::now(),
+            chrono::Utc::now(),
+        );
+
+        let dlq_span =
+            tracing::Span::current().kafpy_dlq_route(ctx.topic.as_str(), &reason.to_string(), ctx.partition);
+        let tp = dlq_span.in_scope(|| dlq_router.route(&metadata));
+        tracing::error!(
+            topic = %ctx.topic,
+            partition = ctx.partition,
+            offset = ctx.offset,
+            dlq_topic = %tp.topic,
+            dlq_partition = tp.partition,
+            reason = %reason,
+            attempt_count = metadata.attempt_count,
+            "routing message to DLQ"
+        );
+
+        // Fire-and-forget — don't await
+        dlq_producer.produce_async(
+            tp.topic.clone(),
+            tp.partition,
+            msg.payload.clone().unwrap_or_default(),
+            msg.key.clone(),
+            &metadata,
+        );
+
+        // Ack the original message — it's now in DLQ
+        queue_manager.ack(&msg.topic, 1);
+        return ExecutionAction::Dlq;
+    }
+
+    // Not retrying, not DLQ — count as processed
+    queue_manager.ack(&msg.topic, 1);
+    ExecutionAction::Ack
 }
 
 // ─── Batch Accumulator ─────────────────────────────────────────────────────────
@@ -304,79 +399,27 @@ async fn worker_loop(
                     );
                     crate::failure::logging::log_failure(&ctx, reason, exception, false);
 
-                    // Check if we should retry — now returns 3-tuple (should_retry, should_dlq, delay)
-                    let (should_retry, should_dlq, delay) = retry_coordinator.record_failure(
-                        &ctx.topic,
-                        ctx.partition,
-                        ctx.offset,
-                        reason,
-                    );
-
                     offset_coordinator.mark_failed(&ctx.topic, ctx.partition, ctx.offset, reason);
 
-                    if should_retry {
-                        // Sleep then retry
-                        if let Some(d) = delay {
-                            tracing::info!(
-                                worker_id = worker_id,
-                                topic = %ctx.topic,
-                                partition = ctx.partition,
-                                offset = ctx.offset,
-                                attempt = retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset),
-                                delay_ms = d.as_millis(),
-                                "scheduling retry"
-                            );
-                            tokio::time::sleep(d).await;
+                    let action = handle_execution_failure(
+                        &ctx,
+                        &msg,
+                        reason,
+                        Arc::clone(&retry_coordinator),
+                        Arc::clone(&dlq_producer),
+                        Arc::clone(&dlq_router),
+                        Arc::clone(&queue_manager),
+                    )
+                    .await;
+
+                    match action {
+                        ExecutionAction::Ack => {}
+                        ExecutionAction::Retry { delay } => {
+                            tokio::time::sleep(delay).await;
                             active_message = Some(msg);
                             continue;
                         }
-                    }
-
-                    if should_dlq {
-                        // Route to DLQ — construct metadata and produce fire-and-forget
-                        let metadata = DlqMetadata::new(
-                            ctx.topic.clone(),
-                            ctx.partition,
-                            ctx.offset,
-                            reason.to_string(),
-                            retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset)
-                                as u32,
-                            chrono::Utc::now(),
-                            chrono::Utc::now(),
-                        );
-
-                        let dlq_span = tracing::Span::current().kafpy_dlq_route(
-                            ctx.topic.as_str(),
-                            &reason.to_string(),
-                            ctx.partition,
-                        );
-                        let tp = dlq_span.in_scope(|| dlq_router.route(&metadata));
-                        tracing::error!(
-                            worker_id = worker_id,
-                            topic = %ctx.topic,
-                            partition = ctx.partition,
-                            offset = ctx.offset,
-                            dlq_topic = %tp.topic,
-                            dlq_partition = tp.partition,
-                            reason = %reason,
-                            attempt_count = metadata.attempt_count,
-                            "routing message to DLQ"
-                        );
-
-                        // Fire-and-forget — don't await
-                        dlq_producer.produce_async(
-                            tp.topic.clone(),
-                            tp.partition,
-                            msg.payload.clone().unwrap_or_default(),
-                            msg.key.clone(),
-                            &metadata,
-                        );
-
-                        // Ack the original message — it's now in DLQ
-                        queue_manager.ack(&msg.topic, 1);
-                    } else {
-                        // Not retrying, not DLQ — count as processed
-                        queue_manager.ack(&msg.topic, 1);
+                        ExecutionAction::Dlq => {}
                     }
                 }
                 ExecutionResult::Rejected { ref reason, .. } => {
@@ -388,83 +431,30 @@ async fn worker_loop(
                         reason = %reason,
                         "handler rejected message"
                     );
-                    // Extract exception name for rejection (Rejected carries reason_str, not exception)
                     let exc_name = "Rejected";
                     crate::failure::logging::log_failure(&ctx, reason, exc_name, false);
 
-                    // Check if we should retry
-                    let (should_retry, should_dlq, delay) = retry_coordinator.record_failure(
-                        &ctx.topic,
-                        ctx.partition,
-                        ctx.offset,
-                        reason,
-                    );
-
                     offset_coordinator.mark_failed(&ctx.topic, ctx.partition, ctx.offset, reason);
 
-                    if should_retry {
-                        // Sleep then retry
-                        if let Some(d) = delay {
-                            tracing::info!(
-                                worker_id = worker_id,
-                                topic = %ctx.topic,
-                                partition = ctx.partition,
-                                offset = ctx.offset,
-                                attempt = retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset),
-                                delay_ms = d.as_millis(),
-                                "scheduling retry"
-                            );
-                            tokio::time::sleep(d).await;
+                    let action = handle_execution_failure(
+                        &ctx,
+                        &msg,
+                        reason,
+                        Arc::clone(&retry_coordinator),
+                        Arc::clone(&dlq_producer),
+                        Arc::clone(&dlq_router),
+                        Arc::clone(&queue_manager),
+                    )
+                    .await;
+
+                    match action {
+                        ExecutionAction::Ack => {}
+                        ExecutionAction::Retry { delay } => {
+                            tokio::time::sleep(delay).await;
                             active_message = Some(msg);
                             continue;
                         }
-                    }
-
-                    if should_dlq {
-                        // Route to DLQ — construct metadata and produce fire-and-forget
-                        let metadata = DlqMetadata::new(
-                            ctx.topic.clone(),
-                            ctx.partition,
-                            ctx.offset,
-                            reason.to_string(),
-                            retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset)
-                                as u32,
-                            chrono::Utc::now(),
-                            chrono::Utc::now(),
-                        );
-
-                        let dlq_span = tracing::Span::current().kafpy_dlq_route(
-                            ctx.topic.as_str(),
-                            &reason.to_string(),
-                            ctx.partition,
-                        );
-                        let tp = dlq_span.in_scope(|| dlq_router.route(&metadata));
-                        tracing::error!(
-                            worker_id = worker_id,
-                            topic = %ctx.topic,
-                            partition = ctx.partition,
-                            offset = ctx.offset,
-                            dlq_topic = %tp.topic,
-                            dlq_partition = tp.partition,
-                            reason = %reason,
-                            attempt_count = metadata.attempt_count,
-                            "routing message to DLQ"
-                        );
-
-                        // Fire-and-forget — don't await
-                        dlq_producer.produce_async(
-                            tp.topic.clone(),
-                            tp.partition,
-                            msg.payload.clone().unwrap_or_default(),
-                            msg.key.clone(),
-                            &metadata,
-                        );
-
-                        // Ack the original message — it's now in DLQ
-                        queue_manager.ack(&msg.topic, 1);
-                    } else {
-                        // Not retrying, not DLQ — count as processed
-                        queue_manager.ack(&msg.topic, 1);
+                        ExecutionAction::Dlq => {}
                     }
                 }
             }
