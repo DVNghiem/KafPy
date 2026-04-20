@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-status: completed
-stopped_at: Completed 43-02-PLAN.md
-last_updated: "2026-04-20T08:42:34.198Z"
-last_activity: 2026-04-20 — Phase 39-01 complete (Scenario trait, WorkloadProfile, core scenarios)
+milestone: v2.0
+milestone_name: Code Quality Refactor
+status: defining_requirements
+stopped_at: Milestone v2.0 started
+last_updated: "2026-04-20T12:00:00.000Z"
+last_activity: 2026-04-20 — Milestone v2.0 started (Code Quality Refactor)
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 6
-  completed_plans: 6
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -21,22 +21,22 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-20)
 
 **Core value:** High-performance Rust Kafka client with idiomatic Python API
-**Current focus:** Phase 39 — Scenario Definitions
+**Current focus:** v2.0 — Code Quality Refactor
 
 ## Current Position
 
-Milestone: v1.9 (in progress)
-Phase: 39 (plan 01 complete)
-Plan: 01 complete, 02+ pending
-Status: Phase 39-01 complete, Scenario trait + ThroughputScenario + LatencyScenario implemented
-Last activity: 2026-04-20 — Phase 39-01 complete (Scenario trait, WorkloadProfile, core scenarios)
+Milestone: v2.0 (just started)
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-20 — Milestone v2.0 started
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total phases completed: 37
-- Total milestones: 8 (including v1.9 in progress)
+- Total phases completed: 43
+- Total milestones: 9 (v1.0 through v1.9 shipped)
 
 **By Milestone:**
 
@@ -51,59 +51,45 @@ Last activity: 2026-04-20 — Phase 39-01 complete (Scenario trait, WorkloadProf
 | v1.6 | 4 | Shipped 2026-04-18 |
 | v1.7 | 5 | Shipped 2026-04-18 |
 | v1.8 | 5 | Shipped 2026-04-20 |
-| v1.9 | 6 | In progress |
+| v1.9 | 6 | Shipped 2026-04-20 |
+| v2.0 | TBD | In progress |
 
 ## Accumulated Context
 
-### Decisions
+### Key Architectural Decisions (preserved across refactor)
 
-- **v1.9**: Benchmark infrastructure in src/benchmark/ as pub(crate) module, invisible to Python API
-- **v1.9**: All measurements aggregate off hot path via background task (no per-message overhead)
-- **v1.9**: Measurement via existing MetricsSink facade (zero-cost when not recording)
-- **v1.9**: Warmup phase exclusion: first N messages (default 1000) excluded from latency/throughput metrics
-- **v1.9**: t-digest histogram for accurate high-percentile computation at scale
-- **v1.9**: Scenario trait + BenchmarkResult model separation (Scenario defines WHAT, result reporters handle HOW)
-- **v1.9**: HardeningRunner.run_all() validates production readiness post-benchmark
+- Rust core / Python business logic — performance + idiomatic bindings
+- rdkafka for Kafka protocol — battle-tested, async-capable
+- Tokio for async runtime — native rdkafka compat, mpsc channels
+- PyO3-free consumer core — clean separation, testable without Python
+- Per-topic bounded queue dispatch — isolated backpressure per topic
+- Highest contiguous offset commit — only commit when all prior offsets acked
+- store_offset + commit coordination — at-least-once delivery guarantee
 
-### Phase Dependencies
+### Refactoring Principles
 
-```
-Phase 38 (Result Models + Measurement)
-    ├── Phase 39 (Scenario Definitions) depends on Phase 38
-    ├── Phase 40 (Benchmark Runner) depends on Phase 38 + Phase 39
-    ├── Phase 41 (Result Output) depends on Phase 38
-    └── Phase 42 (Hardening Checks) depends on Phase 38
-Phase 43 (Python API + Docs) depends on Phase 40 + Phase 41 + Phase 42
-```
-
-### Pending Todos
-
-- Phase 38: Result Models & Measurement Infrastructure — COMPLETE (verified 9 PASS, 1 PARTIAL)
-- Phase 39: Scenario Definitions — NEXT
-- Phase 40: Benchmark Runner — After Phase 39
-- Phase 41: Result Output — After Phase 38
-- Phase 42: Hardening Checks — After Phase 38
-- Phase 43: Python API & Methodology Docs — After Phases 40-42
-
-### Blockers/Concerns
-
-- None identified yet
+- Smaller focused modules over god objects
+- Clear boundaries (no leakage between layers)
+- Less duplication (DRY)
+- Explicit state models over boolean flags
+- Cleaner naming (descriptive, consistent)
+- Lower coupling, high cohesion
+- Stable public API (no behavior changes)
 
 ## Deferred Items
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| Cross-partition aggregation benchmarks | Future milestone | Deferred | v1.9 |
-| Sliding window latency percentiles | Future milestone | Deferred | v1.9 |
-| CI regression detection | Future milestone | Deferred | v1.9 |
-| Alerting rules library export | Future milestone | Deferred | v1.9 |
-| Embedded Kafka testcontainers | Assumes existing Kafka cluster | Out of Scope | v1.9 |
-| Schema registry benchmarks | Deferred to schema support milestone | Out of Scope | v1.9 |
-| Multi-cluster federation benchmarks | Single cluster only | Out of Scope | v1.9 |
-| Custom metric exporters beyond JSON/CSV | Prometheus already available | Out of Scope | v1.9 |
+| Advanced rebalance | Rebalance interfaces | Deferred | v1.0 |
+| Schema registry | Avro support | Deferred | v1.0 |
+| Java/Node.js bindings | Python only | Deferred | v1.0 |
+| Multi-consumer groups | Multiple consumer group support | Deferred | v2.0+ |
+| High-throughput producer | Producer optimizations | Deferred | v2.0+ |
+| Admin client | Kafka topic/partition administration | Deferred | v2.0+ |
+| Stream processing | Kafka Streams-style operations | Deferred | v2.0+ |
 
 ## Session Continuity
 
-Last session: 2026-04-20T08:42:34.194Z
-Stopped at: Completed 43-02-PLAN.md
+Last session: 2026-04-20T12:00:00.000Z
+Stopped at: Milestone v2.0 started
 Resume file: None
