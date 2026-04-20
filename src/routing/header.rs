@@ -84,7 +84,7 @@ mod tests {
     fn presence_match() {
         let router = HeaderRouter::new(vec![rule("x-trace", None, "handler1")]);
         let ctx = ctx_with_headers(&[("x-trace", Some(b"abc"))]);
-        assert!(matches!(router.route(&ctx), RoutingDecision::Route(id) if id == "handler1"));
+        assert!(matches!(router.route(&ctx), RoutingDecision::Route(id) if id.as_str() == "handler1"));
     }
 
     #[test]
@@ -102,7 +102,7 @@ mod tests {
             "handler1",
         )]);
         let ctx = ctx_with_headers(&[("content-type", Some(b"application/json; charset=utf-8"))]);
-        assert!(matches!(router.route(&ctx), RoutingDecision::Route(id) if id == "handler1"));
+        assert!(matches!(router.route(&ctx), RoutingDecision::Route(id) if id.as_str() == "handler1"));
     }
 
     #[test]
@@ -130,6 +130,6 @@ mod tests {
             rule("x-a", None, "handler2"),
         ]);
         let ctx = ctx_with_headers(&[("x-a", Some(b"1"))]);
-        assert!(matches!(router.route(&ctx), RoutingDecision::Route(id) if id == "handler1"));
+        assert!(matches!(router.route(&ctx), RoutingDecision::Route(id) if id.as_str() == "handler1"));
     }
 }

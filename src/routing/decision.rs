@@ -21,6 +21,8 @@ impl std::fmt::Display for RejectReason {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingDecision {
+    /// Route the message to the handler identified by [`HandlerId`](crate::routing::HandlerId).
+    /// The HandlerId is an internal routing key, not the Kafka topic name.
     Route(HandlerId),
     Drop,
     Reject(RejectReason),

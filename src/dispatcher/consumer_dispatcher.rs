@@ -177,19 +177,19 @@ impl ConsumerDispatcher {
                     Ok(outcome) => (Ok(outcome), None),
                     Err(DispatchError::Backpressure(_)) => {
                         let action = policy.on_queue_full(
-                            &handler_id,
+                            handler_id.as_str(),
                             &qm.handlers
                                 .lock()
-                                .get(&handler_id)
+                                .get(handler_id.as_str())
                                 .map(|e| &e.metadata)
                                 .unwrap_or_else(|| panic!("handler '{}' not found", handler_id)),
                         );
                         match action {
                             BackpressureAction::Drop | BackpressureAction::Wait => {
-                                (Err(DispatchError::Backpressure(handler_id)), None)
+                                (Err(DispatchError::Backpressure(handler_id.to_string())), None)
                             }
                             BackpressureAction::FuturePausePartition(t) => (
-                                Err(DispatchError::Backpressure(handler_id)),
+                                Err(DispatchError::Backpressure(handler_id.to_string())),
                                 Some(BackpressureAction::FuturePausePartition(t)),
                             ),
                         }

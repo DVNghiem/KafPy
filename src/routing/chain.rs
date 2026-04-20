@@ -68,7 +68,7 @@ impl RoutingChain {
             key_router: None,
             python_router: None,
             // safety: caller MUST call with_default_handler()
-            default_handler: HandlerId::new(),
+            default_handler: HandlerId::new("__UNSET__"),
         }
     }
 
@@ -231,7 +231,7 @@ mod tests {
             .with_default_handler("default".into());
 
         assert!(
-            matches!(chain.route(&ctx()), RoutingDecision::Route(id) if id == "header-handler")
+            matches!(chain.route(&ctx()), RoutingDecision::Route(id) if id.as_str() == "header-handler")
         );
     }
 
@@ -249,7 +249,7 @@ mod tests {
             })
             .with_default_handler("my-default".into());
 
-        assert!(matches!(chain.route(&ctx()), RoutingDecision::Route(id) if id == "my-default"));
+        assert!(matches!(chain.route(&ctx()), RoutingDecision::Route(id) if id.as_str() == "my-default"));
     }
 
     #[test]
@@ -261,7 +261,7 @@ mod tests {
             })
             .with_default_handler("default".into());
 
-        assert!(matches!(chain.route(&ctx()), RoutingDecision::Route(id) if id == "key-handler"));
+        assert!(matches!(chain.route(&ctx()), RoutingDecision::Route(id) if id.as_str() == "key-handler"));
     }
 
     #[test]

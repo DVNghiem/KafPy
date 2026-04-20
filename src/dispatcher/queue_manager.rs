@@ -238,8 +238,8 @@ impl QueueManager {
 
         let guard = self.handlers.lock();
         let entry = guard
-            .get(handler_id)
-            .ok_or_else(|| DispatchError::HandlerNotRegistered(handler_id.clone()))?;
+            .get(handler_id.as_str())
+            .ok_or_else(|| DispatchError::HandlerNotRegistered(handler_id.as_str().to_string()))?;
 
         match entry.sender.try_send(message) {
             Ok(()) => {
@@ -252,8 +252,8 @@ impl QueueManager {
                     queue_depth: entry.metadata.get_queue_depth(),
                 })
             }
-            Err(TrySendError::Full(_)) => Err(DispatchError::QueueFull(handler_id.clone())),
-            Err(TrySendError::Closed(_)) => Err(DispatchError::QueueClosed(handler_id.clone())),
+            Err(TrySendError::Full(_)) => Err(DispatchError::QueueFull(handler_id.to_string())),
+            Err(TrySendError::Closed(_)) => Err(DispatchError::QueueClosed(handler_id.to_string())),
         }
     }
 }

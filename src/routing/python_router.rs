@@ -1,6 +1,6 @@
 //! PythonRouter — routes messages via a Python callback callable.
 
-use crate::routing::context::RoutingContext;
+use crate::routing::context::{RoutingContext, HandlerId};
 use crate::routing::decision::{RejectReason, RoutingDecision};
 use crate::routing::router::Router;
 use pyo3::prelude::*;
@@ -89,7 +89,7 @@ impl PythonRouter {
     fn parse_return(result: String) -> RoutingDecision {
         if result.starts_with("route:") {
             let handler_id = result.strip_prefix("route:").unwrap().to_string();
-            RoutingDecision::Route(handler_id)
+            RoutingDecision::Route(HandlerId::new(handler_id))
         } else if result == "drop" {
             RoutingDecision::Drop
         } else if result.starts_with("reject:") {
@@ -178,7 +178,7 @@ mod tests {
         .unwrap();
 
         match decision {
-            RoutingDecision::Route(id) => assert_eq!(id, "my-handler"),
+            RoutingDecision::Route(id) => assert_eq!(id.as_str(), "my-handler"),
             other => panic!("expected Route, got {:?}", other),
         }
     }

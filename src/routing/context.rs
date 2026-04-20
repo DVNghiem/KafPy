@@ -2,7 +2,70 @@
 
 use crate::consumer::message::OwnedMessage;
 
-pub type HandlerId = String;
+/// Opaque handler identifier.
+///
+/// Distinct from [`RoutingContext::topic`] — HandlerId is the internal key used
+/// to route messages to registered handlers; topic is the Kafka topic name.
+/// While handlers are currently registered by topic name, these are conceptually
+/// separate: a handler might be registered with an alias, not a topic.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HandlerId(String);
+
+impl HandlerId {
+    /// Creates a new HandlerId from a String (or &str via Into).
+    #[inline]
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// Returns the underlying string slice.
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Returns true if the underlying string is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Display for HandlerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl AsRef<str> for HandlerId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for HandlerId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for HandlerId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl From<HandlerId> for String {
+    fn from(id: HandlerId) -> Self {
+        id.0
+    }
+}
+
+impl std::borrow::Borrow<str> for HandlerId {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct RoutingContext<'a> {

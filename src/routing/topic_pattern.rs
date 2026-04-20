@@ -127,7 +127,7 @@ mod tests {
     fn glob_exact_match() {
         let router = glob_router(&[("events", "handler1")]);
         assert!(
-            matches!(router.route(&ctx("events")), RoutingDecision::Route(id) if id == "handler1")
+            matches!(router.route(&ctx("events")), RoutingDecision::Route(id) if id.as_str() == "handler1")
         );
     }
 
@@ -135,10 +135,10 @@ mod tests {
     fn glob_wildcard_match() {
         let router = glob_router(&[("events.*", "handler1")]);
         assert!(
-            matches!(router.route(&ctx("events.us")), RoutingDecision::Route(id) if id == "handler1")
+            matches!(router.route(&ctx("events.us")), RoutingDecision::Route(id) if id.as_str() == "handler1")
         );
         assert!(
-            matches!(router.route(&ctx("events.eu")), RoutingDecision::Route(id) if id == "handler1")
+            matches!(router.route(&ctx("events.eu")), RoutingDecision::Route(id) if id.as_str() == "handler1")
         );
     }
 
@@ -155,7 +155,7 @@ mod tests {
     fn glob_first_match_wins() {
         let router = glob_router(&[("events.*", "handler1"), ("events.us", "handler2")]);
         assert!(
-            matches!(router.route(&ctx("events.us")), RoutingDecision::Route(id) if id == "handler1")
+            matches!(router.route(&ctx("events.us")), RoutingDecision::Route(id) if id.as_str() == "handler1")
         );
     }
 
@@ -163,7 +163,7 @@ mod tests {
     fn regex_match() {
         let router = regex_router(&[(r"^events\..+$", "handler1")]);
         assert!(
-            matches!(router.route(&ctx("events.us")), RoutingDecision::Route(id) if id == "handler1")
+            matches!(router.route(&ctx("events.us")), RoutingDecision::Route(id) if id.as_str() == "handler1")
         );
         assert!(matches!(
             router.route(&ctx("events")),

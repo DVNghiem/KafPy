@@ -1,7 +1,9 @@
 use pyo3::prelude::*;
 
 pub mod config;
-pub mod errors;
+// Unified error re-exports (errors.rs remains internal as PyError)
+pub(crate) mod errors;
+pub mod error;
 pub mod kafka_message;
 pub mod produce;
 pub mod pyconsumer;
@@ -170,4 +172,44 @@ fn run_hardening_checks_py(_py: Python<'_>, result_json: &str) -> PyResult<Strin
 
     serde_json::to_string(&json_array)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("failed to serialize results: {e}")))
+}
+
+// ─── Compile-time Send+Sync guarantees ─────────────────────────────────────────
+
+/// Compile-time assertion that all routing types are Send+Sync.
+/// Breaking these guarantees would introduce data races in the dispatcher.
+fn _assert_send_sync_routing()
+where
+    crate::routing::HandlerId: Send + Sync,
+    crate::routing::context::RoutingContext<'static>: Send + Sync,
+    crate::routing::decision::RoutingDecision: Send + Sync,
+    crate::routing::key::KeyRouter: Send + Sync,
+{}
+
+#[cfg(test)]
+mod send_sync_assertions {
+    use super::*;
+
+    #[test]
+    fn routing_types_are_send_sync() {
+        _assert_send_sync_routing();
+    }
+}
+
+/// Compile-time assertion that Dispatcher types are Send+Sync.
+fn _assert_send_sync_dispatcher()
+where
+    crate::dispatcher::Dispatcher: Send + Sync,
+    crate::dispatcher::DispatchOutcome: Send + Sync,
+    crate::dispatcher::error::DispatchError: Send + Sync,
+{}
+
+#[cfg(test)]
+mod dispatcher_send_sync_assertions {
+    use super::*;
+
+    #[test]
+    fn dispatcher_types_are_send_sync() {
+        _assert_send_sync_dispatcher();
+    }
 }

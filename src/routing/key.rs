@@ -103,6 +103,7 @@ impl Router for KeyRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::routing::HandlerId;
 
     fn ctx(key: Option<&[u8]>) -> RoutingContext<'_> {
         RoutingContext {
@@ -117,15 +118,15 @@ mod tests {
 
     #[test]
     fn exact_bytes_match() {
-        let router = KeyRouter::new(vec![KeyRule::exact_bytes(b"order-123", "h".into())]);
+        let router = KeyRouter::new(vec![KeyRule::exact_bytes(b"order-123", HandlerId::new("h"))]);
         assert!(
-            matches!(router.route(&ctx(Some(b"order-123"))), RoutingDecision::Route(id) if id == "h")
+            matches!(router.route(&ctx(Some(b"order-123"))), RoutingDecision::Route(id) if id == HandlerId::new("h"))
         );
     }
 
     #[test]
     fn exact_bytes_no_match() {
-        let router = KeyRouter::new(vec![KeyRule::exact_bytes(b"order-123", "h".into())]);
+        let router = KeyRouter::new(vec![KeyRule::exact_bytes(b"order-123", HandlerId::new("h"))]);
         assert!(matches!(
             router.route(&ctx(Some(b"order-456"))),
             RoutingDecision::Defer
@@ -134,18 +135,18 @@ mod tests {
 
     #[test]
     fn prefix_bytes_match() {
-        let router = KeyRouter::new(vec![KeyRule::prefix_bytes(b"order-", "h".into())]);
+        let router = KeyRouter::new(vec![KeyRule::prefix_bytes(b"order-", HandlerId::new("h"))]);
         assert!(
-            matches!(router.route(&ctx(Some(b"order-123"))), RoutingDecision::Route(id) if id == "h")
+            matches!(router.route(&ctx(Some(b"order-123"))), RoutingDecision::Route(id) if id == HandlerId::new("h"))
         );
         assert!(
-            matches!(router.route(&ctx(Some(b"order-"))), RoutingDecision::Route(id) if id == "h")
+            matches!(router.route(&ctx(Some(b"order-"))), RoutingDecision::Route(id) if id == HandlerId::new("h"))
         );
     }
 
     #[test]
     fn prefix_bytes_no_match() {
-        let router = KeyRouter::new(vec![KeyRule::prefix_bytes(b"order-", "h".into())]);
+        let router = KeyRouter::new(vec![KeyRule::prefix_bytes(b"order-", HandlerId::new("h"))]);
         assert!(matches!(
             router.route(&ctx(Some(b"event-123"))),
             RoutingDecision::Defer
@@ -154,31 +155,31 @@ mod tests {
 
     #[test]
     fn exact_str_match() {
-        let router = KeyRouter::new(vec![KeyRule::exact_str("order-123", "h".into())]);
+        let router = KeyRouter::new(vec![KeyRule::exact_str("order-123", HandlerId::new("h"))]);
         assert!(
-            matches!(router.route(&ctx(Some(b"order-123"))), RoutingDecision::Route(id) if id == "h")
+            matches!(router.route(&ctx(Some(b"order-123"))), RoutingDecision::Route(id) if id == HandlerId::new("h"))
         );
     }
 
     #[test]
     fn prefix_str_match() {
-        let router = KeyRouter::new(vec![KeyRule::prefix_str("order-", "h".into())]);
+        let router = KeyRouter::new(vec![KeyRule::prefix_str("order-", HandlerId::new("h"))]);
         assert!(
-            matches!(router.route(&ctx(Some(b"order-123"))), RoutingDecision::Route(id) if id == "h")
+            matches!(router.route(&ctx(Some(b"order-123"))), RoutingDecision::Route(id) if id == HandlerId::new("h"))
         );
     }
 
     #[test]
     fn no_key_defer() {
-        let router = KeyRouter::new(vec![KeyRule::exact_bytes(b"order-123", "h".into())]);
+        let router = KeyRouter::new(vec![KeyRule::exact_bytes(b"order-123", HandlerId::new("h"))]);
         assert!(matches!(router.route(&ctx(None)), RoutingDecision::Defer));
     }
 
     #[test]
     fn invalid_utf8_key_defers_str_matching() {
-        let router = KeyRouter::new(vec![KeyRule::prefix_bytes(b"\xff", "h".into())]);
+        let router = KeyRouter::new(vec![KeyRule::prefix_bytes(b"\xff", HandlerId::new("h"))]);
         assert!(
-            matches!(router.route(&ctx(Some(&[0xff]))), RoutingDecision::Route(id) if id == "h")
+            matches!(router.route(&ctx(Some(&[0xff]))), RoutingDecision::Route(id) if id == HandlerId::new("h"))
         );
     }
 }
