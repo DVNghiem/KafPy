@@ -10,7 +10,43 @@ use crate::python::async_bridge::PythonAsyncFuture;
 use crate::python::context::ExecutionContext;
 use crate::python::execution_result::{BatchExecutionResult, ExecutionResult};
 use crate::retry::RetryPolicy;
+use std::collections::HashMap;
 use std::sync::Arc;
+
+use pyo3::prelude::*;
+use pyo3::types::PyDict;
+
+/// Converts an OwnedMessage to a PyDict for Python callback invocation.
+///
+/// Call inside `Python::attach(|py| { ... })` with the Python token.
+/// Optionally injects trace context if provided.
+fn message_to_pydict<'py>(
+    py: Python<'py>,
+    msg: &OwnedMessage,
+    trace_context: Option<&HashMap<String, String>>,
+) -> Py<PyAny> {
+    let py_msg = PyDict::new(py);
+    let _ = py_msg.set_item("topic", &msg.topic);
+    let _ = py_msg.set_item("partition", msg.partition);
+    let _ = py_msg.set_item("offset", msg.offset);
+    let _ = py_msg.set_item("key", msg.key.as_deref());
+    let _ = py_msg.set_item("payload", msg.payload.as_deref());
+    let ts: i64 = match msg.timestamp {
+        MessageTimestamp::NotAvailable => 0,
+        MessageTimestamp::CreateTime(ts) => ts,
+        MessageTimestamp::LogAppendTime(ts) => ts,
+    };
+    let _ = py_msg.set_item("timestamp", ts);
+    let _ = py_msg.set_item("headers", &msg.headers);
+    if let Some(ctx) = trace_context {
+        let trace_dict = PyDict::new(py);
+        for (k, v) in ctx {
+            let _ = trace_dict.set_item(k, v);
+        }
+        let _ = py_msg.set_item("_trace_context", trace_dict);
+    }
+    py_msg.into()
+}
 
 /// Execution mode for a Python handler.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,14 +197,7 @@ impl PythonHandler {
     /// inside `Python::with_gil`.
     pub async fn invoke(&self, ctx: &ExecutionContext, message: OwnedMessage) -> ExecutionResult {
         let callback = Arc::clone(&self.callback);
-        let topic = ctx.topic.clone();
-        let partition = ctx.partition;
-        let offset = ctx.offset;
-        let _worker_id = ctx.worker_id;
-        let key = message.key.clone();
-        let payload = message.payload.clone();
-        let headers = message.headers.clone();
-        let timestamp = message.timestamp;
+        let ctx_clone = ctx.clone();
 
         // Extract W3C trace context before crossing GIL boundary
         let mut trace_context = std::collections::HashMap::new();
@@ -176,32 +205,12 @@ impl PythonHandler {
 
         let result = tokio::task::spawn_blocking(move || {
             Python::attach(|py| {
-                let py_msg = PyDict::new(py);
-                let _ = py_msg.set_item("topic", &topic);
-                let _ = py_msg.set_item("partition", partition);
-                let _ = py_msg.set_item("offset", offset);
-                let _ = py_msg.set_item("key", key.as_deref());
-                let _ = py_msg.set_item("payload", payload.as_deref());
-                let ts: i64 = match timestamp {
-                    MessageTimestamp::NotAvailable => 0,
-                    MessageTimestamp::CreateTime(ts) => ts,
-                    MessageTimestamp::LogAppendTime(ts) => ts,
-                };
-                let _ = py_msg.set_item("timestamp", ts);
-                let _ = py_msg.set_item("headers", &headers);
-
-                // Inject W3C trace context headers for Python to propagate
-                let trace_dict = PyDict::new(py);
-                for (k, v) in &trace_context {
-                    let _ = trace_dict.set_item(k, v);
-                }
-                let _ = py_msg.set_item("_trace_context", trace_dict);
+                let py_msg = message_to_pydict(py, &message, Some(&trace_context));
 
                 match callback.call1(py, (py_msg,)) {
                     Ok(_) => ExecutionResult::Ok,
                     Err(py_err) => {
                         let classifier = DefaultFailureClassifier;
-                        let ctx_clone = ExecutionContext::new(topic, partition, offset, _worker_id);
                         let reason = classifier.classify(&py_err, &ctx_clone);
                         let exception = py_err
                             .get_type(py)
@@ -241,8 +250,7 @@ impl PythonHandler {
         messages: Vec<OwnedMessage>,
     ) -> BatchExecutionResult {
         let callback = Arc::clone(&self.callback);
-        let topic = ctx.topic.clone();
-        let partition = ctx.partition;
+        let ctx_clone = ctx.clone();
         let worker_id = ctx.worker_id;
 
         // Extract W3C trace context before crossing GIL boundary
@@ -254,30 +262,7 @@ impl PythonHandler {
                 // Build Vec<PyDict> for the batch — one dict per message
                 let py_batch: Vec<Py<PyAny>> = messages
                     .iter()
-                    .map(|msg| {
-                        let py_msg = PyDict::new(py);
-                        let _ = py_msg.set_item("topic", &msg.topic);
-                        let _ = py_msg.set_item("partition", msg.partition);
-                        let _ = py_msg.set_item("offset", msg.offset);
-                        let _ = py_msg.set_item("key", msg.key.as_deref());
-                        let _ = py_msg.set_item("payload", msg.payload.as_deref());
-                        let ts: i64 = match msg.timestamp {
-                            MessageTimestamp::NotAvailable => 0,
-                            MessageTimestamp::CreateTime(ts) => ts,
-                            MessageTimestamp::LogAppendTime(ts) => ts,
-                        };
-                        let _ = py_msg.set_item("timestamp", ts);
-                        let _ = py_msg.set_item("headers", &msg.headers);
-
-                        // Inject W3C trace context headers for Python to propagate
-                        let trace_dict = PyDict::new(py);
-                        for (k, v) in &trace_context {
-                            let _ = trace_dict.set_item(k, v);
-                        }
-                        let _ = py_msg.set_item("_trace_context", trace_dict);
-
-                        py_msg.into()
-                    })
+                    .map(|msg| message_to_pydict(py, msg, Some(&trace_context)))
                     .collect();
 
                 match callback.call1(py, (py_batch,)) {
@@ -288,9 +273,9 @@ impl PythonHandler {
                     }
                     Err(py_err) => {
                         let classifier = DefaultFailureClassifier;
-                        let ctx_clone =
-                            ExecutionContext::new(topic.clone(), partition, 0, worker_id);
-                        let reason = classifier.classify(&py_err, &ctx_clone);
+                        let ctx_err_clone =
+                            ExecutionContext::new(ctx_clone.topic.clone(), ctx_clone.partition, 0, worker_id);
+                        let reason = classifier.classify(&py_err, &ctx_err_clone);
                         BatchExecutionResult::AllFailure(reason)
                     }
                 }
@@ -317,31 +302,12 @@ impl PythonHandler {
         message: OwnedMessage,
     ) -> ExecutionResult {
         let callback = Arc::clone(&self.callback);
-        let topic = ctx.topic.clone();
-        let partition = ctx.partition;
-        let offset = ctx.offset;
-        let _worker_id = ctx.worker_id;
-        let key = message.key.clone();
-        let payload = message.payload.clone();
-        let headers = message.headers.clone();
-        let timestamp = message.timestamp;
 
         // Build the coroutine object inside with_gil — this is synchronous,
         // but the returned PythonAsyncFuture handles GIL release on each poll.
         let coro: Py<PyAny> = Python::attach(|py| {
-            let py_msg = PyDict::new(py);
-            let _ = py_msg.set_item("topic", &topic);
-            let _ = py_msg.set_item("partition", partition);
-            let _ = py_msg.set_item("offset", offset);
-            let _ = py_msg.set_item("key", key.as_deref());
-            let _ = py_msg.set_item("payload", payload.as_deref());
-            let ts: i64 = match timestamp {
-                MessageTimestamp::NotAvailable => 0,
-                MessageTimestamp::CreateTime(ts) => ts,
-                MessageTimestamp::LogAppendTime(ts) => ts,
-            };
-            let _ = py_msg.set_item("timestamp", ts);
-            let _ = py_msg.set_item("headers", &headers);
+            // Note: async path does not inject trace context (no spawn_blocking GIL boundary)
+            let py_msg = message_to_pydict(py, &message, None);
 
             // Call the async function — returns a coroutine object.
             // The callback IS the coroutine function, calling it returns the coroutine object.
@@ -366,31 +332,13 @@ impl PythonHandler {
         messages: Vec<OwnedMessage>,
     ) -> BatchExecutionResult {
         let callback = Arc::clone(&self.callback);
-        let _topic = ctx.topic.clone();
-        let _partition = ctx.partition;
-        let _worker_id = ctx.worker_id;
 
         // Build the coroutine object inside with_gil
         let coro: Py<PyAny> = Python::attach(|py| {
-            // Build Vec<Py<PyAny>> of message dicts — one dict per message
+            // Note: async path does not inject trace context (no spawn_blocking GIL boundary)
             let py_batch: Vec<Py<PyAny>> = messages
                 .iter()
-                .map(|msg| {
-                    let py_msg = PyDict::new(py);
-                    let _ = py_msg.set_item("topic", &msg.topic);
-                    let _ = py_msg.set_item("partition", msg.partition);
-                    let _ = py_msg.set_item("offset", msg.offset);
-                    let _ = py_msg.set_item("key", msg.key.as_deref());
-                    let _ = py_msg.set_item("payload", msg.payload.as_deref());
-                    let ts: i64 = match msg.timestamp {
-                        MessageTimestamp::NotAvailable => 0,
-                        MessageTimestamp::CreateTime(ts) => ts,
-                        MessageTimestamp::LogAppendTime(ts) => ts,
-                    };
-                    let _ = py_msg.set_item("timestamp", ts);
-                    let _ = py_msg.set_item("headers", &msg.headers);
-                    py_msg.into()
-                })
+                .map(|msg| message_to_pydict(py, msg, None))
                 .collect();
 
             // Call the async batch function — returns a coroutine object.
@@ -435,6 +383,3 @@ impl PythonHandler {
         }
     }
 }
-
-use pyo3::prelude::*;
-use pyo3::types::PyDict;
