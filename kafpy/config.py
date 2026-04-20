@@ -24,6 +24,25 @@ class ConsumerConfig:
 
     Wraps the Rust ConsumerConfig for Python-side validation and type-safety.
     Use ``to_rust()`` to convert to the Rust ConsumerConfig for use with the runtime.
+
+    Attributes:
+        bootstrap_servers: Comma-separated list of Kafka broker addresses.
+        group_id: Consumer group identifier.
+        topics: List of topics to subscribe to.
+        auto_offset_reset: Where to start if no offset exists ("earliest" or "latest").
+        enable_auto_commit: Whether to auto-commit offsets.
+        session_timeout_ms: Session timeout in milliseconds.
+        heartbeat_interval_ms: Heartbeat interval in milliseconds.
+        max_poll_interval_ms: Maximum poll interval in milliseconds.
+        security_protocol: Security protocol (None, "PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL").
+        sasl_mechanism: SASL mechanism (None, "PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512").
+        sasl_username: SASL username.
+        sasl_password: SASL password.
+        fetch_min_bytes: Minimum bytes to fetch per request.
+        max_partition_fetch_bytes: Maximum bytes per partition to fetch.
+        partition_assignment_strategy: Partition assignment strategy ("roundrobin", "range", "cooperative-sticky").
+        retry_backoff_ms: Retry backoff interval in milliseconds.
+        message_batch_size: Number of messages per batch.
     """
 
     bootstrap_servers: str
@@ -86,7 +105,12 @@ class ConsumerConfig:
 
 @dataclass(frozen=True)
 class RoutingConfig:
-    """Routing configuration for handler selection."""
+    """Routing configuration for handler selection.
+
+    Attributes:
+        routing_mode: How to route messages to handlers ("default", "pattern", "header", "key", "python").
+        fallback_handler: Name of fallback handler when no match is found.
+    """
 
     routing_mode: str = "default"
     fallback_handler: str | None = None
@@ -101,7 +125,14 @@ class RoutingConfig:
 
 @dataclass(frozen=True)
 class RetryConfig:
-    """Retry configuration for handler failures."""
+    """Retry configuration for handler failures.
+
+    Attributes:
+        max_attempts: Maximum number of retry attempts (0 means no retry).
+        base_delay: Base delay in seconds between retries (exponential backoff).
+        max_delay: Maximum delay in seconds between retries.
+        jitter_factor: Random jitter factor between 0.0 and 1.0 added to delay.
+    """
 
     max_attempts: int = 3
     base_delay: float = 1.0
@@ -123,7 +154,12 @@ class RetryConfig:
 
 @dataclass(frozen=True)
 class BatchConfig:
-    """Batch processing configuration."""
+    """Batch processing configuration.
+
+    Attributes:
+        max_batch_size: Maximum number of messages per batch.
+        max_batch_timeout_ms: Maximum time to wait for a batch in milliseconds.
+    """
 
     max_batch_size: int = 100
     max_batch_timeout_ms: int = 1000
@@ -137,7 +173,11 @@ class BatchConfig:
 
 @dataclass(frozen=True)
 class ConcurrencyConfig:
-    """Concurrency configuration for handler workers."""
+    """Concurrency configuration for handler workers.
+
+    Attributes:
+        num_workers: Number of concurrent worker threads or tasks.
+    """
 
     num_workers: int = 1
 
