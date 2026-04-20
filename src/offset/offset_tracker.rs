@@ -235,7 +235,7 @@ impl OffsetTracker {
     }
 }
 
-use super::OffsetCoordinator;
+use crate::offset::offset_coordinator::OffsetCoordinator;
 
 impl Default for OffsetTracker {
     fn default() -> Self {

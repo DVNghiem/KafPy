@@ -29,6 +29,12 @@ pub(crate) mod failure;
 // Retry scheduling — RetryPolicy, RetrySchedule for exponential backoff with jitter
 pub(crate) mod retry;
 
+// Shutdown coordination — 4-phase shutdown lifecycle
+pub(crate) mod shutdown;
+
+// Offset tracking — highest-contiguous-offset algorithm
+pub(crate) mod offset;
+
 // DLQ routing — DlqMetadata envelope, DlqRouter trait, fire-and-forget produce
 pub(crate) mod dlq;
 

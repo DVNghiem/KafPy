@@ -1,6 +1,6 @@
 //! Coordinator error types.
 
-use super::shutdown::ShutdownPhase;
+use crate::shutdown::ShutdownPhase;
 use thiserror::Error;
 
 /// Errors produced by the coordinator module.

@@ -10,8 +10,8 @@ use tokio::time::interval;
 use tracing::{debug, error};
 
 use crate::consumer::runner::ConsumerRunner;
-use crate::coordinator::offset_tracker::OffsetTracker;
-use crate::coordinator::shutdown::ShutdownCoordinator;
+use crate::offset::offset_tracker::OffsetTracker;
+use crate::shutdown::shutdown::ShutdownCoordinator;
 
 /// Topic-partition pair used as the watch channel payload.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

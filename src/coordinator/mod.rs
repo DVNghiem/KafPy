@@ -1,17 +1,20 @@
-//! Offset commit coordinator module.
+//! Coordinator module — thin re-export layer.
 //!
-//! Provides per-topic-partition offset tracking with highest-contiguous-offset
-//! algorithm for at-least-once delivery guarantees.
+//! This module re-exports from offset/, shutdown/, and retry/ submodules.
+//! No new behavior here; all logic lives in the responsibility-split modules.
 
-pub mod commit_task;
-pub mod error;
-pub mod offset_coordinator;
-pub mod offset_tracker;
-pub mod retry_coordinator;
-pub mod shutdown;
+pub mod error; // kept in place
 
-pub use commit_task::{CommitConfig, OffsetCommitter, TopicPartition};
-pub use offset_coordinator::OffsetCoordinator;
-pub use offset_tracker::OffsetTracker;
-pub use retry_coordinator::RetryCoordinator;
-pub use shutdown::{ShutdownCoordinator, ShutdownPhase};
+// Re-export from offset/ submodule
+pub use crate::offset::commit_task::{CommitConfig, OffsetCommitter, TopicPartition};
+pub use crate::offset::offset_coordinator::OffsetCoordinator;
+pub use crate::offset::offset_tracker::OffsetTracker;
+
+// Re-export from shutdown/ submodule
+pub use crate::shutdown::{ShutdownCoordinator, ShutdownPhase};
+
+// Re-export from retry/ submodule
+pub use crate::retry::{RetryCoordinator, RetryPolicy, RetryState};
+
+// Re-export error types at coordinator/ level for backward compatibility
+pub use thiserror::Error;

@@ -6,7 +6,7 @@ use tokio::select;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::coordinator::retry_coordinator::RetryCoordinator;
+use crate::coordinator::RetryCoordinator;
 use crate::coordinator::OffsetCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
