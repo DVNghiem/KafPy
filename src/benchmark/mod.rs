@@ -6,6 +6,9 @@ pub(crate) mod results;
 // Benchmark infrastructure — measurement types, latency/throughput tracking
 pub(crate) mod output;
 
+// Hardening validation checks (HARD-01 through HARD-08)
+pub(crate) mod hardening;
+
 pub mod measurement;
 
 pub use measurement::{
@@ -19,6 +22,9 @@ pub use crate::observability::MetricLabels;
 
 // re-export result types and CsvSerializable trait for convenience
 pub use results::{AggregatedResult, BenchmarkResult, CsvSerializable, PercentileBuckets, ScenarioConfig};
+
+// re-export hardening validation types
+pub use hardening::{HardeningCheck, HardeningRunner, ValidationResult};
 
 // Scenario definitions — WHAT to benchmark (consumed by BenchmarkRunner in Phase 40)
 pub(crate) mod scenarios;
