@@ -14,11 +14,13 @@
 //! - Phase 10: WorkerPool [Phase 10]
 
 pub mod async_bridge;
+pub mod batch;
 pub mod context;
 pub mod execution_result;
 pub mod executor;
 pub mod handler;
 
+pub use batch::BatchAccumulator;
 pub use context::ExecutionContext;
 pub use execution_result::ExecutionResult;
 pub use executor::{
