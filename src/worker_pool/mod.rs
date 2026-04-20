@@ -515,6 +515,61 @@ async fn worker_loop(
 /// Per D-01: BatchAccumulator is a dedicated struct (separate from worker_loop).
 /// Per D-02: Fixed-window timer — deadline set on first message, never recalculated.
 /// Per D-04: Inline iteration for batch results in this function.
+
+/// Flushes a single partition batch through the Python handler.
+///
+/// Common helper used by all 6 flush sites in batch_worker_loop:
+/// - deadline expiry, backpressure flush, preemptive flush, max_batch_size flush,
+///   channel-closed drain, shutdown drain.
+async fn flush_partition_batch(
+    partition: i32,
+    batch: Vec<OwnedMessage>,
+    handler: Arc<PythonHandler>,
+    worker_id: usize,
+    worker_pool_state: Arc<WorkerPoolState>,
+    executor: Arc<dyn Executor>,
+    queue_manager: Arc<QueueManager>,
+    offset_coordinator: Arc<dyn OffsetCoordinator>,
+    retry_coordinator: Arc<RetryCoordinator>,
+    dlq_producer: Arc<SharedDlqProducer>,
+    dlq_router: Arc<dyn DlqRouter>,
+) {
+    if batch.is_empty() {
+        return;
+    }
+    let topic = batch[0].topic.clone();
+    let ctx =
+        ExecutionContext::new(topic.clone(), partition, batch[0].offset, worker_id);
+    let span = tracing::Span::current().kafpy_handler_invoke(
+        topic.as_str(),
+        topic.as_str(),
+        partition,
+        batch[0].offset,
+        handler.mode().as_str(),
+    );
+    worker_pool_state.set_busy(worker_id, "shared".to_string());
+    let result = span
+        .in_scope(|| async {
+            handler.invoke_mode_batch(&ctx, batch.clone()).await
+        })
+        .await;
+    handle_batch_result_inline(
+        result,
+        batch,
+        &topic,
+        partition,
+        &ctx,
+        executor,
+        queue_manager,
+        offset_coordinator,
+        retry_coordinator,
+        dlq_producer,
+        dlq_router,
+    )
+    .await;
+    worker_pool_state.set_idle(worker_id);
+}
+
 async fn batch_worker_loop(
     mut rx: mpsc::Receiver<OwnedMessage>,
     handler: Arc<PythonHandler>,
@@ -555,49 +610,23 @@ async fn batch_worker_loop(
             } => {
                 // Deadline expired — flush all
                 if !accumulator.is_empty() {
-                    // Mark worker as busy for runtime introspection (OBS-31)
-                    // handler_id is "shared" since PythonHandler is shared across topics
-                    worker_pool_state.set_busy(worker_id, "shared".to_string());
                     let partitions = accumulator.flush_all();
-                    if !partitions.is_empty() {
-                        for (partition, batch) in partitions {
-                            if !batch.is_empty() {
-                                let topic = batch[0].topic.clone();
-                                let ctx = ExecutionContext::new(
-                                    topic.clone(),
-                                    partition,
-                                    batch[0].offset,
-                                    worker_id,
-                                );
-                                let span = tracing::Span::current().kafpy_handler_invoke(
-                                    topic.as_str(),
-                                    topic.as_str(),
-                                    partition,
-                                    batch[0].offset,
-                                    handler.mode().as_str(),
-                                );
-                                let result = span.in_scope(|| async {
-                                    handler.invoke_mode_batch(&ctx, batch.clone()).await
-                                }).await;
-                                handle_batch_result_inline(
-                                    result,
-                                    batch,
-                                    &topic,
-                                    partition,
-                                    &ctx,
-                                    executor.clone(),
-                                    queue_manager.clone(),
-                                    offset_coordinator.clone(),
-                                    retry_coordinator.clone(),
-                                    dlq_producer.clone(),
-                                    dlq_router.clone(),
-                                )
-                                .await;
-                            }
-                        }
+                    for (partition, batch) in partitions {
+                        flush_partition_batch(
+                            partition,
+                            batch,
+                            Arc::clone(&handler),
+                            worker_id,
+                            Arc::clone(&worker_pool_state),
+                            Arc::clone(&executor),
+                            Arc::clone(&queue_manager),
+                            Arc::clone(&offset_coordinator),
+                            Arc::clone(&retry_coordinator),
+                            Arc::clone(&dlq_producer),
+                            Arc::clone(&dlq_router),
+                        )
+                        .await;
                     }
-                    // Mark worker as idle after batch processing (OBS-31)
-                    worker_pool_state.set_idle(worker_id);
                 }
             }
 
@@ -614,39 +643,20 @@ async fn batch_worker_loop(
                                         backpressure_active = true;
                                         let partitions = accumulator.flush_all();
                                         for (partition, batch) in partitions {
-                                            if !batch.is_empty() {
-                                                let topic = batch[0].topic.clone();
-                                                let ctx = ExecutionContext::new(
-                                                    topic.clone(),
-                                                    partition,
-                                                    batch[0].offset,
-                                                    worker_id,
-                                                );
-                                                let span = tracing::Span::current().kafpy_handler_invoke(
-                                                    topic.as_str(),
-                                                    topic.as_str(),
-                                                    partition,
-                                                    batch[0].offset,
-                                                    handler.mode().as_str(),
-                                                );
-                                                let result = span.in_scope(|| async {
-                                                    handler.invoke_mode_batch(&ctx, batch.clone()).await
-                                                }).await;
-                                                handle_batch_result_inline(
-                                                    result,
-                                                    batch,
-                                                    &topic,
-                                                    partition,
-                                                    &ctx,
-                                                    executor.clone(),
-                                                    queue_manager.clone(),
-                                                    offset_coordinator.clone(),
-                                                    retry_coordinator.clone(),
-                                                    dlq_producer.clone(),
-                                                    dlq_router.clone(),
-                                                )
-                                                .await;
-                                            }
+                                            flush_partition_batch(
+                                                partition,
+                                                batch,
+                                                Arc::clone(&handler),
+                                                worker_id,
+                                                Arc::clone(&worker_pool_state),
+                                                Arc::clone(&executor),
+                                                Arc::clone(&queue_manager),
+                                                Arc::clone(&offset_coordinator),
+                                                Arc::clone(&retry_coordinator),
+                                                Arc::clone(&dlq_producer),
+                                                Arc::clone(&dlq_router),
+                                            )
+                                            .await;
                                         }
                                     }
                                 }
@@ -656,40 +666,20 @@ async fn batch_worker_loop(
                         // Check if adding would fill the partition — flush preemptively
                         if accumulator.would_fill_partition(msg.partition) {
                             if let Some(batch) = accumulator.flush_partition(msg.partition) {
-                                if !batch.is_empty() {
-                                    let topic = batch[0].topic.clone();
-                                    let partition = batch[0].partition;
-                                    let ctx = ExecutionContext::new(
-                                        topic.clone(),
-                                        partition,
-                                        batch[0].offset,
-                                        worker_id,
-                                    );
-                                    let span = tracing::Span::current().kafpy_handler_invoke(
-                                        topic.as_str(),
-                                        topic.as_str(),
-                                        partition,
-                                        batch[0].offset,
-                                        handler.mode().as_str(),
-                                    );
-                                    let result = span.in_scope(|| async {
-                                        handler.invoke_mode_batch(&ctx, batch.clone()).await
-                                    }).await;
-                                    handle_batch_result_inline(
-                                        result,
-                                        batch,
-                                        &topic,
-                                        partition,
-                                        &ctx,
-                                        executor.clone(),
-                                        queue_manager.clone(),
-                                        offset_coordinator.clone(),
-                                        retry_coordinator.clone(),
-                                        dlq_producer.clone(),
-                                        dlq_router.clone(),
-                                    )
-                                    .await;
-                                }
+                                flush_partition_batch(
+                                    batch[0].partition,
+                                    batch,
+                                    Arc::clone(&handler),
+                                    worker_id,
+                                    Arc::clone(&worker_pool_state),
+                                    Arc::clone(&executor),
+                                    Arc::clone(&queue_manager),
+                                    Arc::clone(&offset_coordinator),
+                                    Arc::clone(&retry_coordinator),
+                                    Arc::clone(&dlq_producer),
+                                    Arc::clone(&dlq_router),
+                                )
+                                .await;
                             }
                         }
 
@@ -700,40 +690,20 @@ async fn batch_worker_loop(
                         // If we just hit max_batch_size after adding, flush immediately
                         if accumulator.would_fill_partition(msg_partition) {
                             if let Some(batch) = accumulator.flush_partition(msg_partition) {
-                                if !batch.is_empty() {
-                                    let topic = batch[0].topic.clone();
-                                    let partition = batch[0].partition;
-                                    let ctx = ExecutionContext::new(
-                                        topic.clone(),
-                                        partition,
-                                        batch[0].offset,
-                                        worker_id,
-                                    );
-                                    let span = tracing::Span::current().kafpy_handler_invoke(
-                                        topic.as_str(),
-                                        topic.as_str(),
-                                        partition,
-                                        batch[0].offset,
-                                        handler.mode().as_str(),
-                                    );
-                                    let result = span.in_scope(|| async {
-                                        handler.invoke_mode_batch(&ctx, batch.clone()).await
-                                    }).await;
-                                    handle_batch_result_inline(
-                                        result,
-                                        batch,
-                                        &topic,
-                                        partition,
-                                        &ctx,
-                                        executor.clone(),
-                                        queue_manager.clone(),
-                                        offset_coordinator.clone(),
-                                        retry_coordinator.clone(),
-                                        dlq_producer.clone(),
-                                        dlq_router.clone(),
-                                    )
-                                    .await;
-                                }
+                                flush_partition_batch(
+                                    batch[0].partition,
+                                    batch,
+                                    Arc::clone(&handler),
+                                    worker_id,
+                                    Arc::clone(&worker_pool_state),
+                                    Arc::clone(&executor),
+                                    Arc::clone(&queue_manager),
+                                    Arc::clone(&offset_coordinator),
+                                    Arc::clone(&retry_coordinator),
+                                    Arc::clone(&dlq_producer),
+                                    Arc::clone(&dlq_router),
+                                )
+                                .await;
                             }
                         }
                     }
@@ -745,39 +715,20 @@ async fn batch_worker_loop(
                         );
                         let partitions = accumulator.flush_all();
                         for (partition, batch) in partitions {
-                            if !batch.is_empty() {
-                                let topic = batch[0].topic.clone();
-                                let ctx = ExecutionContext::new(
-                                    topic.clone(),
-                                    partition,
-                                    batch[0].offset,
-                                    worker_id,
-                                );
-                                let span = tracing::Span::current().kafpy_handler_invoke(
-                                    topic.as_str(),
-                                    topic.as_str(),
-                                    partition,
-                                    batch[0].offset,
-                                    handler.mode().as_str(),
-                                );
-                                let result = span.in_scope(|| async {
-                                    handler.invoke_mode_batch(&ctx, batch.clone()).await
-                                }).await;
-                                handle_batch_result_inline(
-                                    result,
-                                    batch,
-                                    &topic,
-                                    partition,
-                                    &ctx,
-                                    executor.clone(),
-                                    queue_manager.clone(),
-                                    offset_coordinator.clone(),
-                                    retry_coordinator.clone(),
-                                    dlq_producer.clone(),
-                                    dlq_router.clone(),
-                                )
-                                .await;
-                            }
+                            flush_partition_batch(
+                                partition,
+                                batch,
+                                Arc::clone(&handler),
+                                worker_id,
+                                Arc::clone(&worker_pool_state),
+                                Arc::clone(&executor),
+                                Arc::clone(&queue_manager),
+                                Arc::clone(&offset_coordinator),
+                                Arc::clone(&retry_coordinator),
+                                Arc::clone(&dlq_producer),
+                                Arc::clone(&dlq_router),
+                            )
+                            .await;
                         }
                         break;
                     }
@@ -792,39 +743,20 @@ async fn batch_worker_loop(
                 );
                 let partitions = accumulator.flush_all();
                 for (partition, batch) in partitions {
-                    if !batch.is_empty() {
-                        let topic = batch[0].topic.clone();
-                        let ctx = ExecutionContext::new(
-                            topic.clone(),
-                            partition,
-                            batch[0].offset,
-                            worker_id,
-                        );
-                        let span = tracing::Span::current().kafpy_handler_invoke(
-                            topic.as_str(),
-                            topic.as_str(),
-                            partition,
-                            batch[0].offset,
-                            handler.mode().as_str(),
-                        );
-                        let result = span.in_scope(|| async {
-                            handler.invoke_mode_batch(&ctx, batch.clone()).await
-                        }).await;
-                        handle_batch_result_inline(
-                            result,
-                            batch,
-                            &topic,
-                            partition,
-                            &ctx,
-                            executor.clone(),
-                            queue_manager.clone(),
-                            offset_coordinator.clone(),
-                            retry_coordinator.clone(),
-                            dlq_producer.clone(),
-                            dlq_router.clone(),
-                        )
-                        .await;
-                    }
+                    flush_partition_batch(
+                        partition,
+                        batch,
+                        Arc::clone(&handler),
+                        worker_id,
+                        Arc::clone(&worker_pool_state),
+                        Arc::clone(&executor),
+                        Arc::clone(&queue_manager),
+                        Arc::clone(&offset_coordinator),
+                        Arc::clone(&retry_coordinator),
+                        Arc::clone(&dlq_producer),
+                        Arc::clone(&dlq_router),
+                    )
+                    .await;
                 }
                 break;
             }
