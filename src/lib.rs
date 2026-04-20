@@ -44,6 +44,9 @@ pub(crate) mod routing;
 // Logging — internal logger initialization used by other modules
 mod logging;
 
+// Runtime assembly — RuntimeBuilder for composing pure-Rust consumer core
+pub(crate) mod runtime;
+
 use kafka_message::KafkaMessage;
 use logging::Logger;
 use produce::PyProducer;

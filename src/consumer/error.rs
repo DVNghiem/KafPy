@@ -1,6 +1,8 @@
 use rdkafka::error::KafkaError;
 use thiserror::Error;
 
+use super::config::BuildError;
+
 /// Errors produced by the consumer module.
 #[derive(Error, Debug)]
 pub enum ConsumerError {
@@ -24,4 +26,7 @@ pub enum ConsumerError {
 
     #[error("consumer already started")]
     AlreadyStarted,
+
+    #[error("config error: {0}")]
+    Config(#[from] BuildError),
 }
