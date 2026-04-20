@@ -1,319 +1,312 @@
-# Domain Pitfalls: Benchmark & Hardening Infrastructure
+# Pitfalls Research: KafPy v2.0 Code Quality Refactor
 
-**Project:** KafPy v1.9 Benchmark & Hardening
+**Domain:** PyO3/Rust Kafka Framework Refactoring
 **Researched:** 2026-04-20
-**Confidence:** MEDIUM (based on Rust/PyO3 domain knowledge + KafPy codebase patterns; external search tools unavailable at time of research)
+**Confidence:** MEDIUM-HIGH (based on Rust/PyO3 domain knowledge + KafPy codebase patterns; external search tools unavailable at time of research)
 
 ---
 
 ## Critical Pitfalls
 
-Mistakes that cause benchmark infrastructure to produce misleading data, corrupt measurements, or fail to detect real production issues.
+Mistakes that silently change behavior during Rust/PyO3 refactoring — these cause bugs that appear as production incidents, not compile errors.
 
 ---
 
-### Pitfall 1: Benchmark Hot-Path Contamination
+### Pitfall 1: Breaking `Send+Sync` Guarantees via Ownership Changes
 
-**What goes wrong:** Benchmark measurement code itself becomes a significant source of overhead, distorting results. The measurement infrastructure is so heavy that it changes the behavior of the system under test.
+**What goes wrong:**
+After refactoring, code that previously compiled suddenly fails with `impl Trait` errors or "channel closed" panics because a type no longer implements `Send` or `Sync`. More dangerously, types that should be `Send+Sync` lose those bounds at runtime, causing panics in multi-threaded contexts.
 
-**Why it happens:** Adding metrics, timers, and instrumentation on the critical path is seductive but catastrophic for benchmark accuracy. If measuring a handler's throughput requires acquiring locks, copying strings, or incrementing atomic counters on every message, those costs dominate at scale. KafPy's existing `MetricsSink` facade is designed to avoid exactly this.
+**Why it happens:**
+- Moving `Arc<Mutex<...>>` to `parking_lot::Mutex` (or vice versa) changes thread-safety semantics
+- Adding interior mutability via `RefCell`, `Cell`, or `Mutex` inside a type used across threads
+- Storing `Py<PyAny>` or `Python` GIL state in a context that crosses thread boundaries
+- Using `Rc<T>` instead of `Arc<T>` in `ConsumerRunner`, `Dispatcher`, or `WorkerPool` paths
+- Converting `impl Trait` to `dyn Trait` in return positions without verifying object safety
 
-**Consequences:**
-- Reported latency is artificially high; throughput is artificially low
-- Benchmarks show regressions when instrumentation is added, even though actual performance is unchanged
-- Optimization cycles target instrumentation instead of real bottlenecks
+**How to avoid:**
+- Always maintain `Send + Sync` bounds on all types used in `Arc<T>` across Tokio tasks
+- Use the compiler-enforced trait: `fn assert_send_sync<T: Send + Sync>() {}` in tests (already present in `dispatcher/mod.rs` lines 542-543)
+- Never use `Rc` in async/multi-threaded paths; use `Arc`
+- When using `parking_lot::Mutex` (non-poisoning), ensure the wrapped type is truly thread-safe
+- `Py<PyAny>` is `Send + Sync` when stored properly via `Arc<Py<PyAny>>` in `Consumer::handlers`
 
-**Prevention:**
-- Route all measurement data through lock-free channels (Tokio mpsc, not `Arc<Mutex<Vec>>`)
-- Aggregate measurements off the hot path, not on it (KafPy's `RuntimeSnapshotTask` already polls every 10s -- follow this pattern)
-- Use existing `MetricsSink` facade; the noop implementation already costs nothing
-- Time only what you must time on-path; everything else goes in the background snapshot task
-- Validate measurement overhead by running with instrumentation disabled and comparing baseline throughput
+**Warning signs:**
+- `impl Trait` return type changes cause cascading compilation errors across modules
+- `channel closed` panics appearing where they did not exist before
+- `Mutex` poison panics when previous code used `parking_lot::Mutex`
+- Subtle deadlocks under load that did not occur previously
+- `cargo clippy` warnings about `Arc` dereference patterns
 
-**Detection:**
-- Compare benchmark throughput with and without metrics collection
-- If enabling a metric sink causes >5% throughput drop, that metric is on the hot path
-- Profile with `perf` or `tokio-console` to identify lock contention in measurement code
-
----
-
-### Pitfall 2: Measuring PyO3 Binding Overhead Instead of Core Engine Performance
-
-**What goes wrong:** Benchmark results reflect the cost of PyO3 Python-callable API boundaries (spawn_blocking, GIL transitions, pyclass conversions) rather than the Rust consumer core. Comparing results across HandlerModes (SingleSync vs BatchSync vs Async) conflates Python binding overhead with actual Kafka message processing performance.
-
-**Why it happens:** PyO3 introduces overhead at each Python/Rust boundary. A benchmark that calls into KafPy from Python measures this overhead on every invocation. This is not representative of the pure Rust throughput of `ConsumerRunner` and `Dispatcher` processing messages at speed.
-
-**Consequences:**
-- "Sync vs Async" benchmark results are dominated by Python GIL cost, not actual handler mode differences
-- Optimization efforts target Python binding code instead of the Rust core
-- Users cannot understand what their actual per-message overhead is vs. the baseline Kafka consumer
-
-**Prevention:**
-- Implement a "Rust-native benchmark mode" that measures `ConsumerRunner` + `Dispatcher` + handler execution in-process, without crossing the PyO3 Python-callable boundary
-- Separate PyO3 binding overhead from core throughput by running identical workload in both modes
-- For the public Python-facing benchmarks, label results clearly as "Python API" measurements vs. "Rust core" measurements
-- Use existing `MetricsSink` to report Rust-side latency (already instrumented via `HandlerMetrics`); do not rely solely on Python-side timing
-
-**Detection:**
-- Profile the benchmark to identify where time is spent -- if >30% of time is in PyO3 binding code, binding overhead dominates
-- Compare Rust-only benchmark numbers against Python API benchmark numbers -- they should differ significantly if binding overhead is real
+**Phase to address:**
+This is a **foundational concern** verified in Phase 1. Any module touching `ConsumerRunner`, `Dispatcher`, `WorkerPool`, or coordinator/offset tracking must have `Send+Sync` compile-time verification.
 
 ---
 
-### Pitfall 3: Incomplete Throughput Measurement (Happy-Path Only)
+### Pitfall 2: Async Channel Semantic Changes (Capacity, Backpressure, Ordering)
 
-**What goes wrong:** Benchmarks report message processing throughput but never measure the cost of retries, DLQ routing, and backpressure-induced stalls. A 99th-percentile latency spike of 500ms caused by retry backoff never appears in the average, and retry rates never appear in the report.
+**What goes wrong:**
+Changing `mpsc::channel` capacity from 1000 to 100, or switching from `try_send` to `send`, or altering `Broadcast` channel behavior, fundamentally changes backpressure signaling and message loss characteristics. A refactor that changes channel capacity or error handling silently changes whether messages are dropped or blocking under load.
 
-**Why it happens:** Measuring successful end-to-end message processing is straightforward. Measuring retry loops, DLQ routing under failure, and backpressure stalls requires more instrumentation that is often skipped in initial benchmark implementations.
+**Why it happens:**
+- Capacity affects backpressure threshold ratios (`resume_threshold = 0.5`) in `ConsumerDispatcher`
+- `try_send` returns `Backpressure` error immediately; `send` awaits — changes blocking semantics
+- `broadcast` channel drops oldest messages when capacity exceeded; `mpsc` blocks or returns errors
+- Order of `inflight.fetch_add` vs `queue_depth.fetch_add` relative to `try_send` affects metrics accuracy
+- Refactoring that removes `biased` directive on `select!` causes shutdown signal to lose election to messages
 
-**Consequences:**
-- Throughput numbers look great in benchmarks but degrade 10x in production when 5% of messages encounter transient failures and trigger retry loops
-- Users report latency spikes that benchmarks never predicted
-- The benchmark does not validate that the hardening features (retry, DLQ, backpressure) actually work under load
+**How to avoid:**
+- Never change channel capacity without documenting the impact on `BackpressureAction::Drop` behavior
+- When refactoring `send_with_policy` or `send_with_policy_and_signal`, preserve the **exact sequence**:
+  1. Semaphore permit acquisition (`try_acquire_semaphore`)
+  2. `inflight` counter increment
+  3. `try_send` call
+  4. On `Full`: decrement `inflight`, then apply policy
+  5. On `Ok`: increment `queue_depth`
+- The current semaphore-before-dispatch pattern (DISP-15) is critical for concurrency limiting
+- Maintain `biased;` directive on `select!` in `ConsumerRunner::run()` to prioritize shutdown
 
-**Prevention:**
-- Define benchmark scenarios that include failure injection -- simulate broker stalls, transient errors, and network partitions
-- Track retry count, DLQ enqueue count, and backpressure stall duration as first-class metrics in the benchmark report
-- Measure latency distribution (p50, p95, p99), not just average throughput
-- Add a "failure scenario" profile: e.g., "5% of messages fail with transient error, measure time-to-DLQ"
+**Warning signs:**
+- Throughput test degrades after refactor (messages being dropped instead of queued)
+- Deadlock where dispatcher waits for queue space but workers are blocked
+- Queue depth metrics showing unexpected spikes or negative values
+- `BackpressureAction` enum variant changes causing missing match arms in `ConsumerDispatcher::run`
+- `select!` without `biased` causes shutdown signal to not be received immediately
 
-**Detection:**
-- Run benchmark with a scenario that injects 5% transient failures; compare p99 latency to the no-failure scenario
-- If p99 latency is not reported, the benchmark is incomplete
-- If retry count is not in the output, failure handling is not being measured
-
----
-
-### Pitfall 4: No Realistic Kafka Broker Simulation
-
-**What goes wrong:** Benchmarks use a real Kafka broker but with minimal topic/partitions (1 topic, 1 partition), a single producer, and no realistic traffic patterns. The benchmark does not represent production workload characteristics.
-
-**Why it happens:** Setting up a realistic multi-broker Kafka cluster for benchmarking is complex. Single-broker single-partition testing is much easier to wire up, but it misses entire categories of real-world issues (partition rebalancing, cross-partition ordering, consumer group coordination overhead).
-
-**Consequences:**
-- Benchmark shows throughput X; production achieves X/10 because partition count causes lock contention or consumer group management overhead
-- Reassignment events during benchmarking cause undefined behavior because the code was never tested under concurrent partition ownership changes
-- Batch handler performance does not scale because the workload is not partitioned
-
-**Prevention:**
-- Require minimum benchmark topology: at least 3 brokers, 3+ partitions across 2+ topics
-- Vary partition count in workloads (1, 5, 20 partitions) to measure partition-aware overhead
-- Include a rebalance scenario: mid-benchmark, trigger a consumer group rebalance and measure time-to-recovery
-- Use `rdkafka` performance tools to establish baseline broker-side limits before attributing throughput to KafPy
-
-**Detection:**
-- If benchmark topology is not documented in the report, assume unrealistic broker setup
-- If no rebalance scenario exists, the benchmark never validates rebalance behavior
-- Compare partition counts across runs -- if throughput does not scale with partition count, broker setup is the bottleneck
+**Phase to address:**
+Phase targeting `Dispatcher` and `QueueManager` must preserve exact dispatch semantics.
 
 ---
 
-### Pitfall 5: Label Cardinality Explosion in Metrics
+### Pitfall 3: PyO3 GIL Boundary Violations
 
-**What goes wrong:** Adding high-cardinality labels (topic names, partition IDs, handler IDs) to metrics causes cardinality explosion in Prometheus sinks. A system with 10 topics and 5 handlers produces 50x more time series when labeled by topic+handler, and 500x more when partition is included.
+**What goes wrong:**
+Python callbacks stored as `Arc<Py<PyAny>>` must remain GIL-independent. Refactoring that moves `Python::with_gil` calls, changes `spawn_blocking` usage, or alters the `PythonAsyncFuture` bridge causes GIL deadlocks, use-after-free, or silent data corruption in Python callbacks.
 
-**Why it happens:** KafPy's `MetricLabels` in `src/observability/metrics.rs` explicitly sorts labels lexicographically to prevent this -- but if new benchmark instrumentation adds partition-level labels without awareness of cardinality, it re-introduces the problem. Benchmark writers often want fine-grained per-partition metrics, which is the worst-case cardinality.
+**Why it happens:**
+- `Py<PyAny>` stored outside `Python::with_gil` loses GIL lifetime association
+- Calling Python code outside `spawn_blocking` holds the Tokio thread hostage
+- `PythonAsyncFuture` relies on specific GIL acquire/release patterns that differ from `spawn_blocking`
+- Storing `Bound<'_, PyAny>` instead of `Py<PyAny>` creates lifetime issues across `await` points
+- Moving `Python::attach` outside the `move ||` closure captures the GIL state incorrectly
 
-**Consequences:**
-- Prometheus sink collapses under cardinality pressure
-- Benchmark run with detailed partition-level metrics causes Prometheus OOM
-- Metric sink drops are silent in non-Prometheus backends
+**How to avoid:**
+- Always use `Arc<Py<PyAny>>` for callback storage (verified in `Consumer::handlers: Arc<Mutex<HashMap<String, Arc<Py<PyAny>>>>>`)
+- All Python invocations must go through `spawn_blocking` for sync handlers or `PythonAsyncFuture` for async handlers
+- Never call `Python::with_gil` directly in an async context without the custom CFFI bridge
+- When refactoring `PythonHandler::invoke`, preserve the **exact pattern**: capture data before `spawn_blocking`, build `PyDict` inside `Python::attach`, extract `Arc<Py<PyAny>>` inside `move ||`
+- `inject_trace_context` must be called **before** crossing the GIL boundary, not after
 
-**Prevention:**
-- KafPy's `MetricLabels` already enforces sorted key order; benchmark instrumentation must follow the same pattern
-- Aggregate at handler/topic level; expose partition-level only via runtime snapshot, not metrics
-- Benchmark metrics should use low-cardinality labels: mode, scenario, worker_id (worker count is bounded)
-- Validate with `cargo bench` + Prometheus before shipping new metrics
+**Warning signs:**
+- Python callback receives `None` or garbage values for message fields
+- Deadlock when calling `stop()` during active Python handler execution
+- `PyErr` types leaking across `await` points (they are not `Send`)
+- `future_into_py` failing with "GIL not held" errors
+- `callback.call1` panicking with "dropped GIL" errors
 
-**Detection:**
-- Check metric cardinality before deploying new benchmark metrics: number of unique label combinations should be bounded
-- If cardinality scales with partition count or topic count unboundedly, it is a cardinality bug
-- KafPy's existing `MetricLabels::insert()` sorts lexicographically -- benchmark code should use the same API
-
----
-
-### Pitfall 6: Benchmark Results Non-Reproducibility
-
-**What goes wrong:** The same benchmark run produces different results on different machines, different days, or different runs on the same machine. No confidence intervals are reported, no warm-up strategy exists, and no system-state isolation is enforced between runs.
-
-**Why it happens:** No warm-up iterations, no statistical validation (single-run reporting), no OS-level resource isolation, no control over background processes on the host machine, and no PyO3 GIL warmup considerations.
-
-**Consequences:**
-- "Performance regressions" are noise 80% of the time
-- Optimization decisions are based on non-reproducible data
-- Benchmark claims cannot be verified by external parties
-
-**Prevention:**
-- Implement mandatory warm-up phase: at least 3-5 runs with data flowing before measurement begins (PyO3's GIL-compiled code has JIT-like warmup)
-- Report confidence intervals (criterion.rs provides this natively)
-- Isolate benchmark runs: clear OS caches between scenarios, use fixed CPU frequency governor
-- Run benchmark scenarios in deterministic order
-- Document the machine spec (CPU, RAM, OS, kernel) alongside every benchmark report
-
-**Detection:**
-- If results vary by >10% across runs on the same machine, reproducibility is broken
-- If no confidence interval is reported, the benchmark is not statistically valid
-- If warm-up runs are not visible in the output, the measurement includes compilation effects
+**Phase to address:**
+Any refactoring of `python/handler.rs`, `python/async_bridge.rs`, or `pyconsumer.rs` must preserve GIL boundary patterns exactly.
 
 ---
 
-### Pitfall 7: Benchmark Infrastructure Becoming a Maintenance Burden
+### Pitfall 4: Shutdown Ordering Violations Causing Circular Waits
 
-**What goes wrong:** The benchmark framework accumulates bespoke scripts, hardcoded paths, inconsistent result formats, and one-off scripts that no one understands. After 6 months, running the benchmark is a fragile multi-step process that requires tribal knowledge.
+**What goes wrong:**
+`ShutdownCoordinator` implements phased shutdown (Running -> Draining -> Finalizing -> Done). Refactoring that changes the order of `begin_draining()` signals or `CancellationToken::cancel` calls causes circular waits: dispatcher waits for workers to drain, workers wait for dispatcher to stop producing, coordinator waits indefinitely.
 
-**Why it happens:** Benchmark scripts are often written as throwaway code ("we'll clean it up later"). No result schema is defined, output formats are ad hoc, and there is no CI integration.
+**Why it happens:**
+- `ConsumerRunner::stop()` triggers `begin_draining()` which returns dispatcher/worker/committer cancel tokens
+- Current code (LSC-02/03): **dispatcher cancel sent FIRST**, then `shutdown_tx` broadcast
+- Refactoring that sends worker cancel before dispatcher cancel causes workers to wait for messages that stop coming
+- Changing `select!` bias order or removing `biased` directive causes shutdown signal to lose election
+- `spawn_blocking` tasks holding GIL during shutdown prevent coordinator from advancing phases
 
-**Consequences:**
-- Benchmark runs are not automated in CI; results are not comparable across commits
-- New engineers cannot run benchmarks; institutional knowledge is lost
-- Benchmark results are not machine-readable; manual interpretation is required
+**How to avoid:**
+- Maintain the current shutdown signal order: dispatcher cancellation -> wait briefly -> worker cancellation
+- The `biased` directive on `select!` in `ConsumerRunner::run()` ensures shutdown takes priority
+- `shutdown_token.cancel()` must be propagated to `WorkerPool` before `pool.run().await` completes
+- When refactoring `ShutdownCoordinator`, preserve the three-phase token distribution
+- `spawn_blocking` tasks must complete or be aborted before coordinator enters Finalizing phase
 
-**Prevention:**
-- Define a `BenchmarkResult` model with a schema (JSON + CSV output)
-- Machine-readable summary file (`benchmark_results.json`) alongside human-readable report
-- Integrate benchmark execution into CI (at minimum: run on PR, compare against baseline, warn on >10% regression)
-- Single entrypoint: `python -m kafpy.benchmark run --scenario throughput --output ./results/`
-- Document methodology in a `BENCHMARK.md` at project root
+**Warning signs:**
+- `Consumer::stop()` hangs for more than `drain_timeout_secs`
+- WorkerPool shutdown drain not completing (pending messages not flushed to DLQ)
+- `panic: closure called recursively` in `spawn_blocking` during shutdown
+- Offset commits not flushing before process exit
+- DLQ messages not flushed before process exit
 
-**Detection:**
-- If running the benchmark requires reading multiple scripts or undocumented steps, it is already a maintenance burden
-- If benchmark results are not stored in version-controlled output directory, they cannot be compared across commits
-- If there is no CI job running benchmarks, the infrastructure is not reliable
-
----
-
-## Moderate Pitfalls
-
-### Pitfall 8: Backpressure Thresholds Configured Without Benchmark Data
-
-**What goes wrong:** Backpressure thresholds (queue depth limits, concurrency limits) are set to arbitrary values without measurement. Production falls over not because messages are slow but because backpressure limits are too aggressive or too permissive.
-
-**Why it happens:** Reasonable-looking defaults (queue depth 1000, max_concurrent_handlers 10) are copied from documentation or intuition without benchmarking against actual workload characteristics.
-
-**Prevention:**
-- Add a benchmark scenario that sweeps backpressure parameters (queue_depth: 100, 500, 1000, 5000; concurrent_handlers: 1, 5, 10, 50)
-- Find the inflection point where throughput degrades; that is the optimal backpressure threshold
-- Report optimal thresholds per workload profile (throughput-heavy vs. latency-sensitive)
-
-**Detection:**
-- Backpressure configuration is not mentioned in benchmark output --> arbitrary values were used
-- No sweep experiment exists --> optimal thresholds were not determined
+**Phase to address:**
+Phase targeting `coordinator/shutdown.rs`, `worker_pool/mod.rs`, or `ConsumerRunner::stop()` must preserve exact shutdown sequence.
 
 ---
 
-### Pitfall 9: Ignoring Memory Allocation Patterns
+### Pitfall 5: Offset Commit State Machine Breaking Highest-Contiguous-Offset Logic
 
-**What goes wrong:** Benchmark reports throughput but not memory allocations. Under sustained load, KafPy's message flow (`OwnedMessage` cloning, `Py<PyAny>` callback storage, `Vec` growth in dispatch channels) causes allocation pressure that manifests as GC-like stutters in production Python.
+**What goes wrong:**
+`OffsetTracker` and `OffsetCommitter` implement highest-contiguous-offset commit: an offset is only committed when all prior offsets have been acknowledged. Refactoring that changes `should_commit` logic, `has_terminal` gating, or `highest_contiguous_offset` calculation silently breaks at-least-once delivery guarantees.
 
-**Why it happens:** Rust's ownership model hides allocation from the Python developer, but PyO3 bindings and message cloning do allocate. Benchmarks that measure throughput but not memory growth miss allocation-driven performance cliff at scale.
+**Why it happens:**
+- `OffsetTracker::should_commit(topic, partition)` checks `has_terminal` flag per-partition
+- Once `has_terminal=true` on a partition, that partition stops committing until restart
+- `record_ack` must be called before `record_success` in `RetryCoordinator` on final success
+- Out-of-order ack buffering depends on `pending_acks` HashMap ordering
+- `store_offset` must precede `commit` — this is the two-phase offset management contract
 
-**Prevention:**
-- Track peak RSS memory and allocation rate alongside throughput and latency in benchmark output
-- Run sustained-load scenario: 10M messages through the system; measure memory delta between start and end
-- Identify allocation hotspots via `dhat` or `cargo alloc`; optimize before they become production issues
-- KafPy's existing `RuntimeSnapshot` tracks queue_depth; benchmark should extend this with memory snapshots
+**How to avoid:**
+- Never change `should_commit` to return `true` when `has_terminal=true` on a partition
+- When modifying `OffsetCommitter::run`, preserve the watch channel pattern for commit signals
+- `store_offset` must precede `commit` — this is the two-phase offset management contract
+- `retry_coordinator.record_success()` must be called by **worker loop after all retries exhausted**, not by dispatcher
+- `flush_failed_to_dlq` must be called during graceful shutdown before final commit
 
-**Detection:**
-- If benchmark output does not include memory usage, allocation patterns are unknown
-- Sustained-load scenario (>1M messages) is missing --> memory cliff at production scale is undetected
+**Warning signs:**
+- Duplicate message delivery after restart (offset committed too early)
+- Message loss (offset committed skipping failed messages)
+- `OffsetTracker::should_commit` returning different values under same partition state
+- Missing `flush_failed_to_dlq` call during graceful shutdown
+- `highest_contiguous_offset` calculation producing gaps
 
----
-
-### Pitfall 10: Handler Mode Benchmark Without Realistic Python Handler Implementation
-
-**What goes wrong:** The four `HandlerMode` variants (SingleSync, SingleAsync, BatchSync, BatchAsync) are benchmarked, but the Python handler implementations used in the benchmark are trivially different (e.g., just `pass`). Real-world Python handlers have varying computation costs, I/O patterns, and GIL hold durations that dramatically affect the relative performance of handler modes.
-
-**Why it happens:** Benchmarking handler modes requires running actual Python code. Implementing realistic Python handlers is more effort than using `pass`-style stubs. Results are misleading because real handler code changes the GIL hold time and async behavior.
-
-**Consequences:**
-- BatchAsync looks fastest in benchmark, but a real-world async handler that calls a sync DB library performs worse than BatchSync due to executor inversion
-- The benchmark validates handler mode performance with trivial handlers, not realistic ones
-- Users make architectural decisions based on benchmark results that do not apply to their workload
-
-**Prevention:**
-- Define at least two Python handler implementations per mode: trivial (pass) and realistic (simulated I/O wait, computation)
-- Report results per handler type separately
-- In benchmark report, explicitly state which Python handler implementation was used and what it does
-
-**Detection:**
-- If Python handler code is not shown in the benchmark methodology, assume trivial handlers were used
-- If handler mode results do not vary by handler implementation complexity, benchmarks are incomplete
+**Phase to address:**
+Phase targeting `coordinator/offset_tracker.rs`, `coordinator/offset_coordinator.rs`, or `coordinator/retry_coordinator.rs` must preserve exact offset commit semantics.
 
 ---
 
-### Pitfall 11: Confusing Benchmark Warmup with Actual Measurements
+### Pitfall 6: Enum State Machine Exhaustiveness Breaking
 
-**What goes wrong:** The first N messages processed during "warmup" are included in the benchmark measurement, skewing results because JIT compilation, cache warming, and pool initialization are all happening during measurement.
+**What goes wrong:**
+`RoutingDecision`, `BackpressureAction`, `FailureReason`, `ExecutionResult`, `HandlerMode`, and `BatchExecutionResult` are exhaustive enums used in `match` expressions throughout the codebase. Refactoring that adds a variant without updating all `match` arms silently introduces `panic!` at runtime in production.
 
-**Why it happens:** Criterion.rs handles warmup internally for Rust benchmarks, but Python-level benchmarks (via pytest-benchmark or custom scripts) often do not. PyO3's GIL acquisition, Python bytecode interpretation warmup, and Tokio task spawning all have initialization costs that should be excluded from measurements.
+**Why it happens:**
+- Compiler catches non-exhaustive matches in the same crate
+- PyO3 `#[pyfunction]` or `#[pymethods]` can expose variants that callers match on in Python
+- Adding `RoutingDecision::Defer` variant (v1.5) required updating all dispatch paths
+- Refactoring that removes or renames a variant without updating all match arms causes compile errors (which is good) but refactoring that **appears** to cover all arms via wildcard `_` is bad
+- `#[non_exhaustive]` on enums being used — callers cannot match exhaustively
 
-**Prevention:**
-- Implement explicit warmup phase in Python benchmark scripts: run at least 1000 messages before starting measurement timer
-- Verify warmup is complete by checking that throughput is stable across consecutive measurement windows
-- Use Criterion.rs for Rust-native benchmarks (handles warmup statistically)
-- Track warmup separately and report it; never include warmup messages in throughput calculations
+**How to avoid:**
+- Never use wildcard `_` match arms for business-critical enums — use `#[deny(unreachable_patterns)]` at crate level
+- When adding a new enum variant, search all match expressions that handle it: `RoutingDecision`, `BackpressureAction`, `ExecutionResult`, `BatchExecutionResult`, `FailureReason`
+- Verify all four `RoutingDecision` arms are handled in `ConsumerDispatcher::route_with_chain`: `Route`, `Drop`, `Reject`, `Defer`
+- Verify all `ExecutionResult` variants are handled when converting to `BatchExecutionResult`
 
-**Detection:**
-- If first 100 messages show lower throughput than subsequent ones, warmup is leaking into measurements
-- If no warmup phase is documented, measurements include compilation effects
+**Warning signs:**
+- Wildcard `_` arm in critical dispatch paths (should be `unreachable!()` with context)
+- Python `match` statements on `RoutingDecision` string variants not updated
+- New variant added to enum without updating all match sites
+- `#[non_exhaustive]` on enums being matched exhaustively by internal code
 
----
-
-### Pitfall 12: Measuring Only Absolute Throughput, Not Per-Resource Efficiency
-
-**What goes wrong:** Benchmark reports messages/second but not CPU per message, memory per message, or network per message. A benchmark showing 100k msg/sec could be using 8 cores to achieve that vs. another configuration achieving 80k msg/sec on 2 cores (higher efficiency).
-
-**Why it happens:** Absolute throughput is the easiest metric to measure. Normalizing by resource consumption requires more instrumentation (CPU usage, memory delta, network I/O) that is often skipped.
-
-**Prevention:**
-- Report throughput per CPU core: `messages_per_second_per_core = throughput / num_cpus_used`
-- Report memory per message: `bytes_per_message = peak_rss / total_messages`
-- Report network per message if Kafka broker network is a bottleneck
-- Include resource efficiency in the benchmark report alongside absolute throughput
-
-**Detection:**
-- If benchmark report shows only msg/sec without resource normalization, efficiency comparisons are missing
-- If machine spec (CPU cores, RAM) is not in the report, per-resource efficiency cannot be calculated
+**Phase to address:**
+Phase adding any new enum variants or modifying existing state machine enums must audit all match expressions.
 
 ---
 
-## Phase-Specific Warnings
+## Technical Debt Patterns
 
-| Phase Topic | Likely Pitfall | Mitigation |
-|-------------|---------------|------------|
-| Benchmark scenario definition | Scenarios too simple (happy-path only) | Include failure injection, backpressure, and rebalance scenarios |
-| Benchmark runner infrastructure | Hot-path contamination in measurement | Route all metrics via existing MetricsSink; aggregate off hot path |
-| Memory/latency/throughput measurement | No sustained-load scenario | Add 10M message sustained-load scenario; track memory delta |
-| Result models + CSV/JSON output | Non-reproducible format (ad hoc schema) | Define `BenchmarkResult` schema upfront; version it |
-| Hardening checks | Arbitrary thresholds without measurement basis | Sweep parameters in benchmark before setting thresholds |
-| Example scripts | Scripts not integrated in CI | Single entrypoint; CI runs on every PR |
+| Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
+|----------|-------------------|----------------|-----------------|
+| Using `unwrap()` in async code to avoid error handling | Faster to write | Panics corrupt Tokio task state, difficult to debug | Never in production async paths |
+| `Arc<Mutex<T>>` instead of proper typed channels | Avoids thinking about ownership | Deadlocks, poisoning issues | Only when true shared mutation is needed |
+| `.clone()` to avoid lifetime issues | Compiles faster | Memory leaks, performance degradation | Only for true data duplication, not as band-aid |
+| `select!` without `biased` for shutdown | Simpler code | Race conditions in shutdown vs. message paths | Only when message ordering truly doesn't matter |
+| `#[allow(unused)]` on public API fields | Avoids compiler warnings | API contract becomes unclear | Never on public API types |
+| `unsafe` blocks to bypass borrow checker | Quick fix for complex ownership | Memory safety violations, undefined behavior | Never without extensive SAFETY comments and review |
+| Ignoring `clippy` warnings | Code compiles without changes | Missed optimization opportunities, subtle bugs | Never — treat warnings as errors |
 
 ---
 
-## Prior Work: Observability Pitfalls Not Replicated Here
+## Integration Gotchas
 
-The existing PITFALLS.md (v1.7 observability milestone) covers:
-- Async span lifetime across await points
-- Global subscriber conflict
-- PyO3 GIL bindings breaking span continuity
-- Metrics lost before recorder installation
-- Label ordering inconsistency (solved by `MetricLabels`)
-- Span creation overhead in hot paths (solved by `debug_span!`)
-- Memory leaks from span context retention
-- Library code setting global observability state
+| Integration | Common Mistake | Correct Approach |
+|-------------|----------------|-----------------|
+| rdkafka / StreamConsumer | Modifying `ConsumerConfig` after `subscribe()` call | Config is consumed at creation; clone before if needed |
+| Tokio / rdkafka | Blocking in `consumer.recv()` loop without timeout | Use `select!` with timeout arm to detect stalls |
+| PyO3 / Tokio | Holding GIL across `.await` points | All Python calls via `spawn_blocking` or `PythonAsyncFuture` |
+| Broadcast / WorkerPool | Forgetting to `drop(tx)` after creating receiver | Drop sender to close channel and unblock workers |
+| Tokio / `select!` | Shutdown signal losing election to message receipt | Add `biased;` directive and shutdown arm first |
+| OffsetTracker / RetryCoordinator | Calling `record_success` before all retries exhausted | Only call after final success, not intermediate |
 
-These are **not** repeated here. The benchmark/hardening pitfalls above are orthogonal: they address the infrastructure for measuring and hardening the system, not the observability instrumentation itself.
+---
+
+## Performance Traps
+
+| Trap | Symptoms | Prevention | When It Breaks |
+|------|----------|------------|----------------|
+| `Mutex<HashMap>` on hot path | Lock contention causing throughput collapse | Use `parking_lot::Mutex` or `DashMap` for concurrent HashMaps | At >1000 messages/sec with many topics |
+| `spawn_blocking` per message | GIL thrashing, latency spikes | Batch messages before crossing GIL | Batch handlers already mitigate; sync single handlers at risk |
+| Unbounded channel to worker | Memory growth if workers slower than producers | Use bounded channels with backpressure | 10x normal load or slow Python handlers |
+| Frequent `Arc::clone` in message path | Reference count churn | Pass `Arc<OwnedMessage>` through pipeline | Very high message rates (>50k/sec) |
+| `select!` without bias on shutdown | Shutdown delayed up to one poll interval | Add `biased;` directive and shutdown arm first | Under heavy message throughput |
+| Cloning `OwnedMessage` on every handler dispatch | Allocation pressure, copy overhead | Only clone fields needed (key, payload, headers) | High throughput scenarios |
+
+---
+
+## Security Mistakes
+
+| Mistake | Risk | Prevention |
+|---------|------|------------|
+| Logging `message.payload` at DEBUG level | Sensitive data in logs | Use `#[instrument(skip(payload))]` or guard with log level |
+| Python callback exception details to Kafka | Information leakage via dead letter | Sanitize `traceback` in `ExecutionResult::Error` before DLQ |
+| Storing `Py<PyAny>` callback without validation | Malformed Python objects causing segfaults | Python callbacks are user-provided; trust but verify types at call site |
+| DLQ topic name from config without sanitization | Kafka topic injection | Validate `dlq_topic_prefix` contains only allowed characters |
+
+---
+
+## "Looks Done But Isn't" Checklist
+
+These items appear complete but are frequently missed during refactoring:
+
+- [ ] **Offset commit:** `store_offset` called before `commit` — not just at shutdown
+- [ ] **RetryCoordinator:** `record_success` called only after **all retries exhausted**, not on intermediate success
+- [ ] **has_terminal flag:** Set once per-partition, never cleared, blocks commits until restart
+- [ ] **Shutdown drain:** `flush_failed_to_dlq` called before `graceful_shutdown` in `WorkerPool`
+- [ ] **GIL release:** `spawn_blocking` used for ALL sync Python calls, not `block_on`
+- [ ] **RoutingDecision:** All 4 variants (`Route`, `Drop`, `Reject`, `Defer`) have explicit handling paths
+- [ ] **BackpressureAction:** All 3 variants (`Drop`, `Wait`, `FuturePausePartition`) handled in dispatch
+- [ ] **Semaphore acquire:** Happens BEFORE `try_send`, not after
+- [ ] **inflight decrement:** Happens when `try_send` fails (Full/Closed), not only on success
+- [ ] **ShutdownCoordinator:** Three-phase token distribution preserved (dispatcher, worker, committer)
+- [ ] **select! biased:** Shutdown arm appears first with `biased;` directive in `ConsumerRunner::run()`
+- [ ] **Py<PyAny> storage:** Callbacks stored as `Arc<Py<PyAny>>` not `Bound<PyAny>`
+- [ ] **Dispatch order:** `queue_depth` incremented only on `try_send` success, not on enqueue
+
+---
+
+## Recovery Strategies
+
+| Pitfall | Recovery Cost | Recovery Steps |
+|---------|---------------|----------------|
+| Breaking Send+Sync | HIGH | Revert ownership changes; add `assert_send_sync` compile-time checks |
+| Channel semantic changes | HIGH | Run throughput/latency benchmarks; revert capacity changes if degraded |
+| GIL boundary violations | CRITICAL | Revert to `spawn_blocking` pattern; verify `PythonAsyncFuture` CFFI bridge |
+| Circular shutdown waits | CRITICAL | Add logging to each phase; verify `biased` on `select!`; check token cancel order |
+| Offset commit state machine | CRITICAL | Run consumer group restart test; verify no duplicate/lost messages |
+| Enum exhaustiveness | LOW | Enable `#[deny(unreachable_patterns)]` in lib.rs; add missing match arms |
+
+---
+
+## Pitfall-to-Phase Mapping
+
+| Pitfall | Primary Concern Phase | Verification Strategy |
+|---------|----------------------|----------------------|
+| Send+Sync guarantees | Any module touching `Arc`, `Mutex`, `ConsumerRunner` | `cargo clippy` passes; `assert_send_sync` tests green; miri clean |
+| Channel semantics | `dispatcher/mod.rs`, `queue_manager.rs` | Throughput benchmark unchanged; backpressure test passes |
+| PyO3 GIL boundary | `python/handler.rs`, `pyconsumer.rs`, `async_bridge.rs` | Integration tests with sync/async Python handlers pass |
+| Shutdown ordering | `coordinator/shutdown.rs`, `worker_pool/mod.rs` | Graceful shutdown completes within `drain_timeout_secs` |
+| Offset commit state | `coordinator/offset_tracker.rs`, `retry_coordinator.rs` | Consumer restart test: no duplicates, no gaps |
+| Enum exhaustiveness | Any phase adding enum variants | `#[deny(unreachable_patterns)]` in lib.rs; all match arms explicit |
 
 ---
 
 ## Sources
 
-- [Criterion RS documentation](https://bheisler.github.io/criterion.rs/book/) -- benchmarking framework for Rust (HIGH)
-- [PyO3 documentation](https://pyo3.rs/) -- Python extension framework (HIGH)
-- [metrics crate documentation](https://docs.rs/metrics/latest/metrics/) -- zero-cost facade (HIGH)
-- KafPy `src/observability/metrics.rs` -- existing MetricsSink + MetricLabels pattern (HIGH)
-- KafPy `src/observability/runtime_snapshot.rs` -- polling-based snapshot design (10s interval, off hot path) (HIGH)
-- KafPy `src/consumer/` -- pure-Rust consumer core (basis for Rust-native benchmark) (HIGH)
-- [Prometheus label cardinality best practices](https://prometheus.io/docs/practices/naming/) (HIGH)
-- [rdkafka documentation](https://docs.confluent.io/platform/current/clients/librdkafka/html/) (MEDIUM)
-- [Rust dhat memory profiler](https://www.github.com/khvzak/dhat-rs) -- allocation analysis (MEDIUM)
+- **Rustonomicon** — unsafe code, aliasing, and variance concepts (https://doc.rust-lang.org/nomicon/) [MEDIUM]
+- **The Rust Programming Language Book** — iterators, closures, async (https://doc.rust-lang.org/book/) [HIGH]
+- **Tokio documentation** — channel semantics, select bias, cancellation (https://tokio.rs/tokio) [HIGH]
+- **PyO3 User Guide** — GIL handling, pyclass, async (https://pyo3.rs) [HIGH]
+- **KafPy source patterns** — observed in `src/dispatcher/mod.rs`, `src/pyconsumer.rs`, `src/coordinator/shutdown.rs`, `src/python/handler.rs`, `src/coordinator/retry_coordinator.rs` [HIGH]
+- **Rust-lang/rust-clippy** — lints for common mistakes (https://github.com/rust-lang/rust-clippy) [MEDIUM]
+
+---
+
+*Pitfalls research for: KafPy v2.0 Code Quality Refactor*
+*Researched: 2026-04-20*

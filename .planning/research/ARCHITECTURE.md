@@ -1,496 +1,595 @@
-# Architecture Research: Benchmark & Hardening Integration
+# Architecture Research: KafPy Module Redesign
 
-**Project:** KafPy v1.9 Benchmark & Hardening
+**Domain:** PyO3-based Kafka client framework with Rust core / Python API
 **Researched:** 2026-04-20
-**Confidence:** HIGH
+**Confidence:** MEDIUM
+
+*Sources are primarily from Rust standard patterns (The Rust Book Ch.7, Rust API Guidelines, Rust Patterns),
+the existing codebase analysis, and PyO3 documentation. Web search was unavailable during research,
+so confidence is reduced for ecosystem-wide claims and elevated for codebase-specific observations.*
+
+---
 
 ## Executive Summary
 
-The benchmark and hardening system integrates with the existing KafPy Rust architecture through four well-defined interfaces: `MetricsSink` (zero-cost metrics collection), `RuntimeSnapshot` (memory/latency state sampling), `ConsumerRunner` (message source for throughput tests), and the `RetryCoordinator`/`DlqRouter` pair (failure injection for retry/retry tests). Scenario definition is cleanly separated from result reporting via a `Scenario` trait + `BenchmarkResult` model structure. New modules live in `src/benchmark/` as `pub(crate)` internals, invisible to the Python API, with PyO3 bindings exposed only for the runner control plane.
+KafPy's module structure grew organically across 8 milestones. The current layout is functional but shows cohesion and coupling problems: a 344-line god object at the PyO3 boundary (`pyconsumer.rs`), data gravity problems where `BatchAccumulator` lives in `worker_pool/` instead of `python/`, a `coordinator/` module conflating four distinct responsibilities, and type alias leakage (`HandlerId = String`). The v2.0 refactor should extract a runtime factory from the PyO3 boundary, move domain-specific types to their correct modules, split `coordinator/` by responsibility, and introduce explicit state enums where `bool` flags currently model lifecycle state.
 
-## Integration Strategy
+---
 
-### Guiding Principle: Observe, Don't Contaminate
+## Current Architecture
 
-The benchmark system must not alter production code paths. Instead it:
-1. Wraps or observes existing observable surfaces
-2. Injects failures through the same interfaces production code uses (RetryCoordinator, DlqRouter)
-3. Samples state via RuntimeSnapshot without adding overhead to hot paths
-
-This means benchmark code is structurally similar to observability code - it reads from existing instrumentation, it does not add new instrumentation into critical paths.
-
-### Existing Observable Surfaces
-
-| Surface | What It Provides | Benchmark Use |
-|---------|-----------------|---------------|
-| `MetricsSink` trait | Handler latency histograms, invocation counters, batch size histograms | Record benchmark measurements |
-| `RuntimeSnapshot` | Zero-cost memory/latency snapshots when called | Sample RSS, heap, queue depths at measurement points |
-| `ConsumerRunner` | Message stream from Kafka | Drive throughput/latency benchmarks |
-| `ConsumerDispatcher` | Dispatch cycle with backpressure signals | Measure dispatch overhead, queue depth under load |
-| `RetryCoordinator` | Per-message retry state machine | Trigger retry scenarios, measure retry cost |
-| `DlqRouter` | DLQ routing decisions | Verify DLQ correctness under failure conditions |
-| `WorkerPool` | Python handler invocation | Measure handler throughput per mode |
-| `tracing::Span` | Structured spans with fields | Annotate benchmark phases, propagate context |
-
-### Integration Points Summary
+### System Overview
 
 ```
-Benchmark Runner
-    ├── Scenario::execute() -> drives ConsumerRunner + Dispatcher
-    │   ├── uses MetricsSink adapter to record measurements
-    │   ├── uses RuntimeSnapshot::sample() at measurement points
-    │   └── injects failures via RetryCoordinator.record_failure()
+Python API (kafpy/__init__.py)
     │
-    ├── Scenario::validate() -> checks hardening requirements
-    │   ├── verifies DlqRouter correctness
-    │   ├── checks RetryCoordinator state
-    │   └── validates queue depth / inflight invariants
-    │
-    └── Results::serialize() -> outputs CSV/JSON via serde
+    ▼
+PyO3 Bridge (pyconsumer.rs) ─── Config Types (config.rs)
+    │                              │
+    │                              ▼
+    │                         KafkaMessage (kafka_message.rs)
+    │                              │
+    ▼                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     Pure-Rust Core                          │
+├──────────────┬──────────────┬───────────────┬─────────────┤
+│  consumer/   │  dispatcher/ │   python/     │  routing/   │
+│  - runner    │  - Dispatcher│  - Handler    │  - chain    │
+│  - message   │  - QueueMgr  │  - Executor   │  - routers  │
+│  - config    │  - Backpressure│ - context   │             │
+├──────────────┴──────────────┴───────────────┴─────────────┤
+│  coordinator/ (pub(crate))                                  │
+│  - OffsetTracker  - OffsetCommitter  - RetryCoordinator     │
+│  - ShutdownCoordinator                                     │
+├────────────────────────────────────────────────────────────┤
+│  worker_pool/  │  failure/  │  dlq/  │  observability/      │
+│                │            │        │  - metrics          │
+│                │            │        │  - tracing           │
+└────────────────────────────────────────────────────────────┘
 ```
 
-## Module Structure
+### Current Module Inventory
 
-### New Module: `src/benchmark/`
+| Module | Files | Primary Responsibility | Observed Problem |
+|--------|-------|----------------------|-----------------|
+| `pyconsumer.rs` | 1 (344 lines) | Assembles entire runtime at PyO3 boundary | God object |
+| `consumer/` | 4 | Kafka message ingestion, rdkafka stream | Well-scoped |
+| `dispatcher/` | 4 | Per-handler bounded channel dispatch | Well-scoped |
+| `python/` | 6 | Python handler invocation, execution results | Missing `BatchAccumulator` (in `worker_pool/`) |
+| `routing/` | 10 | Handler routing by pattern/header/key | `HandlerId = String` type alias leaked |
+| `coordinator/` | 6 | Offset tracking, commit task, retry, shutdown | Conflates 4 distinct responsibilities |
+| `worker_pool/` | 1 (650+ lines) | N worker loop, batch accumulation | `PartitionAccumulator` belongs in `batch/` |
+| `failure/` | 4 | Failure taxonomy and classification | `tests.rs` misnamed (not `#[cfg(test)]`) |
+| `dlq/` | 3 | Dead-letter queue routing | Well-scoped |
+| `observability/` | 6 | Metrics, tracing, runtime introspection | `RuntimeSnapshot`/`WorkerPoolState` belong with runtime |
+| `retry/` | 2 | Retry policy and schedule | Well-scoped, but `RetryCoordinator` is in `coordinator/` |
+| `errors.rs` | 1 | Only `PyError` | Real errors scattered across `*/error.rs` |
+
+---
+
+## Recommended Project Structure
 
 ```
-src/benchmark/
-├── mod.rs              # Public exports: Runner, Scenario trait, Result types
-├── scenario.rs         # Scenario trait, WorkloadProfile, HandlerModeProfile
-├── runner.rs           # BenchmarkRunner orchestrator, measurement loop
-├── measurement.rs     # Timer, CounterSnapshot, LatencySnapshot helpers
-├── results.rs          # BenchmarkResult, BenchmarkMetrics, Serializers
-└── validation.rs       # HardeningChecks, ValidationResult, invariants
+src/
+├── lib.rs                    # Re-exports public API, PyO3 module init
+│
+├── config.rs                # ConsumerConfig, ProducerConfig (PyO3-facing)
+├── kafka_message.rs          # KafkaMessage (PyO3 wrapper)
+├── produce.rs                # PyProducer (PyO3)
+│
+├── consumer/                 # Pure-Rust Kafka consumer core
+│   ├── mod.rs
+│   ├── config.rs            # ConsumerConfigBuilder, AutoOffsetReset
+│   ├── error.rs             # ConsumerError
+│   ├── message.rs           # OwnedMessage, MessageTimestamp, MessageRef
+│   └── runner.rs            # ConsumerRunner, ConsumerStream, ConsumerTask
+│
+├── dispatcher/               # Message routing to per-handler channels
+│   ├── mod.rs               # Dispatcher, ConsumerDispatcher, DispatchOutcome
+│   ├── error.rs             # DispatchError
+│   ├── queue_manager.rs     # QueueManager
+│   └── backpressure.rs      # BackpressurePolicy, BackpressureAction
+│
+├── python/                   # Python execution lane
+│   ├── mod.rs               # Re-exports
+│   ├── handler.rs           # PythonHandler, HandlerMode
+│   ├── executor.rs          # Executor trait, ExecutorOutcome, DefaultExecutor
+│   ├── context.rs           # ExecutionContext
+│   ├── execution_result.rs  # ExecutionResult, BatchExecutionResult
+│   └── batch.rs             # BatchAccumulator  ← MOVED from worker_pool/
+│
+├── routing/                  # Zero-copy routing infrastructure
+│   ├── mod.rs               # Re-exports
+│   ├── context.rs           # RoutingContext (zero-copy), HandlerId (newtype)
+│   ├── decision.rs          # RoutingDecision, RejectReason
+│   ├── chain.rs             # RoutingChain
+│   ├── router.rs            # Router trait
+│   ├── topic_pattern.rs     # TopicPatternRouter
+│   ├── header.rs            # HeaderRouter
+│   ├── key.rs               # KeyRouter
+│   ├── python_router.rs     # PythonRouter
+│   └── config.rs            # RoutingConfig
+│
+├── batch/                    # Batch accumulation (general, not Python-specific)
+│   └── accumulator.rs      # PartitionAccumulator  ← MOVED from worker_pool/
+│
+├── runtime/                  # Runtime assembly at PyO3 boundary  ← NEW
+│   ├── mod.rs               # RuntimeBuilder, build_consumer_runtime()
+│   └── snapshot_task.rs     # RuntimeSnapshotTask (currently in observability/)
+│
+├── worker_pool/              # Tokio worker pool
+│   ├── mod.rs               # WorkerPool, worker loop
+│   └── state.rs             # WorkerPoolState, WorkerState  ← MOVED from observability/
+│
+├── offset/                   # Offset management subsystem  ← SPLIT from coordinator/
+│   ├── mod.rs               # Re-exports
+│   ├── tracker.rs           # OffsetTracker, PartitionState
+│   ├── committer.rs         # OffsetCommitter, CommitConfig, TopicPartition
+│   └── coordinator.rs       # OffsetCoordinator trait
+│
+├── retry/                    # Retry policy subsystem
+│   ├── mod.rs               # Re-exports
+│   ├── policy.rs            # RetryPolicy, RetrySchedule
+│   └── coordinator.rs       # RetryCoordinator  ← MOVED from coordinator/
+│
+├── shutdown/                 # Shutdown coordination  ← MOVED from coordinator/
+│   ├── mod.rs               # ShutdownCoordinator, ShutdownPhase
+│   └── error.rs             # ShutdownError
+│
+├── dlq/                      # Dead-letter queue routing
+│   ├── mod.rs               # Re-exports
+│   ├── metadata.rs          # DlqMetadata
+│   ├── router.rs            # DlqRouter trait, DefaultDlqRouter
+│   └── produce.rs           # SharedDlqProducer
+│
+├── failure/                  # Failure classification
+│   ├── mod.rs               # Re-exports
+│   ├── reason.rs            # FailureReason, FailureCategory, TerminalKind
+│   ├── classifier.rs        # FailureClassifier trait
+│   └── logging.rs           # Failure logging
+│
+├── observability/            # Metrics, tracing, runtime introspection
+│   ├── mod.rs               # ObservabilityConfig, MetricsSink
+│   ├── metrics.rs           # HandlerMetrics, MetricLabels, MetricsSink trait
+│   ├── prometheus.rs        # Prometheus adapter
+│   ├── tracing.rs           # KafpySpanExt, LogTracer
+│   └── kafka_metrics.rs     # KafkaMetrics, consumer lag
+│
+├── error.rs                  # Crate-level error re-exports  ← REPLACES errors.rs
+│
+├── logging.rs                # Logger initialization
+│
+└── benchmark/                # Benchmark infrastructure
+    └── ...                   # (unchanged from v1.9)
 ```
 
-**Visibility:** `pub(crate)` - internal to the Rust crate, invisible to Python API.
-**Python-facing control plane:** Thin PyO3 bindings in `src/pyconsumer.rs` that delegate to `BenchmarkRunner`.
+### Structure Rationale
 
-### Module Responsibilities
+- **`batch/`**: `PartitionAccumulator` is a general accumulation primitive with no dependency on Python or worker pool. It belongs in its own module. `BatchAccumulator` goes in `python/` because it accumulates messages for Python handler modes.
 
-| File | Responsibility | Public API |
-|------|---------------|------------|
-| `scenario.rs` | Defines WHAT to test: workload profile, handler modes, failure scenarios | `Scenario` trait, `WorkloadProfile`, `ScenarioConfig` |
-| `runner.rs` | Orchestrates benchmark execution: runs scenario, collects measurements | `BenchmarkRunner::run()`, `BenchmarkRunner::stop()` |
-| `measurement.rs` | HOW to measure: Timer (wall/CPU), CounterSnapshot, LatencySnapshot | `Timer`, `MeasurementCollector` |
-| `results.rs` | WHAT was measured: result models + serialization | `BenchmarkResult`, `BenchmarkMetrics`, `CsvSerializer`, `JsonSerializer` |
-| `validation.rs` | Hardening checks: DLQ correctness, retry behavior, queue invariants | `HardeningCheck`, `ValidationResult` |
+- **`runtime/`**: The composition logic currently in `pyconsumer.rs` is the most critical extraction. A `RuntimeBuilder` lets pure Rust code be tested independently of PyO3.
 
-### Separation: Scenario vs Result Reporting
+- **`offset/` + `retry/` + `shutdown/`**: Split from `coordinator/` by responsibility boundary. Offset management and retry coordination are orthogonal concerns that happen to share a `pub(crate)` visibility. Separating them into distinct modules makes each easier to reason about independently.
 
-**Scenario** (`scenario.rs`) describes test configuration:
+- **`HandlerId` newtype**: Prevents accidental interchange with `String` or topic names. Type safety at the routing layer prevents subtle bugs.
+
+- **`WorkerPoolState` moved to `worker_pool/`**: State that describes the worker pool belongs with the worker pool, not in `observability/`. The observability module should consume this state, not define it.
+
+---
+
+## Architectural Patterns
+
+### Pattern 1: Thin PyO3 Boundary via Runtime Factory
+
+**What:** Extract all composition logic from `pyconsumer.rs` into a `RuntimeBuilder` in `runtime/`. The PyO3 `#[pyclass] Consumer` struct holds only config and callback storage; all heavy lifting happens in Rust.
+
+**When to use:** When a PyO3 bridge file exceeds ~100 lines or constructs more than 3 infrastructure components.
+
+**Trade-offs:**
+- Pro: Pure-Rust code becomes testable without Python
+- Pro: Runtime composition changes do not break the PyO3 API
+- Pro: Changes to internal wiring do not require recompiling PyO3 bindings
+- Con: Adds an indirection layer (worth it for testability)
+
+**Example:**
 ```rust
-pub trait Scenario: Send + Sync {
-    fn name(&self) -> &str;
-    fn workload(&self) -> &WorkloadProfile;
-    fn handler_mode(&self) -> HandlerModeProfile;
-    fn failure_scenario(&self) -> Option<&FailureScenario>;
-    async fn execute(&self, runner: &BenchmarkRunner) -> ScenarioOutcome;
-    fn validate(&self, outcome: &ScenarioOutcome) -> ValidationResult;
+// runtime/mod.rs
+pub struct RuntimeBuilder {
+    config: ConsumerConfig,
+    handlers: Arc<Mutex<HashMap<String, Arc<Py<PyAny>>>>>,
+    shutdown_token: CancellationToken,
+    // all infrastructure handles
+}
+
+impl RuntimeBuilder {
+    pub fn build(self) -> Result<ConsumerRuntime, BuildError> {
+        let rust_config = self.build_rust_config()?;
+        let runner = ConsumerRunner::new(rust_config.clone(), None)?;
+        let runner_arc = Arc::new(runner);
+        let offset_tracker = Arc::new(OffsetTracker::new());
+        offset_tracker.set_runner(Arc::clone(&runner_arc));
+        let dispatcher = ConsumerDispatcher::new((*runner_arc).clone());
+        // ... wire all components
+        Ok(ConsumerRuntime { runner_arc, dispatcher, pool, committer })
+    }
+}
+
+pub struct ConsumerRuntime {
+    runner_arc: Arc<ConsumerRunner>,
+    dispatcher: ConsumerDispatcher,
+    pool: WorkerPool,
+    committer_handle: JoinHandle<()>,
+}
+
+// pyconsumer.rs — thin PyO3 wrapper (target: ~60 lines)
+#[pyclass]
+pub struct Consumer {
+    config: ConsumerConfig,
+    handlers: Arc<Mutex<HashMap<String, Arc<Py<PyAny>>>>>,
+    shutdown_token: CancellationToken,
+}
+
+#[pymethods]
+impl Consumer {
+    pub fn start(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let handlers = Arc::clone(&self.handlers);
+        let shutdown_token = self.shutdown_token.clone();
+        let config = self.config.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let runtime = RuntimeBuilder::new(config, handlers, shutdown_token)
+                .build()
+                .map_err(|e| PyErr::new::<PyRuntimeError, _>(e.to_string()))?;
+            runtime.run().await;
+            Ok(())
+        })
+    }
+
+    pub fn stop(&self) {
+        self.shutdown_token.cancel();
+    }
 }
 ```
 
-**Result Model** (`results.rs`) captures measurements:
+### Pattern 2: State Machine as Enum (Make Illegal States Unrepresentable)
+
+**What:** Replace `bool`/`Option` flags with explicit state enums. `PartitionState` does this well; `ShutdownCoordinator` and `RetryCoordinator` should follow.
+
+**When to use:** For any component with lifecycle states that have invariants.
+
+**Current problem observed:**
 ```rust
-pub struct BenchmarkResult {
-    pub scenario_name: String,
-    pub start_time: DateTime<Utc>,
-    pub end_time: DateTime<Utc>,
-    pub duration_secs: f64,
-    pub throughput: ThroughputMetrics,
-    pub latency: LatencyMetrics,
-    pub memory: MemoryMetrics,
-    pub correctness: CorrectnessMetrics,
+// coordinator/shutdown.rs — current
+pub struct ShutdownCoordinator {
+    phase: parking_lot::Mutex<ShutdownPhase>,
+    drain_timeout: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShutdownPhase {
+    is_drain Initiated: bool,
+    is_committed: bool,
 }
 ```
 
-This separation ensures:
-- Scenario authors define WHAT to test without knowing HOW results are formatted
-- Result reporters can output CSV, JSON, or custom formats without knowing scenario internals
-- Different scenarios produce comparable metrics through the shared `BenchmarkResult` structure
-
-## Measurement Boundaries
-
-### Measurement Points
-
-```
-Benchmark Run
-├── setup phase          -> configure consumer, handlers, scenario
-├── warmup phase         -> run N messages without measuring (establish steady state)
-├── measurement phase    -> run N messages, record measurements
-│   ├── message dispatch -> Timer.start() at dispatch, Timer.end() at ack
-│   ├── handler invoke  -> recorded via MetricsSink facade (existing HandlerMetrics)
-│   ├── queue depth     -> sampled via QueueManager::snapshot() every interval
-│   └── memory/RSS      -> sampled via RuntimeSnapshot::sample() every interval
-├── teardown phase       -> drain pending, commit offsets, shutdown
-└── report phase         -> aggregate measurements, serialize
-```
-
-### Measurement Collectors
-
-**Timer** - wall-clock and CPU time for benchmark phases:
+**Recommended — explicit enum:**
 ```rust
-pub struct Timer {
-    start: Instant,
-    cpu_start: std::time::ProcessTime,
-}
-impl Timer {
-    pub fn elapsed(&self) -> Duration;
-    pub fn cpu_elapsed(&self) -> Duration;
-}
-```
-
-**LatencyCollector** - p50/p95/p99/p999 latency from handler invocations:
-```rust
-pub struct LatencyCollector {
-    samples: Vec<Duration>,
-}
-impl LatencyCollector {
-    pub fn record(&mut self, duration: Duration);
-    pub fn percentiles(&self) -> LatencyPercentiles;
-}
-```
-
-**ThroughputCollector** - messages/second measured over sliding window:
-```rust
-pub struct ThroughputCollector {
-    window_duration: Duration,
-    window_messages: AtomicUsize,
-    total_messages: AtomicUsize,
-}
-```
-
-### Memory Measurement
-
-Uses `RuntimeSnapshot` (existing infrastructure):
-```rust
-let snapshot = RuntimeSnapshot::sample();
-// snapshot.rss_bytes, snapshot.heap_bytes, snapshot.active_tasks
-// Zero-cost when not called - only measures when explicitly sampled
-```
-
-### Queue Depth Measurement
-
-Uses `QueueManager` (existing infrastructure):
-```rust
-// QueueManager already tracks queue_depth and inflight per handler via atomics
-// Benchmark runner samples these atomics every N ms during measurement phase
-```
-
-## Component Boundaries
-
-### BenchmarkRunner
-
-Owns benchmark orchestration. Coordinates:
-- ConsumerRunner (message source)
-- Dispatcher (dispatch measurement)
-- WorkerPool (handler invocation measurement via MetricsSink)
-- RetryCoordinator (failure injection)
-- DlqRouter (correctness verification)
-
-**Key invariant:** BenchmarkRunner does NOT import or modify any production module's internal state. It only:
-1. Calls public APIs on existing modules
-2. Reads from MetricsSink facade
-3. Calls RuntimeSnapshot::sample() at measurement points
-
-### Scenario Executor
-
-Runs inside the benchmark loop. Each scenario:
-1. Configures consumer + handlers from WorkloadProfile
-2. Injects failures if FailureScenario is set
-3. Collects measurements via MeasurementCollector
-4. Returns ScenarioOutcome (raw data)
-
-### Result Aggregator
-
-Aggregates ScenarioOutcome into BenchmarkResult:
-- Computes percentiles, means, stddev
-- Produces CSV/JSON output
-- Runs HardeningChecks against ScenarioOutcome
-
-## Data Flow
-
-```
-ScenarioConfig
-    |
-    v
-BenchmarkRunner::run(config)
-    |
-    ├── ConsumerRunner::new()  --> Kafka
-    |                                |
-    ├── Dispatcher::new()            |
-    |    |                           |
-    |    └── register_handler() --> HandlerQueue
-    |
-    ├── WorkerPool::new() --> PythonHandler (via spawn_blocking)
-    |
-    └── RetryCoordinator::new() --> DlqRouter
-                                         |
-                                         v
-Scenario::execute() --> measurement_loop
-    |
-    ├── every N ms: RuntimeSnapshot::sample() -> memory
-    ├── every N ms: QueueManager::snapshot()  -> queue_depth
-    ├── per message: Timer.start() / Timer.end() -> latency
-    └── per ack: MetricsSink facade -> throughput
-                          |
-                          v
-              MeasurementCollector (in-memory)
-                          |
-                          v
-              Aggregator::aggregate() -> BenchmarkResult
-                          |
-                          v
-              Serializer::to_csv() / Serializer::to_json()
-```
-
-## Integration with Existing Modules
-
-### ConsumerRunner - Message Source
-
-Benchmark wraps `ConsumerRunner` to drive messages through the system:
-```rust
-// Benchmark creates a ConsumerRunner from scenario config
-let runner = ConsumerRunner::new(consumer_config)?;
-
-// Benchmark drives the stream, measuring dispatch latency
-let stream = runner.stream();
-while let Some(msg) = stream.next().await {
-    let timer = Timer::start();
-    // dispatch to handler...
-    timer.record_dispatch_end();
-}
-```
-
-**No modifications to `ConsumerRunner`** - benchmark uses existing public API.
-
-### Dispatcher - Dispatch Measurement
-
-Benchmark measures dispatch overhead via `DispatchOutcome`:
-```rust
-let outcome = dispatcher.send(message)?;
-benchmark.record_dispatch(
-    outcome.offset,
-    outcome.queue_depth,
-    timer.elapsed(),
-);
-```
-
-Backpressure events are tracked:
-```rust
-if outcome.is_err() {
-    // BackpressureEvent recorded
-}
-```
-
-### MetricsSink - Handler Measurement
-
-Benchmark uses the existing `MetricsSink` facade:
-```rust
-// Benchmark provides a MetricsSink implementation that records to local collector
-struct BenchmarkMetricsSink {
-    latency_collector: Arc<Mutex<LatencyCollector>>,
+// shutdown/mod.rs — refactored
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownPhase {
+    Running,
+    DrainInitiated,
+    Committed,
+    Exited,
 }
 
-impl MetricsSink for BenchmarkMetricsSink {
-    fn record_histogram(&self, name: &str, value: f64, labels: &[(&str, &str)]) {
-        if name == "kafpy.handler.latency" {
-            self.latency_collector.lock().unwrap().record(Duration::from_secs_f64(value));
+pub struct ShutdownCoordinator {
+    phase: parking_lot::Mutex<ShutdownPhase>,
+    drain_timeout: Duration,
+}
+
+impl ShutdownCoordinator {
+    pub fn phase(&self) -> ShutdownPhase {
+        *self.phase.lock()
+    }
+
+    pub fn initiate_drain(&self) -> Result<(), ShutdownError> {
+        let mut phase = self.phase.lock();
+        match *phase {
+            ShutdownPhase::Running => {
+                *phase = ShutdownPhase::DrainInitiated;
+                Ok(())
+            }
+            _ => Err(ShutdownError::InvalidTransition),
         }
     }
-    // ...
 }
 ```
 
-This is the same interface production Prometheus adapter uses - benchmark uses a different implementation that records locally instead of exporting to Prometheus.
-
-### RuntimeSnapshot - Memory Sampling
-
+**Same pattern for `RetryCoordinator`:**
 ```rust
-// At each sampling interval during measurement phase
-let mem_snap = RuntimeSnapshot::sample();
-benchmark.record_memory(mem_snap.rss_bytes, mem_snap.heap_bytes);
-```
-
-Zero-cost when not called - only samples when benchmark explicitly requests it.
-
-### RetryCoordinator - Failure Injection
-
-Benchmark injects failures to test retry behavior:
-```rust
-// In failure scenario, after handler executes, simulate a failure
-let reason = FailureReason::Retryable(RetryableKind::NetworkTimeout);
-let (should_retry, should_dlq, delay) = retry_coordinator.record_failure(
-    topic, partition, offset, &reason,
-);
-```
-
-This is the same `RetryCoordinator` used in production - benchmark triggers the same state machine.
-
-### DlqRouter - Correctness Verification
-
-After benchmark run, verify DLQ correctness:
-```rust
-let check = HardeningCheck::dlq_routing_correctness(
-    &dlq_router,
-    expected_routing,
-    actual_routing,
-);
-```
-
-### WorkerPool - Throughput Per Handler Mode
-
-Benchmark exercises all 4 `HandlerMode` variants:
-- `SingleSync` - one message, spawn_blocking
-- `SingleAsync` - one message, into_future
-- `BatchSync` - fixed-window batch, spawn_blocking
-- `BatchAsync` - fixed-window batch, into_future
-
-Throughput is measured as messages/second per mode.
-
-## New vs Modified
-
-### New Modules
-
-| Module | Lines | Purpose |
-|--------|-------|---------|
-| `src/benchmark/` | ~600-800 | All benchmark infrastructure |
-
-### Modified Modules
-
-| Module | Change | Rationale |
-|--------|--------|-----------|
-| `src/lib.rs` | Add `pub(crate) mod benchmark` | Expose benchmark module to internal Rust code |
-| `src/pyconsumer.rs` | Add `BenchmarkRunner` pyclass | Python API for benchmark control |
-| `src/observability/metrics.rs` | Add `BenchmarkMetricsSink` impl | MetricsSink impl for local measurement collection |
-
-**No production modules modified** - benchmark system uses only public/semi-public interfaces.
-
-## Build Order
-
-### Phase 1: Result Models & Measurement Helpers
-
-1. `src/benchmark/results.rs` - `BenchmarkResult`, `BenchmarkMetrics`, serialization traits
-2. `src/benchmark/measurement.rs` - `Timer`, `LatencyCollector`, `ThroughputCollector`
-3. `src/benchmark/mod.rs` - module structure
-
-**Rationale:** No dependencies on existing production modules. Pure data structures and math.
-
-### Phase 2: Scenario Definitions
-
-4. `src/benchmark/scenario.rs` - `Scenario` trait, `WorkloadProfile`, `ScenarioConfig`
-
-**Depends on:** Phase 1 (uses `BenchmarkResult` for `ScenarioOutcome`)
-
-### Phase 3: Benchmark Runner Core
-
-5. `src/benchmark/runner.rs` - `BenchmarkRunner` orchestrator
-
-**Depends on:** Phase 1 + 2, plus existing modules: `ConsumerRunner`, `Dispatcher`, `MetricsSink`, `RuntimeSnapshot`
-
-### Phase 4: Hardening Validation
-
-6. `src/benchmark/validation.rs` - `HardeningCheck`, `ValidationResult`
-
-**Depends on:** Phase 1 (uses `BenchmarkResult`)
-
-### Phase 5: Integration
-
-7. `src/lib.rs` - add `pub(crate) mod benchmark`
-8. `src/pyconsumer.rs` - add `BenchmarkRunner` pyclass
-
-**Depends on:** All above phases
-
-## Hardening Validation Design
-
-### Validation Checks
-
-```rust
-pub enum HardeningCheck {
-    DlqRoutingCorrectness,
-    RetryBehaviorMatchesPolicy,
-    QueueDepthInvariant,
-    MemoryGrowthWithinBounds,
-    HandlerLatencySla,
-    NoMessageLoss,
+// retry/coordinator.rs — refactored
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryState {
+    NotStarted,
+    InProgress { attempt: u32, next_retry_at: Instant },
+    Terminal { reason: FailureReason },
+    Committed,
 }
 ```
 
-### ValidationResult
+### Pattern 3: Domain-Module Boundary via `pub(crate)` and Sealed Traits
 
+**What:** Use `pub(crate)` for module-internal types that must cross module boundaries but not Python boundaries. Use sealed traits for extension points.
+
+**When to use:** For traits like `Router`, `BackpressurePolicy`, `Executor` that have internal implementations but external consumers within the crate.
+
+**Example:**
 ```rust
-pub struct ValidationResult {
-    pub checks: Vec<CheckResult>,
-    pub passed: bool,
-    pub summary: String,
+// routing/router.rs
+mod private {
+    pub trait Sealed {}
 }
 
-pub struct CheckResult {
-    pub check: HardeningCheck,
-    pub passed: bool,
-    pub details: String,
-    pub measured_value: Option<f64>,
-    pub expected_value: Option<f64>,
+pub trait Router: private::Sealed + Send + Sync {
+    fn route(&self, ctx: &RoutingContext<'_>) -> RoutingDecision;
+}
+
+pub struct TopicPatternRouter { /* ... */ }
+mod private {
+    impl Sealed for TopicPatternRouter {}
+}
+impl Router for TopicPatternRouter { /* ... */ }
+```
+
+### Pattern 4: Newtype for Primitive Type Aliases
+
+**What:** Wrap `String` type aliases like `HandlerId` in a dedicated struct to prevent mixing values with different semantic meanings.
+
+**When to use:** When the same primitive type is used for multiple distinct concepts.
+
+**Current problem observed:**
+```rust
+// routing/context.rs — current
+pub type HandlerId = String;
+// Used as: fn route_with_chain(..., handler_id: String)
+// String is used for both topics and handler IDs throughout the codebase
+```
+
+**Recommended — newtype:**
+```rust
+// routing/context.rs — refactored
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HandlerId(String);
+
+impl HandlerId {
+    pub fn new(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for HandlerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<String> for HandlerId {
+    fn from(s: String) -> Self { Self(s) }
+}
+
+impl From<&str> for HandlerId {
+    fn from(s: &str) -> Self { Self(s.to_string()) }
 }
 ```
 
-### DLQ Routing Check
+### Pattern 5: Unified Error Domain
 
+**What:** Each domain module defines its error enum with `#[derive(Error)]` from `thiserror`. A top-level `error.rs` re-exports them all for discoverability and Python-facing use.
+
+**When to use:** Always. Errors should be domain-typed.
+
+**Example:**
 ```rust
-// Verify: all terminal failures routed to DLQ, no retryable failures incorrectly DLQ'd
-pub fn check_dlq_routing_correctness(
-    dlq_router: &dyn DlqRouter,
-    expected: &[(topic, partition, offset, FailureReason)],
-    actual: &[(topic, partition, offset)],
-) -> CheckResult
+// error.rs — crate-level
+//! KafPy error types.
+//!
+//! ## Error hierarchy
+//!
+//! - [`PyError`] — errors that cross the PyO3 boundary (Python-callable)
+//! - [`ConsumerError`] — consumer and message errors
+//! - [`DispatchError`] — dispatcher and queue errors
+//! - [`CoordinatorError`] — offset and retry coordinator errors
+
+pub use consumer::ConsumerError;
+pub use dispatcher::DispatchError;
+pub use coordinator::CoordinatorError;
+pub use retry::RetryError;
+pub use dlq::DlqError;
+
+#[derive(Error, Debug)]
+pub enum PyError {
+    #[error("consumer error: {0}")]
+    Consumer(#[from] ConsumerError),
+    #[error("producer error: {0}")]
+    Producer(String),
+    #[error("configuration error: {0}")]
+    Config(String),
+}
 ```
 
-### Queue Depth Invariant
+---
 
-```rust
-// Verify: queue depth never exceeds capacity, inflight never exceeds concurrency limit
-pub fn check_queue_depth_invariant(
-    queue_manager: &QueueManager,
-    capacity_per_topic: &HashMap<String, usize>,
-) -> CheckResult
+## PyO3 Boundary Preservation
+
+### Boundary Principles
+
+1. **Thin wrapper rule:** PyO3 files should only:
+   - Convert Python types to Rust types at entry
+   - Convert Rust types to Python types at exit
+   - Delegate to pure-Rust factories/builders for all composition
+
+2. **`pub(crate)` for internal APIs:** Any type used only within the Rust crate should be `pub(crate)`, not `pub`. This prevents Python users from depending on internal details and breaking refactoring.
+
+3. **`Arc<dyn Trait>` for dynamic dispatch at boundary:** Use `Arc<dyn Executor>`, `Arc<dyn Router>` etc. at the PyO3 boundary. Concrete types are built inside the Rust crate.
+
+4. **`Py<PyAny>` for Python callbacks:** Store as `Arc<Py<PyAny>>` — GIL-independent, sendable across threads, cloneable for worker pool.
+
+5. **`spawn_blocking` at boundary crossings:** All Python callable invocations go through `spawn_blocking` to minimize GIL hold time. Never hold the GIL across Rust-side orchestration.
+
+### What Stays Python-Facing (`pub`)
+
+| Type | Why Public |
+|------|-----------|
+| `KafkaMessage` | Python users construct and receive these |
+| `ConsumerConfig`, `ProducerConfig` | Python users configure with these |
+| `PyProducer` | Python users call produce() on this |
+| `Consumer` | Python users call add_handler/start/stop |
+| `get_runtime_snapshot`, `register_status_callback` | Python-callable via `#[pyfunction]` |
+
+### What Becomes `pub(crate)` or Private
+
+| Type | Why Internal |
+|------|-------------|
+| `ConsumerRunner` | Internal orchestration |
+| `Dispatcher`, `QueueManager` | Internal routing |
+| `OffsetTracker`, `OffsetCommitter` | Internal offset management |
+| `RetryCoordinator` | Internal retry state machine |
+| `RoutingChain`, all routers | Internal routing infrastructure |
+| `ShutdownCoordinator` | Internal lifecycle management |
+
+---
+
+## Refactoring Sequence
+
+### Phase Order Rationale
+
+The refactoring should proceed from leaves toward the boundary, to avoid breaking changes mid-refactor:
+
+1. **`batch/` extraction** — no dependencies on anything being moved
+2. **`offset/` split** — only depends on `consumer/`
+3. **`shutdown/` split** — only depends on `coordinator/` types being stable
+4. **`retry/coordinator.rs` move** — depends on offset types
+5. **`HandlerId` newtype** — low risk, ripple through routing + dispatcher + worker_pool
+6. **`BatchAccumulator` move to `python/`** — depends on batch module existing
+7. **`runtime/` extraction** — depends on all above being stable
+8. **Error consolidation into `error.rs`** — last, since it touches everything
+
+### Phase 1: `batch/` Module Extraction
+
+Move `PartitionAccumulator` from `worker_pool/mod.rs` to new `src/batch/accumulator.rs`.
+
 ```
+worker_pool/mod.rs (before)
+    ├── PartitionAccumulator     ← MOVE
+    ├── BatchAccumulator          ← MOVE to python/
+    └── WorkerPool                ← STAY
+
+src/batch/
+    └── accumulator.rs            ← PartitionAccumulator
+```
+
+### Phase 2: `offset/` Module Split
+
+Split `coordinator/` into `offset/` module.
+
+```
+coordinator/ (before)
+    ├── offset_tracker.rs        → offset/tracker.rs
+    ├── commit_task.rs           → offset/committer.rs
+    ├── offset_coordinator.rs    → offset/coordinator.rs
+    ├── retry_coordinator.rs     → retry/coordinator.rs (Phase 4)
+    └── shutdown.rs              → shutdown/mod.rs (Phase 3)
+```
+
+### Phase 3: `shutdown/` Module Split
+
+Move `ShutdownCoordinator` from `coordinator/` to new `src/shutdown/` module.
+
+### Phase 4: `retry/` Module Completion
+
+Move `RetryCoordinator` from `coordinator/` to `retry/coordinator.rs` (already next to `policy.rs`).
+
+### Phase 5: `HandlerId` Newtype
+
+Replace `pub type HandlerId = String` with a newtype. Ripple changes through:
+- `routing/context.rs` — define `HandlerId` struct
+- `routing/chain.rs` — update field type
+- `routing/decision.rs` — update `RoutingDecision::Route`
+- `dispatcher/mod.rs` — update `send_to_handler_by_id`
+- `worker_pool/mod.rs` — any handler-id comparisons
+
+### Phase 6: `BatchAccumulator` Move
+
+Move `BatchAccumulator` from `worker_pool/mod.rs` to `python/batch.rs`.
+
+### Phase 7: `runtime/` Extraction
+
+Extract `RuntimeBuilder` from `pyconsumer.rs`. This is the most impactful change but also the safest — it is purely additive until the old `start()` implementation is removed.
+
+### Phase 8: Error Consolidation
+
+Create unified `error.rs` re-exporting all domain errors. Remove `errors.rs`.
+
+---
 
 ## Anti-Patterns to Avoid
 
-### No Direct Instrumentation in Hot Paths
+### Anti-Pattern 1: PyO3 File as God Object
 
-**Bad:** Adding benchmark-specific counters inside `Dispatcher::send_with_policy`
-**Why:** Would add atomic increments to every message dispatch in production
-**Good:** Record measurements via existing MetricsSink facade, which already has atomic operations for production metrics
+**What people do:** Put all composition logic in `#[pymethods]` functions.
+**Why it's wrong:** Untestable without Python, forces recompile on runtime changes, mixes boundary concerns with business logic.
+**Do this instead:** Factory in `runtime/` module, thin wrapper in PyO3 file.
 
-### No Forking or Splicing Production Code
+### Anti-Pattern 2: `bool` Flags for State
 
-**Bad:** Copy-pasting Dispatcher code into benchmark module and adding measurement code
-**Why:** Diverges from production over time, adds maintenance burden
-**Good:** Use the existing Dispatcher with a benchmark-provided MetricsSink adapter
+**What people do:** `has_terminal: bool`, `is_shutdown: bool`.
+**Why it's wrong:** Can represent invalid combinations. No exhaustive matching.
+**Do this instead:** Use an enum with explicit states. Match exhaustively.
 
-### No Shared Mutable State Between Benchmark Phases
+### Anti-Pattern 3: Type Aliases for Distinct Primitives
 
-**Bad:** BenchmarkRunner storing results in a static counter that accumulates across runs
-**Why:** Contamination between scenarios
-**Good:** Each scenario run produces a fresh `BenchmarkResult`, aggregator combines at the end
+**What people do:** `type HandlerId = String;` and `type Topic = String;` — both `String`.
+**Why it's wrong:** Accidentally interchangeable. No compiler enforcement.
+**Do this instead:** Newtype wrappers. `struct HandlerId(String)` is distinct from `struct Topic(String)`.
 
-### No PyO3 Dependency in Benchmark Core
+### Anti-Pattern 4: Scattered Error Types
 
-**Bad:** `src/benchmark/runner.rs` importing `pyo3::prelude`
-**Why:** Contaminates pure-Rust benchmark logic with PyO3, complicates testing
-**Good:** `BenchmarkRunner` lives in pure Rust, PyO3 binding in `src/pyconsumer.rs` calls it
+**What people do:** `consumer/error.rs`, `dispatcher/error.rs`, `coordinator/error.rs`, and a top-level `errors.rs` that only has `PyError`.
+**Why it's wrong:** No single place to understand the crate's error universe.
+**Do this instead:** Define domain errors in submodules for encapsulation. Re-export Python-facing errors in a top-level `error.rs`.
 
-## Scalability Considerations
+### Anti-Pattern 5: Test Helpers in Misnamed Files
 
-| Concern | At 100 messages | At 1M messages | At 10M messages |
-|---------|-----------------|-----------------|------------------|
-| Memory | All samples in vec | Periodic flush to disk | Streaming serializer, keep summary only |
-| Latency percentiles | Exact (all samples) | T-digest approximation | T-digest with bounded memory |
-| Queue depth sampling | Every message | Every 100ms | Every 1s, trending only |
-| Result file size | <1KB JSON | ~10MB JSON | ~100MB CSV with summary |
+**What people do:** Creating a `failure/tests.rs` file that contains test helpers and benchmarks.
+**Why it's wrong:** In Rust, `tests.rs` implies `#[cfg(test)]`. Helper types belong in `tests/` directory or inline `#[cfg(test)]` blocks.
+**Do this instead:** Move helpers to `tests/` directory at crate root, or inline them as `#[cfg(test)] mod test_helpers`.
+
+---
+
+## Confidence Assessment
+
+| Area | Level | Reason |
+|------|-------|--------|
+| Module redesign | MEDIUM | Based on existing codebase analysis and Rust patterns; no external web sources accessible for verification |
+| PyO3 boundary | MEDIUM | PyO3 docs not accessible via WebFetch; patterns are well-established in training data |
+| State machine patterns | HIGH | Directly observed in codebase (`PartitionState`, `ShutdownCoordinator`) and matches Rust idioms |
+| Refactoring sequence | MEDIUM | Practical approach based on god object identification; actual implementation order may vary based on build errors encountered |
+
+---
 
 ## Sources
 
-- Confluence: KafPy v1.9 milestone definition (internal)
-- Code review: `src/dispatcher/mod.rs`, `src/python/execution_result.rs`, `src/observability/metrics.rs`, `src/consumer/runner.rs`, `src/coordinator/retry_coordinator.rs`
+- [The Rust Programming Language — Ch.7: Packages, Crates, and Modules](https://doc.rust-lang.org/stable/book/ch07-00-managing-growing-projects-with-packages-crates-and-modules.html) (verified via WebFetch)
+- Rust API Guidelines — Structuring (training data)
+- Rust Patterns — God object elimination, newtype pattern, state machine as enum (training data)
+- Existing codebase analysis: `src/lib.rs`, `src/pyconsumer.rs`, `src/coordinator/mod.rs`, `src/dispatcher/mod.rs`, `src/routing/context.rs`, `src/worker_pool/mod.rs`, `src/consumer/mod.rs`
+- User rules: `~/.claude/rules/rust/patterns.md`, `~/.claude/rules/rust/coding-style.md`
+
+---
+
+*Architecture research for: KafPy v2.0 Code Quality Refactor*
+*Researched: 2026-04-20*

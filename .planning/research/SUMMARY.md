@@ -1,164 +1,245 @@
-# Benchmark & Hardening Research Summary
+# Project Research Summary
 
-**Milestone:** v1.9 Benchmark & Hardening
+**Project:** KafPy v2.0 Code Quality Refactor
+**Domain:** PyO3/Rust Kafka Framework Refactoring
 **Researched:** 2026-04-20
-**Confidence:** MEDIUM-HIGH
+**Confidence:** HIGH
 
 ## Executive Summary
 
-The benchmark and hardening system integrates with existing KafPy infrastructure through four well-defined interfaces: `MetricsSink` (zero-cost metrics collection), `RuntimeSnapshot` (memory/latency state sampling), `ConsumerRunner` (message source), and `RetryCoordinator`/`DlqRouter` (failure injection). New code lives in `src/benchmark/` as `pub(crate)` internals, invisible to the Python API. The critical risk is measurement overhead contaminating the hot path -- all instrumentation must route through the existing `MetricsSink` facade and aggregate off the critical path. The second critical risk is conflating PyO3 binding overhead with Rust core performance; Rust-native benchmark mode is required to measure the actual `ConsumerRunner` throughput.
+KafPy is a Rust-first Kafka framework with idiomatic Python bindings via PyO3, currently at v1.9 after 7 milestones of feature development. The codebase shows classic growing-pains patterns: a 1309-line `worker_pool/mod.rs` with severe duplication, a 650-line `dispatcher/mod.rs` with mixed responsibilities, and implicit state machines where `Option<OwnedMessage>` models lifecycle state without compiler enforcement. The good news: module boundaries between consumer/dispatcher/worker_pool/coordinator are sound. The refactoring surface is intra-module, not inter-module, making this a safe high-value target.
 
-## Stack Additions
+The recommended approach is a phased extract-refactor-swap strategy: extract duplicated logic first (lowest risk, immediate value), then split god modules by responsibility, then introduce state machine enums and type safety. The PyO3 boundary should be preserved as a thin wrapper around a `RuntimeBuilder` factory that lives in pure Rust. Any refactoring touching `Arc`, `Mutex`, `spawn_blocking`, or channel capacity must be verified with `Send+Sync` compile-time checks and throughput benchmarks.
 
-| Technology | Purpose | Integration |
-|------------|---------|-------------|
-| `criterion` | Rust-native microbenchmark framework with statistical validation | For measuring Rust core throughput (ConsumerRunner, Dispatcher) without PyO3 boundary |
-| `serde` + `serde_json` | Benchmark result serialization | `src/benchmark/results.rs` -- serialize BenchmarkResult to JSON/CSV |
-| `prometheus-client` | Already available via existing metrics infrastructure | Reuse for benchmark Prometheus output |
-| `dhat` | Heap memory allocation profiling | Optional -- detect allocation-driven performance cliffs in sustained-load scenarios |
-| Python `pytest-benchmark` | Python-level benchmark runner | For Python API benchmarks (separate from Rust core benchmarks) |
+The primary risk is behavioral change during refactoring: channel capacity changes silently alter backpressure behavior, GIL boundary violations cause deadlocks, and shutdown ordering violations cause circular waits. Each phase has specific verification checkpoints documented in the pitfalls research.
 
-**No new PyO3 crates needed** -- benchmark infrastructure lives in pure Rust, with PyO3 bindings only for the control plane entrypoint.
+---
 
-## Feature Table Stakes
+## Key Findings
 
-Features users expect from any production-grade benchmark system:
+### Recommended Stack
 
-| Feature | Description |
-|---------|-------------|
-| **Throughput measurement** | Messages/second per HandlerMode (SingleSync, SingleAsync, BatchSync, BatchAsync) |
-| **Latency distribution** | p50/p95/p99/p999 latency histograms per handler |
-| **Per-resource efficiency** | Throughput per CPU core, memory per message |
-| **Memory snapshots** | Peak RSS, heap bytes tracked over sustained-load runs |
-| **Queue depth tracking** | Backpressure-induced stalls measured and reported |
-| **Failure scenario support** | Retry rates, DLQ routing counts, time-to-DLQ under failure injection |
-| **Reproducibility** | Warmup phase, confidence intervals, machine spec documentation |
-| **Machine-readable output** | JSON + CSV result files, versioned schema |
-| **CI integration** | Benchmark runs on PR, warns on >10% regression vs baseline |
+**From STACK.md:**
 
-## Watch Out For
+The Rust refactoring toolchain is mature and well-integrated. `clippy` is the primary linter with 800+ lints covering correctness, style, complexity, and performance. Key lints for this refactor: `cognitive_complexity` (threshold 25), `type_complexity` (200), `too_many_arguments` (8), `struct_excessive_bools` (flags bool fields suggesting state enums). `cargo-audit` and `cargo-deny` handle security and dependency compliance. `cargo-geiger` tracks unsafe code which is critical for PyO3 bridges.
+
+**Core tools:**
+- `clippy` (bundled) — primary linter, detects god objects, cognitive complexity, code smells
+- `cargo-audit` 0.22.1 — security vulnerability scanning
+- `cargo-deny` 0.19.4 — dependency graph, license compliance
+- `cargo-machete` 0.9.2 — unused dependency detection
+- `cargo-geiger` 0.13.0 — unsafe code tracking (critical for PyO3 boundary)
+
+### Expected Features
+
+**From FEATURES.md (Code Smell Catalog):**
+
+**Critical code smells to address:**
+
+1. **Duplication in `worker_pool/mod.rs`** — Three distinct duplication patterns:
+   - `ExecutionResult::Error` vs `Rejected` arms (lines 279-469) share identical retry/DLQ logic
+   - Batch flush boilerplate repeated 6 times across `batch_worker_loop`
+   - Message-to-PyDict conversion duplicated across `invoke()`, `invoke_batch()`, `invoke_async()`
+
+2. **God objects requiring split:**
+   - `worker_pool/mod.rs` (1309 lines) — 6 distinct responsibilities
+   - `dispatcher/mod.rs` (650 lines) — consumer + dispatcher + tests
+   - `pyconsumer.rs` (344 lines) — runtime assembly at PyO3 boundary
+
+3. **Implicit state machines:**
+   - `worker_loop`'s `active_message: Option<OwnedMessage>` as state machine
+   - `batch_worker_loop`'s `backpressure_active: bool` flag
+
+4. **Type safety issues:**
+   - `HandlerId = String` type alias (should be newtype)
+   - `OwnedMessage` naming confusion (topic-based, not identity-based)
+
+**Refactoring strategies identified:**
+- Extract-Refactor-Swap for god objects (safe, incremental)
+- Template Method for duplicated logic (handle_execution_failure helper)
+- State Machine Extraction replacing Option/Bool with explicit enums
+- Newtype pattern for HandlerId
+
+### Architecture Approach
+
+**From ARCHITECTURE.md:**
+
+The current module structure is functional but shows cohesion problems. Key issues:
+
+1. **`coordinator/` conflates four distinct responsibilities:** Offset tracking, commit task, retry coordination, and shutdown — these should be split into `offset/`, `retry/`, and `shutdown/` modules
+
+2. **`batch/` module missing:** `PartitionAccumulator` lives in `worker_pool/` but is a general accumulation primitive that belongs in its own module; `BatchAccumulator` belongs in `python/`
+
+3. **PyO3 boundary is thick:** `pyconsumer.rs` (344 lines) assembles the entire runtime. This should become a thin wrapper around a `RuntimeBuilder` in `runtime/` module
+
+4. **State modeling is implicit:** `bool` flags and `Option<T>` model lifecycle state instead of explicit enums
+
+**Recommended structure (8 new modules):**
+```
+batch/                    # PartitionAccumulator (moved from worker_pool/)
+runtime/                  # RuntimeBuilder (extracted from pyconsumer.rs)
+offset/                   # OffsetTracker, OffsetCommitter (split from coordinator/)
+retry/                    # RetryCoordinator (moved from coordinator/)
+shutdown/                 # ShutdownCoordinator (moved from coordinator/)
+```
+
+**Patterns to apply:**
+1. Thin PyO3 Boundary via Runtime Factory — extract composition from `pyconsumer.rs`
+2. State Machine as Enum — replace `Option<OwnedMessage>` and `backpressure_active: bool`
+3. Newtype for HandlerId — prevent String interchangeability bugs
+4. Sealed traits for internal extension points
 
 ### Critical Pitfalls
 
-1. **Benchmark Hot-Path Contamination** -- Measurement code itself becomes overhead. Route all metrics through `MetricsSink` facade. Aggregate off hot path. Validate measurement overhead by comparing throughput with/without instrumentation. Threshold: >5% throughput drop means metric is on hot path.
+**From PITFALLS.md:**
 
-2. **PyO3 Binding Overhead Masking Rust Core Performance** -- Python API benchmarks measure GIL transitions, not `ConsumerRunner` throughput. Implement Rust-native benchmark mode (no PyO3 boundary) for actual core performance numbers. Label Python-facing results as "Python API" vs "Rust core".
+1. **Send+Sync Guarantees Breaking** — Moving `Arc<Mutex<...>>` to `parking_lot::Mutex` or using `Rc` instead of `Arc` silently changes thread-safety semantics. Use `fn assert_send_sync<T: Send + Sync>()` compile-time checks.
 
-3. **Incomplete Throughput Measurement (Happy-Path Only)** -- Benchmarks miss retry loops, DLQ routing, and backpressure stalls. Define failure injection scenarios. Track retry count, DLQ enqueue count, backpressure stall duration as first-class metrics.
+2. **Channel Semantic Changes** — Changing `mpsc::channel` capacity from 1000 to 100 or switching from `try_send` to `send` fundamentally alters backpressure and message loss behavior. Never change capacity without documenting impact on `BackpressureAction::Drop` behavior. The semaphore-before-dispatch pattern (DISP-15) is critical.
 
-4. **Unrealistic Kafka Broker Simulation** -- Single-broker single-partition testing misses partition rebalancing, cross-partition ordering issues. Require minimum 3 brokers, 3+ partitions, 2+ topics. Include rebalance mid-benchmark scenario.
+3. **PyO3 GIL Boundary Violations** — `Arc<Py<PyAny>>` must remain GIL-independent. All Python invocations must go through `spawn_blocking` or `PythonAsyncFuture`. Moving `Python::attach` outside the `move ||` closure captures GIL state incorrectly.
 
-5. **Label Cardinality Explosion** -- Adding partition-level or topic-level labels to metrics causes Prometheus OOM. Use low-cardinality labels: mode, scenario, worker_id only. Aggregate at handler/topic level; expose partition-level via runtime snapshot only.
+4. **Shutdown Ordering Violations** — Current order: dispatcher cancel FIRST, then worker cancel. Refactoring that reverses this causes circular waits. Maintain `biased` directive on `select!` in `ConsumerRunner::run()`.
 
-6. **Benchmark Results Non-Reproducibility** -- No warmup, no confidence intervals, no system-state isolation. Implement mandatory warmup phase (3-5 runs before measurement). Report confidence intervals. Document machine spec alongside results.
+5. **Offset Commit State Machine Breaking** — `highest_contiguous_offset` logic depends on `should_commit` checking `has_terminal` flag per-partition. Once `has_terminal=true`, that partition stops committing until restart. `store_offset` must precede `commit` — this is the two-phase offset management contract.
 
-### Moderate Pitfalls
+---
 
-7. **Backpressure Thresholds Configured Without Benchmark Data** -- Arbitrary queue_depth/concurrency limits. Sweep parameters (100, 500, 1000, 5000) to find inflection points.
+## Implications for Roadmap
 
-8. **Ignoring Memory Allocation Patterns** -- Throughput reported without memory. Under sustained load, allocation pressure causes GC-like stutters. Track peak RSS, run 10M message sustained-load scenario.
+Based on research, suggested phase structure:
 
-9. **Handler Mode Benchmark With Trivial Python Handlers** -- `pass`-style handlers misrepresent real-world GIL hold time. Define realistic handlers (simulated I/O, computation) alongside trivial ones.
+### Phase 1: Extract Duplicated Logic
+**Rationale:** Lowest risk, immediate value. No module boundaries change, only internal function extraction. Establishes extraction pattern before higher-risk splits.
 
-10. **Confusing Warmup With Actual Measurements** -- First N messages include JIT/cache/pool initialization. Implement explicit warmup phase, verify throughput is stable before starting measurement timer.
+**Delivers:**
+- `message_to_pydict()` helper in `python/handler.rs`
+- `handle_execution_failure()` in `worker_pool/mod.rs`
+- `flush_partition_batch()` helper in `batch_worker_loop`
+- Baseline clippy metrics with `cognitive_complexity`, `type_complexity` thresholds
 
-## Architecture Summary
+**Avoids:** Duplication pattern that makes later refactoring dangerous
 
-### Integration Strategy: Observe, Don't Contaminate
+**Research flag:** Standard pattern — skip deep research
 
-The benchmark system must not alter production code paths. It:
-1. Wraps/observes existing observable surfaces (MetricsSink, RuntimeSnapshot, ConsumerRunner)
-2. Injects failures through the same interfaces production code uses (RetryCoordinator, DlqRouter)
-3. Samples state via RuntimeSnapshot without adding overhead to hot paths
+### Phase 2: Split `worker_pool/` God Module
+**Rationale:** `PartitionAccumulator` and `BatchAccumulator` are clearly extractable. Creates `batch/` module and `python/batch.rs`. No cross-boundary changes.
 
-### Key Architectural Decisions
+**Delivers:**
+- `worker_pool/accumulator.rs` — PartitionAccumulator, BatchAccumulator
+- `worker_pool/loop.rs` — worker_loop function
+- `worker_pool/batch_loop.rs` — batch_worker_loop, handle_batch_result_inline
+- `worker_pool/mod.rs` becomes thin re-export layer
 
-1. **Scenario trait + BenchmarkResult model separation** -- Scenario authors define WHAT to test without knowing HOW results are formatted. Result reporters output CSV/JSON without knowing scenario internals.
+**Uses:** clippy cognitive_complexity lints for extraction triggers
 
-2. **`pub(crate)` benchmark module** -- Internal to the Rust crate, invisible to Python API. Thin PyO3 bindings in `src/pyconsumer.rs` delegate to `BenchmarkRunner`.
+**Research flag:** Standard pattern — skip deep research
 
-3. **Measurement via existing facades** -- Use `MetricsSink` for handler metrics, `RuntimeSnapshot::sample()` for memory, `QueueManager` for queue depth. No new instrumentation in production hot paths.
+### Phase 3: Split `dispatcher/` and Extract `runtime/`
+**Rationale:** `ConsumerDispatcher` mixes consumer orchestration with dispatcher logic. Also extracts `RuntimeBuilder` from `pyconsumer.rs` to make pure-Rust code testable without Python.
 
-4. **Rust-native benchmark mode** -- Separate mode that measures `ConsumerRunner` + `Dispatcher` + handler execution in-process without crossing PyO3 Python-callable boundary.
+**Delivers:**
+- `dispatcher/pause.rs` — pause/resume logic
+- `dispatcher/consumer_dispatcher.rs` — ConsumerDispatcher
+- `runtime/mod.rs` — RuntimeBuilder factory
+- Thin `pyconsumer.rs` wrapper (~60 lines target)
 
-5. **Hardening validation via check functions** -- `HardeningCheck` enum with `ValidationResult` struct. Checks run against `ScenarioOutcome` data after benchmark completes.
+**Addresses:** PyO3 boundary thickening, dispatcher god object
 
-### Module Structure
+**Research flag:** PyO3 boundary changes need integration test verification
 
-```
-src/benchmark/
-├── mod.rs              # Public exports: Runner, Scenario trait, Result types
-├── scenario.rs         # Scenario trait, WorkloadProfile, HandlerModeProfile, FailureScenario
-├── runner.rs           # BenchmarkRunner orchestrator, measurement loop
-├── measurement.rs      # Timer, LatencyCollector, ThroughputCollector helpers
-├── results.rs          # BenchmarkResult, BenchmarkMetrics, Serializers (JSON/CSV)
-└── validation.rs       # HardeningChecks enum, ValidationResult, CheckResult
-```
+### Phase 4: State Machine Extraction
+**Rationale:** Replace implicit state (Option, bool flags) with explicit enums. Enables compiler-enforced exhaustiveness checking.
 
-### Build Order
+**Delivers:**
+- `WorkerState` enum replacing `active_message: Option<OwnedMessage>` in worker_loop
+- `BackpressureState` enum replacing `backpressure_active: bool` in batch_worker_loop
+- `ShutdownPhase` enum (already partially modeled)
+- `RetryState` enum for RetryCoordinator
 
-1. **Phase 1: Result Models & Measurement Helpers** -- `results.rs` + `measurement.rs`. No production module dependencies.
+**Addresses:** Implicit state machine pitfalls (Pitfall 5, 6)
 
-2. **Phase 2: Scenario Definitions** -- `scenario.rs`. Depends on Phase 1 (BenchmarkResult for ScenarioOutcome).
+**Research flag:** Standard pattern — skip deep research
 
-3. **Phase 3: Benchmark Runner Core** -- `runner.rs`. Depends on Phase 1+2 and existing modules: ConsumerRunner, Dispatcher, MetricsSink, RuntimeSnapshot.
+### Phase 5: Module Split — `coordinator/` to `offset/` + `retry/` + `shutdown/`
+**Rationale:** Coordinator conflates four distinct responsibilities. Split by responsibility boundary. Only depends on consumer/ being stable.
 
-4. **Phase 4: Hardening Validation** -- `validation.rs`. Depends on Phase 1 (BenchmarkResult).
+**Delivers:**
+- `offset/` — OffsetTracker, OffsetCommitter, OffsetCoordinator trait
+- `retry/` — RetryCoordinator (moved from coordinator/)
+- `shutdown/` — ShutdownCoordinator (moved from coordinator/)
 
-5. **Phase 5: Integration** -- `src/lib.rs` + `src/pyconsumer.rs` PyO3 bindings.
+**Addresses:** Architecture cohesion issue, retry coordinator location question
 
-## Proposed Module Structure
+**Research flag:** Offset commit state machine (Pitfall 5) — needs consumer restart test verification
 
-```
-src/benchmark/
-├── mod.rs              # pub(crate) mod benchmark; exports Runner, Scenario, Result types
-├── scenario.rs         # Scenario trait, WorkloadProfile, HandlerModeProfile, FailureScenario
-├── runner.rs           # BenchmarkRunner { run(), stop() }, orchestrates ConsumerRunner + Dispatcher
-├── measurement.rs      # Timer { wall/CPU }, LatencyCollector { p50/p95/p99/p999 }, ThroughputCollector
-├── results.rs          # BenchmarkResult, BenchmarkMetrics, LatencyMetrics, MemoryMetrics, CorrectnessMetrics
-│                       # Serializers: CsvSerializer, JsonSerializer (implements serde::Serialize)
-└── validation.rs       # HardeningCheck enum { DlqRoutingCorrectness, RetryBehaviorMatchesPolicy,
-                        #   QueueDepthInvariant, MemoryGrowthWithinBounds, HandlerLatencySla, NoMessageLoss }
-                        # ValidationResult { checks, passed, summary }
-```
+### Phase 6: Type Safety — HandlerId Newtype + Error Consolidation
+**Rationale:** Last phase. Replaces `HandlerId = String` type alias and consolidates scattered error types. Ripples through routing, dispatcher, worker_pool.
 
-**Python-facing control plane:** Thin `BenchmarkRunner` pyclass in `src/pyconsumer.rs` with methods:
-- `run(scenario_name: &str, output_path: &Path) -> BenchmarkResult`
-- `stop()`
-- `list_scenarios() -> Vec<String>`
+**Delivers:**
+- `struct HandlerId(String)` newtype in routing/context.rs
+- Unified `error.rs` re-exporting all domain errors
+- Removed `errors.rs`
 
-## Research Flags
+**Addresses:** Type safety issue, scattered error types
 
-- **Phase 1-2 (Result Models + Scenario):** Standard patterns, well-documented. No additional research needed.
-- **Phase 3 (BenchmarkRunner):** Needs careful integration with existing ConsumerRunner + Dispatcher. Code review recommended before implementation.
-- **Phase 4 (Hardening Validation):** Check design needs validation against actual RetryCoordinator/DlqRouter implementation.
-- **Rust-native benchmark mode:** No precedent in current codebase. Requires spike to verify PyO3-free measurement approach works.
-- **CI integration:** Benchmark regression detection (>10%) needs tooling research beyond criterion.rs.
+**Research flag:** HandlerId vs topic distinction — verify they are always equal or distinct
+
+### Phase Ordering Rationale
+
+1. **Duplication extraction first** — establishes safe extraction pattern before structural changes
+2. **Intra-module splits before inter-module** — worker_pool split doesn't affect coordinator
+3. **PyO3 boundary last** — RuntimeBuilder extraction is additive until old implementation removed
+4. **Type safety last** — HandlerId newtype ripples through all modules, do after dust settles
+
+**Research flags by phase:**
+| Phase | Needs Research | Standard Pattern |
+|-------|---------------|------------------|
+| Phase 1 (Duplication) | No | Yes |
+| Phase 2 (worker_pool split) | No | Yes |
+| Phase 3 (dispatcher + runtime) | PyO3 integration tests | Partial |
+| Phase 4 (State machines) | No | Yes |
+| Phase 5 (coordinator split) | Offset commit semantics | Partial |
+| Phase 6 (Type safety) | HandlerId distinction | No |
+
+---
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack additions (criterion, serde) | HIGH | Well-documented, stable crates |
-| Module structure | HIGH | Clean separation, follows existing KafPy patterns |
-| Measurement approach | HIGH | Uses existing MetricsSink + RuntimeSnapshot facades |
-| Hardening validation design | MEDIUM | Check enum is comprehensive; actual thresholds need benchmark data |
-| PyO3-free Rust benchmark | MEDIUM | Architectural insight sound; needs spike to confirm |
-| CI integration | LOW | Regression detection tooling not researched |
+| Stack | HIGH | Verified via crates.io, Rust toolchain docs |
+| Features (code smells) | HIGH | Verified by reading source, exact line ranges identified |
+| Architecture | MEDIUM | Based on codebase analysis and Rust patterns; no external web sources accessible |
+| Pitfalls | MEDIUM-HIGH | Based on Rust/PyO3 domain knowledge and observed patterns; external search unavailable |
 
-## Gaps to Address
+**Overall confidence:** MEDIUM-HIGH
 
-1. **Threshold values for hardening checks** -- `QueueDepthInvariant`, `MemoryGrowthWithinBounds`, `HandlerLatencySla` need actual benchmark data to set thresholds. Currently no empirical basis.
+### Gaps to Address
 
-2. **CI tooling for benchmark regression detection** -- No research done on how to compare benchmark results across commits and auto-comment on PRs.
+- **HandlerId vs topic distinction:** Are they always equal or conceptually distinct? If always equal, newtype may be unnecessary complexity.
+- **NoopSink duplication:** Is `NoopSink` in `worker_pool/mod.rs` identical to any sink in observability module?
+- **coordinator/retry_coordinator.rs location:** Should RetryCoordinator live in `retry/` module since it uses `RetryPolicy` from there?
+- **PartitionAccumulator naming:** Should it be renamed to `PerPartitionBuffer` for clarity?
 
-3. **Kafka cluster setup for benchmarks** -- PITFALLS.md requires minimum 3-broker topology; how to provision this in CI environment is unresolved.
-
-4. **Rust-native benchmark validation** -- PyO3-free benchmark mode has not been spiked; may reveal architectural issues not visible in planning.
+---
 
 ## Sources
 
-- ARCHITECTURE.md -- benchmark module structure, integration points, build order (HIGH confidence)
-- PITFALLS.md -- 12 pitfalls with prevention strategies, phase-specific warnings (MEDIUM confidence)
-- FEATURES.md -- feature landscape from observability research, relevant for measurement/validation design (MEDIUM-HIGH)
-- STACK.md -- PyO3 async runtime stack, not directly relevant to benchmarking (HIGH confidence, different domain)
+### Primary (HIGH confidence)
+- KafPy source code analysis — code smell catalog, module boundaries, duplication patterns
+- crates.io — verified tool versions: clippy 0.0.302, cargo-audit 0.22.1, cargo-deny 0.19.4, cargo-machete 0.9.2, cargo-geiger 0.13.0
+
+### Secondary (MEDIUM confidence)
+- The Rust Programming Language Book — modules, async, error handling
+- Tokio documentation — channel semantics, select bias, cancellation
+- PyO3 User Guide — GIL handling, pyclass, async patterns
+- Rust API Guidelines — structuring, error types, API design
+
+### Tertiary (LOW confidence)
+- Rustonomicon — unsafe code concepts (needs verification)
+- sonarr-rust vs clippy comparison (heavier alternative, not chosen)
+
+---
+*Research completed: 2026-04-20*
+*Ready for roadmap: yes*
