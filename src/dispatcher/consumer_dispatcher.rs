@@ -304,6 +304,10 @@ impl ConsumerDispatcher {
 
     /// Returns an `Arc<QueueManager>` for WorkerPool ack integration (EXEC-13).
     pub(crate) fn queue_manager(&self) -> Arc<QueueManager> {
+        // NOTE: QueueManager::clone() does Arc::new(self.handlers.clone()) which
+        // creates a NEW Arc pointing to the SAME underlying HashMap (shallow clone).
+        // This means both the original Dispatcher's QM and the returned clone share
+        // the same handlers HashMap - inserts are visible to both.
         Arc::new(self.dispatcher.queue_manager.clone())
     }
 }

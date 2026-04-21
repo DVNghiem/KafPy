@@ -97,13 +97,19 @@ impl RuntimeBuilder {
         let dispatcher = ConsumerDispatcher::new((*runner_arc).clone());
 
         // 5. Collect receivers from all registered handlers
-        let receivers: Vec<_> = {
+        // BUG FIX: Collect ALL handlers (topic, Arc<PyAny>) pairs to get accurate count
+        let all_handlers: Vec<_> = {
             let handlers_guard = self.handlers.lock().unwrap();
             handlers_guard
-                .keys()
-                .map(|topic| dispatcher.register_handler(topic.clone(), 100, None))
+                .iter()
+                .map(|(topic, handler)| (topic.clone(), Arc::clone(handler)))
                 .collect()
         };
+        tracing::info!(count = all_handlers.len(), topics = ?all_handlers.iter().map(|(t, _)| t).collect::<Vec<_>>(), "registering handlers");
+        let receivers: Vec<_> = all_handlers
+            .iter()
+            .map(|(topic, _)| dispatcher.register_handler(topic.clone(), 100, None))
+            .collect();
 
         // 6. Build PythonHandler from the registered callbacks
         let handler_arc: Arc<PythonHandler> = {
