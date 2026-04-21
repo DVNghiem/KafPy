@@ -5,7 +5,6 @@ site_url: https://DNghiem.github.io/KafPy
 
 repo_name: DVNghiem/KafPy
 repo_url: https://github.com/DVNghiem/KafPy
-edit_path: docs
 
 theme:
   name: material
