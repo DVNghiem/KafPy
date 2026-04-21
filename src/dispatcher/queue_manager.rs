@@ -92,12 +92,12 @@ impl HandlerMetadata {
     }
 
     /// Increments queue_depth by 1 (called when message is buffered).
-    fn inc_queue_depth(&self) {
+    pub(crate) fn inc_queue_depth(&self) {
         self.queue_depth.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Increments inflight by 1 (called when message is dispatched).
-    fn inc_inflight(&self) {
+    pub(crate) fn inc_inflight(&self) {
         self.inflight.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -140,6 +140,11 @@ pub(crate) struct HandlerEntry {
 }
 
 /// Owns all handler queues and their atomic metadata counters.
+///
+/// Uses `parking_lot::Mutex` for synchronous lock acquisition during
+/// initialization and non-async operations. This avoids async/.await issues
+/// in the registration path while still being safe for use in async contexts
+/// (the lock is held briefly and not across await points).
 #[derive(Clone)]
 pub(crate) struct QueueManager {
     pub(crate) handlers:
@@ -150,9 +155,7 @@ impl QueueManager {
     /// Creates a new empty QueueManager.
     pub fn new() -> Self {
         Self {
-            handlers: std::sync::Arc::new(
-                parking_lot::Mutex::new(std::collections::HashMap::new()),
-            ),
+            handlers: std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -163,6 +166,7 @@ impl QueueManager {
         capacity: usize,
         semaphore: Option<Arc<Semaphore>>,
     ) -> mpsc::Receiver<OwnedMessage> {
+        let topic_str: String = topic.into();
         let (tx, rx) = mpsc::channel(capacity);
         let limit = semaphore
             .as_ref()
@@ -173,7 +177,7 @@ impl QueueManager {
             sender: tx,
             metadata,
         };
-        self.handlers.lock().insert(topic.into(), entry);
+        self.handlers.lock().insert(topic_str.clone(), entry);
         rx
     }
 
@@ -217,7 +221,8 @@ impl QueueManager {
     /// Decrements both `queue_depth` and `inflight` by `count`.
     /// Idempotent — no-op if `topic` is not registered.
     pub fn ack(&self, topic: &str, count: usize) {
-        if let Some(entry) = self.handlers.lock().get(topic) {
+        let guard = self.handlers.lock();
+        if let Some(entry) = guard.get(topic) {
             entry.metadata.ack(count);
         }
     }
@@ -241,10 +246,12 @@ impl QueueManager {
             .get(handler_id.as_str())
             .ok_or_else(|| DispatchError::HandlerNotRegistered(handler_id.as_str().to_string()))?;
 
+        tracing::info!(handler_id = %handler_id, topic = %topic, capacity = entry.metadata.capacity, "send_to_handler_by_id: attempting try_send");
         match entry.sender.try_send(message) {
             Ok(()) => {
                 entry.metadata.inc_queue_depth();
                 entry.metadata.inc_inflight();
+                tracing::info!(handler_id = %handler_id, "send_to_handler_by_id: success");
                 Ok(crate::dispatcher::DispatchOutcome {
                     topic,
                     partition,
@@ -252,8 +259,14 @@ impl QueueManager {
                     queue_depth: entry.metadata.get_queue_depth(),
                 })
             }
-            Err(TrySendError::Full(_)) => Err(DispatchError::QueueFull(handler_id.to_string())),
-            Err(TrySendError::Closed(_)) => Err(DispatchError::QueueClosed(handler_id.to_string())),
+            Err(TrySendError::Full(_)) => {
+                tracing::info!(handler_id = %handler_id, "send_to_handler_by_id: Full");
+                Err(DispatchError::QueueFull(handler_id.to_string()))
+            }
+            Err(TrySendError::Closed(_)) => {
+                tracing::warn!(handler_id = %handler_id, "send_to_handler_by_id: Closed - receiver dropped!");
+                Err(DispatchError::QueueClosed(handler_id.to_string()))
+            }
         }
     }
 }

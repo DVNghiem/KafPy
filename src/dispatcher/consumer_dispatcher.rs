@@ -90,7 +90,9 @@ impl ConsumerDispatcher {
     /// the chain to determine the target handler_id, then dispatched to that handler.
     /// When no routing chain is set, messages are dispatched by topic (backward compat).
     pub(crate) async fn run(&self, policy: &dyn BackpressurePolicy) {
+        eprintln!("DISPATCH_RUN: ENTERED");
         let mut stream = self.runner.stream();
+        eprintln!("DISPATCH_RUN: STREAM_CREATED");
         while let Some(result) = stream.next().await {
             match result {
                 Ok(msg) => {
@@ -98,20 +100,19 @@ impl ConsumerDispatcher {
                     let partition = msg.partition;
                     let offset = msg.offset;
                     // Dispatch inside span; routing_decision is derived from outcome
+                    let span = tracing::Span::current().kafpy_dispatch_process(
+                        &topic,
+                        partition,
+                        offset,
+                        "dispatched",
+                    );
                     let (outcome, pause_signal) = {
-                        let span = tracing::Span::current().kafpy_dispatch_process(
-                            &topic,
-                            partition,
-                            offset,
-                            "dispatched",
-                        );
-                        span.in_scope(|| {
-                            if let Some(ref chain) = self.routing_chain {
-                                self.route_with_chain(msg, chain, policy)
-                            } else {
-                                self.dispatcher.send_with_policy_and_signal(msg, policy)
-                            }
-                        })
+                        let _guard = span.enter();
+                        if let Some(ref chain) = self.routing_chain {
+                            self.route_with_chain(msg, chain, policy).await
+                        } else {
+                            self.dispatcher.send_with_policy_and_signal(msg, policy).await
+                        }
                     };
                     match outcome {
                         Ok(outcome) => {
@@ -158,7 +159,7 @@ impl ConsumerDispatcher {
     }
 
     /// Routes a message through the routing chain and dispatches to the resulting handler.
-    fn route_with_chain(
+    async fn route_with_chain(
         &self,
         msg: OwnedMessage,
         chain: &Arc<RoutingChain>,
@@ -172,6 +173,11 @@ impl ConsumerDispatcher {
             RoutingDecision::Route(handler_id) => {
                 // Dispatch to handler by ID
                 let qm = &self.dispatcher.queue_manager;
+                // Debug: log handlers map contents before send
+                {
+                    let guard = qm.handlers.lock();
+                    tracing::debug!(handler_id = %handler_id, topics = ?guard.keys().collect::<Vec<_>>(), "route_with_chain: handlers in QM");
+                }
                 match qm.send_to_handler_by_id(&handler_id, msg) {
                     Ok(outcome) => (Ok(outcome), None),
                     Err(DispatchError::Backpressure(_)) => {
@@ -357,13 +363,13 @@ mod tests {
 
         let msg = OwnedMessage::fake("test-topic", 0, 100);
         // First send should succeed
-        let (result, _) = dispatcher.send_with_policy_and_signal(msg, &DefaultBackpressurePolicy);
+        let (result, _) = dispatcher.send_with_policy_and_signal(msg, &DefaultBackpressurePolicy).await;
         assert!(result.is_ok());
 
         // Second send should fail with backpressure (semaphore exhausted)
         let msg2 = OwnedMessage::fake("test-topic", 1, 101);
         let (result, _) =
-            dispatcher.send_with_policy_and_signal(msg2, &DefaultBackpressurePolicy);
+            dispatcher.send_with_policy_and_signal(msg2, &DefaultBackpressurePolicy).await;
         assert!(matches!(result, Err(DispatchError::Backpressure(_))));
     }
 
@@ -377,7 +383,7 @@ mod tests {
         for i in 0..50 {
             let msg = OwnedMessage::fake("test-topic", i % 3, i as i64);
             let (result, _) =
-                dispatcher.send_with_policy_and_signal(msg, &DefaultBackpressurePolicy);
+                dispatcher.send_with_policy_and_signal(msg, &DefaultBackpressurePolicy).await;
             assert!(result.is_ok(), "dispatch {} should succeed", i);
         }
     }

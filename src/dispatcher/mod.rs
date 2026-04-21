@@ -100,7 +100,7 @@ impl Dispatcher {
     /// - No handler is registered ([`DispatchError::HandlerNotRegistered`])
     /// - Queue is full and policy returns Drop or Wait ([`DispatchError::Backpressure`])
     /// - Handler's receiver has been dropped ([`DispatchError::QueueClosed`])
-    pub(crate) fn send_with_policy(
+    pub(crate) async fn send_with_policy(
         &self,
         message: OwnedMessage,
         policy: &dyn BackpressurePolicy,
@@ -151,6 +151,7 @@ impl Dispatcher {
             }
             Err(TrySendError::Closed(_)) => {
                 entry.metadata.inflight.fetch_sub(1, Ordering::Relaxed);
+                tracing::warn!(topic = %topic, "send_with_policy_and_signal: channel closed");
                 Err(DispatchError::QueueClosed(topic))
             }
         }
@@ -162,7 +163,42 @@ impl Dispatcher {
     ///
     /// Returns [`DispatchError::Backpressure`] if the queue is full (per DISP-08).
     pub fn send(&self, message: OwnedMessage) -> Result<DispatchOutcome, DispatchError> {
-        self.send_with_policy(message, &DefaultBackpressurePolicy)
+        // Use sync path - no backpressure policy needed for simple send
+        let topic = message.topic.clone();
+        let partition = message.partition;
+        let offset = message.offset;
+
+        let guard = self.queue_manager.handlers.lock();
+        let entry = guard
+            .get(&topic)
+            .ok_or_else(|| DispatchError::HandlerNotRegistered(topic.clone()))?;
+
+        if !entry.metadata.try_acquire_semaphore() {
+            return Err(DispatchError::Backpressure(topic));
+        }
+
+        entry.metadata.inflight.fetch_add(1, Ordering::Relaxed);
+
+        match entry.sender.try_send(message) {
+            Ok(()) => {
+                entry.metadata.queue_depth.fetch_add(1, Ordering::Relaxed);
+                let depth = entry.metadata.queue_depth.load(Ordering::Relaxed);
+                Ok(DispatchOutcome {
+                    topic,
+                    partition,
+                    offset,
+                    queue_depth: depth,
+                })
+            }
+            Err(TrySendError::Full(_)) => {
+                entry.metadata.inflight.fetch_sub(1, Ordering::Relaxed);
+                Err(DispatchError::Backpressure(topic))
+            }
+            Err(TrySendError::Closed(_)) => {
+                entry.metadata.inflight.fetch_sub(1, Ordering::Relaxed);
+                Err(DispatchError::QueueClosed(topic))
+            }
+        }
     }
 
     /// Returns the capacity for `topic`, or `None` if not registered.
@@ -176,7 +212,7 @@ impl Dispatcher {
     /// Returns `(Result, Option<BackpressureAction>)` — the `Option` is `Some`
     /// when the policy returned `FuturePausePartition(topic)` and the caller
     /// should invoke `ConsumerDispatcher::pause_partition`.
-    pub(crate) fn send_with_policy_and_signal(
+    pub(crate) async fn send_with_policy_and_signal(
         &self,
         message: OwnedMessage,
         policy: &dyn BackpressurePolicy,
@@ -188,7 +224,9 @@ impl Dispatcher {
         let partition = message.partition;
         let offset = message.offset;
 
+        tracing::info!(topic = %topic, "send_with_policy_and_signal ENTER");
         let guard = self.queue_manager.handlers.lock();
+        tracing::info!(topic = %topic, n_handlers = guard.len(), entries = ?guard.keys().collect::<Vec<_>>(), "send_with_policy_and_signal: got lock");
         let entry = guard
             .get(&topic)
             .unwrap_or_else(|| panic!("no handler for topic '{}'", topic.clone()));
@@ -200,7 +238,8 @@ impl Dispatcher {
 
         entry.metadata.inflight.fetch_add(1, Ordering::Relaxed);
 
-        match entry.sender.try_send(message) {
+        let result = entry.sender.try_send(message);
+        match result {
             Ok(()) => {
                 entry.metadata.queue_depth.fetch_add(1, Ordering::Relaxed);
                 let depth = entry.metadata.queue_depth.load(Ordering::Relaxed);
@@ -216,16 +255,7 @@ impl Dispatcher {
             }
             Err(TrySendError::Full(_)) => {
                 entry.metadata.inflight.fetch_sub(1, Ordering::Relaxed);
-                let action = policy.on_queue_full(&topic, &entry.metadata);
-                match action {
-                    BackpressureAction::Drop | BackpressureAction::Wait => {
-                        (Err(DispatchError::Backpressure(topic.clone())), None)
-                    }
-                    BackpressureAction::FuturePausePartition(t) => (
-                        Err(DispatchError::Backpressure(topic.clone())),
-                        Some(BackpressureAction::FuturePausePartition(t)),
-                    ),
-                }
+                (Err(DispatchError::Backpressure(topic.clone())), None)
             }
             Err(TrySendError::Closed(_)) => {
                 entry.metadata.inflight.fetch_sub(1, Ordering::Relaxed);
