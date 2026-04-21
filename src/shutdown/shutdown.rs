@@ -178,6 +178,7 @@ impl ShutdownCoordinator {
     }
 
     /// Returns a reference to the committer cancellation token.
+    #[allow(dead_code)]
     pub(crate) fn committer_cancel_token(&self) -> CancellationToken {
         self.committer_cancel.clone()
     }

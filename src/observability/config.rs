@@ -5,6 +5,7 @@ use tracing::Level;
 
 /// Log format for tracing-subscriber fmt layer.
 #[derive(Debug, Clone, Copy, Default)]
+#[allow(dead_code)]
 pub enum LogFormat {
     Json,
     Pretty,
@@ -38,15 +39,19 @@ impl Default for ComponentLogLevels {
 pub struct ObservabilityConfig {
     /// OTLP exporter endpoint (e.g., "http://localhost:4317").
     /// None = tracing disabled (zero-cost).
+    #[allow(dead_code)]
     pub otlp_endpoint: Option<String>,
     /// Service name for OTLP resource.
+    #[allow(dead_code)]
     pub service_name: String,
     /// Sampling ratio (0.0 to 1.0). 1.0 = sample everything.
+    #[allow(dead_code)]
     pub sampling_ratio: f64,
     /// Log format for tracing-subscriber fmt layer.
     pub log_format: LogFormat,
     /// Polling interval for Kafka metrics (consumer_lag, highwater, etc.).
     /// Default: 10 seconds.
+    #[allow(dead_code)]
     pub kafka_poll_interval: std::time::Duration,
     /// Per-component log levels (OBS-37).
     pub component_log_levels: ComponentLogLevels,

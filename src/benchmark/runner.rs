@@ -54,11 +54,13 @@ impl BenchmarkContext {
     }
 
     /// Returns a sender clone for sending Sample::LatencyNs to the aggregator.
+    #[allow(dead_code)]
     pub fn latency_sender(&self) -> mpsc::Sender<crate::benchmark::measurement::Sample> {
         self.aggregator.sender()
     }
 
     /// Record a latency sample (nanoseconds).
+    #[allow(dead_code)]
     pub fn record_latency(&self, ns: u64) {
         let sender = self.latency_sender();
         // Non-blocking send on the hot path — best-effort, sample dropped if channel full
@@ -66,6 +68,7 @@ impl BenchmarkContext {
     }
 
     /// Record a message throughput sample (payload bytes).
+    #[allow(dead_code)]
     pub fn record_message(&self, payload_bytes: usize) {
         let sender = self.latency_sender();
         let _ = sender.try_send(crate::benchmark::measurement::Sample::MessageRecorded(payload_bytes));
@@ -148,6 +151,7 @@ pub struct BenchmarkRunner {
     metrics_sink: Option<Arc<dyn MetricsSink>>,
 }
 
+#[cfg(not(feature = "pyo3"))]
 impl BenchmarkRunner {
     /// Create a new BenchmarkRunner.
     ///

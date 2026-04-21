@@ -1,35 +1,17 @@
-# KafPy Documentation
+# KafPy
+
+High-performance Kafka consumer & producer for Python, built with Rust using PyO3.
+
+## Features
+
+- **High Performance**: Built in Rust for maximum throughput and low latency
+- **Async Support**: Full support for async/await handlers
+- **Batch Processing**: Efficient batch message handling
+- **Type Safe**: Full type annotations for Python
+- **Retry & DLQ**: Built-in retry logic and dead letter queue support
+- **Flexible Routing**: Multiple routing strategies (pattern, header, key, python)
 
 ## Quick Start
-
-KafPy is a high-performance Kafka consumer framework for Python, built with Rust.
-
-### Prerequisites
-
-- Python 3.11+
-- librdkafka installed on your system
-
-**librdkafka installation:**
-
-```bash
-# macOS
-brew install librdkafka
-
-# Ubuntu / Debian
-apt install librdkafka-dev
-
-# Fedora / RHEL
-dnf install librdkafka-devel
-```
-
-### Installation
-
-```bash
-pip install maturin
-maturin develop --release
-```
-
-### Your First Consumer
 
 ```python
 import kafpy
@@ -39,20 +21,33 @@ config = kafpy.ConsumerConfig(
     group_id="my-group",
     topics=["my-topic"],
 )
+
 consumer = kafpy.Consumer(config)
 app = kafpy.KafPy(consumer)
 
 @app.handler(topic="my-topic")
-def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerResult:
-    print(msg.payload)
+def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext):
+    print(f"Received: {msg.get_payload_as_string()}")
     return kafpy.HandlerResult(action="ack")
 
 app.run()
 ```
 
-## Guides
+## Installation
 
-- [Getting Started](../kafpy/guides/getting-started.md)
-- [Handler Patterns](../kafpy/guides/handler-patterns.md)
-- [Configuration](../kafpy/guides/configuration.md)
-- [Error Handling](../kafpy/guides/error-handling.md)
+See the [Installation Guide](installation.md) for detailed setup instructions.
+
+## Documentation
+
+- [Getting Started](getting-started.md) - First steps with KafPy
+- [Configuration](configuration.md) - All configuration options
+- [Handlers](handlers.md) - Handler types and registration
+- [Consumer](consumer.md) - Consumer usage
+- [Error Handling](error-handling.md) - Retry and DLQ
+- [Routing](routing.md) - Routing strategies
+- [Benchmark](benchmark.md) - Performance benchmarking
+- [API Reference](api/kafpy.md) - Complete API documentation
+
+## License
+
+BSD-3-Clause

@@ -1,0 +1,83 @@
+site_name: KafPy Documentation
+site_description: High-performance Kafka consumer & producer for Python built with Rust
+site_author: Dang Van Nghiem
+site_url: https://DNghiem.github.io/KafPy
+
+repo_name: DVNghiem/KafPy
+repo_url: https://github.com/DVNghiem/KafPy
+edit_path: docs
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - search.suggest
+    - search.highlight
+    - content.tabs.link
+    - content.code.copy
+
+plugins:
+  - search
+  - mike:
+      version_selector: true
+      versioning_selector: true
+
+nav:
+  - Home: index.md
+  - Installation:
+    - installation.md
+  - Getting Started:
+    - getting-started.md
+  - Configuration:
+    - configuration.md
+  - Handlers:
+    - handlers.md
+  - Consumer:
+    - consumer.md
+  - Error Handling:
+    - error-handling.md
+  - Routing:
+    - routing.md
+  - Best Practices:
+    - best-practices.md
+  - Use Cases:
+    - use-cases.md
+  - Benchmark:
+    - benchmark.md
+  - API Reference:
+    - api/kafpy.md
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - admonition
+  - pymdownx.details
+  - pymdownx.mark
+  - attr_list
+  - md_in_html
+  - tables
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/DVNghiem/KafPy

@@ -14,17 +14,20 @@ pub struct HeaderRule {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct HeaderRouter {
     rules: Arc<[HeaderRule]>,
 }
 
 impl HeaderRouter {
+    #[allow(dead_code)]
     pub fn new(rules: Vec<HeaderRule>) -> Self {
         Self {
             rules: rules.into(),
         }
     }
 
+    #[allow(dead_code)]
     pub fn rule_count(&self) -> usize {
         self.rules.len()
     }

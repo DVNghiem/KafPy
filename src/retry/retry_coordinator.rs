@@ -21,6 +21,7 @@ use std::time::Duration;
 /// presence/absence to indicate state. The enum makes illegal states
 /// unrepresentable and enables exhaustive match checking.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum RetryState {
     /// Message is being tracked for retry attempts.
     Retrying {
@@ -54,6 +55,7 @@ pub enum RetryState {
 
 impl RetryState {
     /// Returns the topic for this retry state.
+    #[allow(dead_code)]
     pub fn topic(&self) -> &str {
         match self {
             RetryState::Retrying { topic, .. } => topic,
@@ -62,6 +64,7 @@ impl RetryState {
     }
 
     /// Returns the partition for this retry state.
+    #[allow(dead_code)]
     pub fn partition(&self) -> i32 {
         match self {
             RetryState::Retrying { partition, .. } => *partition,
@@ -70,6 +73,7 @@ impl RetryState {
     }
 
     /// Returns the offset for this retry state.
+    #[allow(dead_code)]
     pub fn offset(&self) -> i64 {
         match self {
             RetryState::Retrying { offset, .. } => *offset,
@@ -110,6 +114,7 @@ impl RetryCoordinator {
     }
 
     /// Create with explicit policy (for testing).
+    #[allow(dead_code)]
     pub fn with_policy(policy: RetryPolicy) -> Self {
         Self {
             state: Mutex::new(HashMap::new()),

@@ -172,6 +172,7 @@ impl WorkerPoolState {
     }
 
     /// Returns counts of idle / active / busy workers.
+    #[allow(dead_code)]
     pub fn worker_counts(&self) -> (usize, usize, usize) {
         let guard = self.states.read();
         let mut idle = 0;

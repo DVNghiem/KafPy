@@ -27,6 +27,7 @@ pub struct MeasurementStats {
 
 impl MeasurementStats {
     /// Create a new MeasurementStats with all accumulators initialized to zero.
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             counter: AtomicU64::new(0),
@@ -38,6 +39,7 @@ impl MeasurementStats {
     }
 
     /// Record a value — updates all accumulators atomically.
+    #[allow(dead_code)]
     pub fn record(&self, value: f64) {
         self.counter.fetch_add(1, Ordering::Relaxed);
         {
@@ -63,11 +65,13 @@ impl MeasurementStats {
     }
 
     /// Returns the number of recorded samples.
+    #[allow(dead_code)]
     pub fn counter(&self) -> u64 {
         self.counter.load(Ordering::Relaxed)
     }
 
     /// Returns the mean of recorded values, or None if counter == 0.
+    #[allow(dead_code)]
     pub fn mean(&self) -> Option<f64> {
         let cnt = self.counter.load(Ordering::Relaxed);
         if cnt == 0 {
@@ -79,6 +83,7 @@ impl MeasurementStats {
     }
 
     /// Returns the population variance, or None if counter < 2.
+    #[allow(dead_code)]
     pub fn variance(&self) -> Option<f64> {
         let cnt = self.counter.load(Ordering::Relaxed);
         if cnt < 2 {
@@ -92,11 +97,13 @@ impl MeasurementStats {
     }
 
     /// Returns the population standard deviation, or None if counter < 2.
+    #[allow(dead_code)]
     pub fn stddev(&self) -> Option<f64> {
         self.variance().map(|v| v.sqrt())
     }
 
     /// Returns the minimum value, or None if counter == 0.
+    #[allow(dead_code)]
     pub fn min(&self) -> Option<f64> {
         let min_val = *self.min.lock().unwrap();
         if min_val.is_infinite() {
@@ -107,6 +114,7 @@ impl MeasurementStats {
     }
 
     /// Returns the maximum value, or None if counter == 0.
+    #[allow(dead_code)]
     pub fn max(&self) -> Option<f64> {
         let max_val = *self.max.lock().unwrap();
         if max_val.is_infinite() {
@@ -161,6 +169,7 @@ pub struct HistogramRecorder {
 
 impl HistogramRecorder {
     /// Create a new HistogramRecorder with the given compression factor.
+    #[allow(dead_code)]
     pub fn new(compression: f64) -> Self {
         Self {
             compression,
@@ -185,11 +194,13 @@ impl HistogramRecorder {
     }
 
     /// Get multiple percentiles at once.
+    #[allow(dead_code)]
     pub fn percentiles(&self, percentiles: &[f64]) -> Vec<Option<f64>> {
         percentiles.iter().map(|&p| self.percentile(p)).collect()
     }
 
     /// Clear all recorded samples and reset to initial state.
+    #[allow(dead_code)]
     pub fn clear(&self) {
         *self.digest.write().unwrap() = TDigest::new_with_size(self.compression as usize);
     }
@@ -229,12 +240,14 @@ impl fmt::Debug for HistogramRecorder {
 /// Nanosecond-precision scoped timer for latency measurement (MEAS-03).
 /// Uses std::time::Instant for wall-clock timing.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct LatencyTimer {
     start: Instant,
 }
 
 impl LatencyTimer {
     /// Start a new timer and return it immediately.
+    #[allow(dead_code)]
     pub fn start_now() -> Self {
         Self {
             start: Instant::now(),
@@ -242,21 +255,25 @@ impl LatencyTimer {
     }
 
     /// Immediately start a timer — shorthand for LatencyTimer::start_now().
+    #[allow(dead_code)]
     pub fn start() -> Self {
         Self::start_now()
     }
 
     /// Returns elapsed time in milliseconds as f64 (for fractional ms precision).
+    #[allow(dead_code)]
     pub fn elapsed_ms(&self) -> f64 {
         self.start.elapsed().as_secs_f64() * 1000.0
     }
 
     /// Returns elapsed time in nanoseconds as u64.
+    #[allow(dead_code)]
     pub fn elapsed_ns(&self) -> u64 {
         self.start.elapsed().as_nanos() as u64
     }
 
     /// Returns elapsed time as Duration.
+    #[allow(dead_code)]
     pub fn elapsed(&self) -> std::time::Duration {
         self.start.elapsed()
     }
@@ -274,6 +291,7 @@ pub struct ThroughputMeter {
 
 impl ThroughputMeter {
     /// Create a new ThroughputMeter.
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             messages: AtomicU64::new(0),
@@ -283,22 +301,26 @@ impl ThroughputMeter {
     }
 
     /// Record a single message with its payload size in bytes.
+    #[allow(dead_code)]
     pub fn record_message(&self, payload_bytes: usize) {
         self.messages.fetch_add(1, Ordering::Relaxed);
         self.bytes.fetch_add(payload_bytes as u64, Ordering::Relaxed);
     }
 
     /// Returns the total number of messages recorded.
+    #[allow(dead_code)]
     pub fn messages(&self) -> u64 {
         self.messages.load(Ordering::Relaxed)
     }
 
     /// Returns the total number of bytes recorded.
+    #[allow(dead_code)]
     pub fn bytes(&self) -> u64 {
         self.bytes.load(Ordering::Relaxed)
     }
 
     /// Returns messages per second.
+    #[allow(dead_code)]
     pub fn msg_rate(&self) -> f64 {
         let elapsed = self.start_time.elapsed().as_secs_f64();
         if elapsed == 0.0 {
@@ -309,6 +331,7 @@ impl ThroughputMeter {
     }
 
     /// Returns bytes per second.
+    #[allow(dead_code)]
     pub fn byte_rate(&self) -> f64 {
         let elapsed = self.start_time.elapsed().as_secs_f64();
         if elapsed == 0.0 {
@@ -319,11 +342,13 @@ impl ThroughputMeter {
     }
 
     /// Returns megabits per second (for network throughput context).
+    #[allow(dead_code)]
     pub fn mbps(&self) -> f64 {
         self.byte_rate() * 8.0 / 1_000_000.0
     }
 
     /// Returns the elapsed time since this meter was created.
+    #[allow(dead_code)]
     pub fn elapsed(&self) -> std::time::Duration {
         self.start_time.elapsed()
     }
@@ -364,24 +389,28 @@ impl fmt::Debug for ThroughputMeter {
 /// returns None/0. The real implementation will come when BenchmarkRunner integrates
 /// with RuntimeSnapshotTask.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct MemorySnapshot {
     initial: Option<i64>,
 }
 
 impl MemorySnapshot {
     /// Create a new MemorySnapshot with no initial baseline.
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self { initial: None }
     }
 
     /// Take initial snapshot using RuntimeSnapshot.
     /// Falls back to None if RuntimeSnapshot is not available.
+    #[allow(dead_code)]
     pub fn take_initial(&mut self) {
         self.initial = self.try_get_heap_allocated();
     }
 
     /// Take final snapshot and return delta from initial.
     /// Returns 0 if no initial snapshot was taken.
+    #[allow(dead_code)]
     pub fn take_final_and_compute_delta(&mut self) -> Option<i64> {
         let final_heap = self.try_get_heap_allocated()?;
         match self.initial {
@@ -390,6 +419,7 @@ impl MemorySnapshot {
         }
     }
 
+    #[allow(dead_code)]
     fn try_get_heap_allocated(&self) -> Option<i64> {
         // RuntimeSnapshot does not expose heap_allocated directly in v1.9.
         // Phase 40 will integrate with jemalloc metrics via the runtime subsystem.
@@ -408,6 +438,7 @@ impl Default for MemorySnapshot {
 
 /// Sample sent from hot path to background aggregator via channel (MEAS-06).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum Sample {
     /// Nanosecond latency sample.
     LatencyNs(u64),
@@ -424,6 +455,7 @@ pub enum Sample {
 /// Warmup exclusion: first N messages are excluded from metrics (MEAS-07).
 pub struct BackgroundAggregator {
     /// Channel sender — clone this and give to hot path code.
+    #[allow(dead_code)]
     sender: mpsc::Sender<Sample>,
     /// Pre-aggregated stats — populated when aggregation task runs.
     latency_stats: MeasurementStats,
@@ -460,6 +492,7 @@ impl BackgroundAggregator {
     }
 
     /// Returns a sender clone for use on the hot path.
+    #[allow(dead_code)]
     pub fn sender(&self) -> mpsc::Sender<Sample> {
         self.sender.clone()
     }
@@ -530,18 +563,21 @@ impl fmt::Debug for BackgroundAggregator {
 #[derive(Debug, Clone)]
 pub struct AggregatedStatsSnapshot {
     /// Latency statistics.
+    #[allow(dead_code)]
     pub latency_stats: MeasurementStats,
     /// Throughput meter.
     pub throughput_meter: ThroughputMeter,
     /// Histogram for high-percentile computation.
     pub histogram: HistogramRecorder,
     /// Total messages seen (including warmup).
+    #[allow(dead_code)]
     pub messages_seen: usize,
 }
 
 // ─── MetricLabels integration (MEAS-08) ───────────────────────────────────────
 
 /// Helper to build benchmark metric labels using MetricLabels from observability.
+#[allow(dead_code)]
 pub fn benchmark_labels(scenario: &str, mode: &str) -> MetricLabels {
     MetricLabels::new()
         .insert("scenario", scenario)

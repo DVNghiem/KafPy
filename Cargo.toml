@@ -9,6 +9,9 @@ description = "High-performance Rust Kafka consumer"
 name = "_kafpy"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+pyo3 = []
+
 [dependencies]
 
 pyo3 = { version = "0.27.2", features = ["extension-module", "generate-import-lib"] }

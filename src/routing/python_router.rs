@@ -16,17 +16,20 @@ use tracing::warn;
 ///
 /// Python callable signature: `def my_router(msg: dict) -> str`
 /// Returns: "route:{handler_id}" | "drop" | "reject:{reason}" | "defer"
+#[allow(dead_code)]
 pub struct PythonRouter {
     callback: Arc<Py<PyAny>>,
 }
 
 impl PythonRouter {
     /// Construct with a Py<PyAny> callback.
+    #[allow(dead_code)]
     pub fn new(callback: Arc<Py<PyAny>>) -> Self {
         Self { callback }
     }
 
     /// Build a PyDict from RoutingContext inside a Python GIL guard.
+    #[allow(dead_code)]
     fn call_py_and_parse(&self, ctx: &RoutingContext) -> RoutingDecision {
         let callback = Arc::clone(&self.callback);
         let topic = ctx.topic.to_string();
@@ -86,6 +89,7 @@ impl PythonRouter {
     }
 
     /// Parse returned string into RoutingDecision per D-07.
+    #[allow(dead_code)]
     fn parse_return(result: String) -> RoutingDecision {
         if result.starts_with("route:") {
             let handler_id = result.strip_prefix("route:").unwrap().to_string();

@@ -202,6 +202,7 @@ pub struct Runtime {
     /// Handle to the offset committer task.
     pub committer_handle: tokio::task::JoinHandle<()>,
     /// Shutdown coordinator for drain signaling.
+    #[allow(dead_code)]
     pub coordinator: Arc<ShutdownCoordinator>,
 }
 
