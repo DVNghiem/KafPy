@@ -34,9 +34,6 @@ theme:
 
 plugins:
   - search
-  - mike:
-      version_selector: true
-      versioning_selector: true
 
 nav:
   - Home: index.md
