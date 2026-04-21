@@ -47,12 +47,13 @@ class KafPy:
         self._stopping = False
         self._loop_thread: threading.Thread | None = None
 
-    def start(self) -> None:
+    def start(self) -> object:
         """Start consuming messages.
 
         Begins the consumer and dispatches messages to registered handlers.
+        Returns an awaitable coroutine.
         """
-        self._consumer.start()
+        return self._consumer.start()
 
     def stop(self) -> None:
         """Stop the consumer gracefully.
@@ -140,3 +141,6 @@ class KafPy:
             "routing": routing,
             "type": handler_type,
         }
+
+        # Also register with the Rust consumer so it can dispatch messages
+        self._consumer.add_handler(topic, handler_fn)

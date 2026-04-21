@@ -38,9 +38,9 @@ class Consumer:
         """
         self._consumer.add_handler(topic, handler)
 
-    def start(self) -> None:
-        """Start the consumer."""
-        self._consumer.start()
+    def start(self) -> object:
+        """Start the consumer. Returns an awaitable coroutine."""
+        return self._consumer.start()
 
     def stop(self) -> None:
         """Stop the consumer."""
