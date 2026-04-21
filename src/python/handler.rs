@@ -48,6 +48,25 @@ fn message_to_pydict<'py>(
     py_msg.into()
 }
 
+/// Converts an ExecutionContext to a PyDict for Python callback invocation.
+///
+/// Call inside `Python::attach(|py| { ... })` with the Python token.
+fn ctx_to_pydict<'py>(py: Python<'py>, ctx: &ExecutionContext, msg: &OwnedMessage) -> Py<PyAny> {
+    let py_ctx = PyDict::new(py);
+    let _ = py_ctx.set_item("topic", &ctx.topic);
+    let _ = py_ctx.set_item("partition", ctx.partition);
+    let _ = py_ctx.set_item("offset", ctx.offset);
+    // Timestamp and headers from the message
+    let ts: i64 = match msg.timestamp {
+        MessageTimestamp::NotAvailable => 0,
+        MessageTimestamp::CreateTime(ts) => ts,
+        MessageTimestamp::LogAppendTime(ts) => ts,
+    };
+    let _ = py_ctx.set_item("timestamp", ts);
+    let _ = py_ctx.set_item("headers", &msg.headers);
+    py_ctx.into()
+}
+
 /// Execution mode for a Python handler.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HandlerMode {
@@ -206,8 +225,9 @@ impl PythonHandler {
         let result = tokio::task::spawn_blocking(move || {
             Python::attach(|py| {
                 let py_msg = message_to_pydict(py, &message, Some(&trace_context));
+                let py_ctx = ctx_to_pydict(py, &ctx_clone, &message);
 
-                match callback.call1(py, (py_msg,)) {
+                match callback.call(py, (py_msg, py_ctx), None) {
                     Ok(_) => ExecutionResult::Ok,
                     Err(py_err) => {
                         let classifier = DefaultFailureClassifier;

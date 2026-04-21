@@ -6,6 +6,8 @@ import inspect
 import threading
 from typing import Callable
 
+from .handlers import KafkaMessage, HandlerContext
+
 __all__ = [
     "KafPy",
 ]
@@ -136,6 +138,18 @@ class KafPy:
         else:
             handler_type = "sync"
 
+        # Wrap handler to convert dicts to proper types
+        def wrapper(msg_dict: dict, ctx_dict: dict):
+            msg = KafkaMessage.from_dict(msg_dict)
+            ctx = HandlerContext(
+                topic=str(ctx_dict["topic"]),
+                partition=int(ctx_dict["partition"]),
+                offset=int(ctx_dict["offset"]),
+                timestamp=int(ctx_dict["timestamp"]),
+                headers=dict(ctx_dict["headers"]) if ctx_dict.get("headers") else {},
+            )
+            return handler_fn(msg, ctx)
+
         self._handlers[topic] = {
             "fn": handler_fn,
             "routing": routing,
@@ -143,4 +157,4 @@ class KafPy:
         }
 
         # Also register with the Rust consumer so it can dispatch messages
-        self._consumer.add_handler(topic, handler_fn)
+        self._consumer.add_handler(topic, wrapper)
