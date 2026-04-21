@@ -23,7 +23,7 @@ class Consumer:
         Args:
             config: A ConsumerConfig instance with bootstrap_servers, group_id, topics, etc.
         """
-        import _kafpy
+        import kafpy._kafpy as _kafpy
 
         # Convert Python config to Rust config
         rust_config = config.to_rust()

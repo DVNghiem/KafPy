@@ -80,7 +80,7 @@ class ConsumerConfig:
 
     def to_rust(self) -> object:
         """Convert to Rust ConsumerConfig for use with the KafPy runtime."""
-        import _kafpy
+        import kafpy._kafpy as _kafpy
 
         return _kafpy.ConsumerConfig(
             brokers=self.bootstrap_servers,

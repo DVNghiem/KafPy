@@ -43,6 +43,9 @@ impl Logger {
         }
 
         // Wire Python logging to tracing via LogTracer (OBS-38)
-        let _ = tracing_log::LogTracer::init().expect("LogTracer init must be called once");
+        // LogTracer init must only be called once per process.
+        // If already initialized (from a prior import or test run), this returns
+        // SetLoggerError and we safely ignore it.
+        let _ = tracing_log::LogTracer::init();
     }
 }

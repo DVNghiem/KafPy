@@ -40,7 +40,7 @@ build-backend = "maturin"
 # Python imports _kafpy, so this is "kafpy._kafpy"
 module-name = "kafpy._kafpy"
 # Location of Python source files for maturin to bundle
-python-source = "kafpy"
+python-source = "."
 
 # BUILD-01: rdkafka is a SYSTEM LIBRARY, not a Python package.
 # Install librdkafka before running maturin develop:
