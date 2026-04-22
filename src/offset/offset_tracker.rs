@@ -177,7 +177,7 @@ impl OffsetTracker {
             if s.has_terminal {
                 return false;
             }
-            s.pending_offsets.contains(&(s.committed_offset + 1))
+            !s.pending_offsets.is_empty() || s.committed_offset >= 0
         })
     }
 

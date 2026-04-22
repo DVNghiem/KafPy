@@ -218,7 +218,7 @@ impl Runtime {
     /// Blocks until `pool.run()` completes (i.e., all workers have exited after
     /// shutdown signal). Keeps `dispatcher_handle` and `committer_handle` alive
     /// for the duration.
-    pub async fn run(self) {
+    pub async fn run(mut self) {
         self.pool.run().await;
         // Await the dispatcher and committer to ensure clean shutdown
         let _ = self.dispatcher_handle.await;

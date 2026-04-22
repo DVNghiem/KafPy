@@ -138,7 +138,7 @@ impl WorkerPool {
     ///
     /// Unlike `shutdown()`, this does NOT trigger cancellation. It awaits the
     /// join set until the token is cancelled externally (e.g., by Consumer::stop).
-    pub async fn run(mut self) {
+    pub async fn run(&mut self) {
         // Wait for shutdown signal - workers exit when they see cancellation
         // (see worker_loop: "_ = shutdown_token.cancelled() => break")
         while !self.shutdown_token.is_cancelled() {
@@ -153,8 +153,8 @@ impl WorkerPool {
             }
             // Continue waiting for shutdown or other workers
         }
-        // Token was cancelled - drain remaining workers
-        self.join_set.shutdown().await;
+        // Token was cancelled - trigger full graceful shutdown including final offset commit
+        self.shutdown().await;
     }
 
     /// Trigger graceful shutdown and await completion (EXEC-12).
