@@ -152,7 +152,7 @@
 | 04. State Machine Extraction | v2.0 | 2/2 | Complete | 2026-04-20 |
 | 05. Split coordinator/ | v2.0 | 1/1 | Complete | 2026-04-20 |
 | 06. Type Safety | v2.0 | 1/1 | Complete | 2026-04-20 |
-| 07. Verify DUP Requirements | v2.0 | 1/4 | Gap Closure | - |
+| 07. Verify DUP Requirements | v2.0 | 1/1 | Gap Closure | - |
 | 08. Verify SPLIT-A Requirements | v2.0 | 1/6 | Gap Closure | - |
 | 09. Verify SPLIT-B Requirements | v2.0 | 1/4 | Gap Closure | - |
 | 10. Verify STATE Requirements | v2.0 | 1/5 | Gap Closure | - |
