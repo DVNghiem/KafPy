@@ -86,22 +86,15 @@ pub struct ConsumerTask {
 
 **Key Types:**
 ```rust
-// dispatcher/mod.rs
-pub struct Dispatcher {
-    queues: Arc<HashMap<HandlerId, mpsc::Sender<OwnedMessage>>>,
-    queue_manager: Arc<QueueManager>,
-    backpressure: Arc<dyn BackpressurePolicy>,
-}
-
 // dispatcher/backpressure.rs
 pub enum BackpressureAction {
     Drop,           // Reject immediately
     Wait,           // Block until capacity
-    FuturePausePartition,  // Pause specific partition
+    FuturePausePartition(String),  // Pause specific partition
 }
 
 pub trait BackpressurePolicy: Send + Sync {
-    fn action(&self, handler: &HandlerId, depth: usize) -> BackpressureAction;
+    fn on_queue_full(&self, topic: &str, handler: &HandlerMetadata) -> BackpressureAction;
 }
 ```
 
@@ -129,16 +122,12 @@ pub trait BackpressurePolicy: Send + Sync {
 // worker_pool/state.rs
 pub enum WorkerState {
     Idle,
-    Processing { message: OwnedMessage },
-    Retrying { message: OwnedMessage, attempt: u32 },
-    WaitingForAck { offset: i64 },
+    Processing(OwnedMessage),
 }
 
 pub enum BatchState {
-    Idle,
-    Accumulating { messages: Vec<OwnedMessage>, partition: i32 },
-    Flushing { messages: Vec<OwnedMessage>, partition: i32 },
-    WaitingForAck { offsets: Vec<i64> },
+    Normal,       // accumulating messages, flushing on batch full/deadline
+    Backpressure, // flushed accumulator, blocking on capacity
 }
 ```
 
@@ -205,6 +194,25 @@ pub enum RoutingDecision {
 | `execution_result.rs` | `ExecutionResult`, `ExecutionAction` |
 | `batch.rs` | `BatchAccumulator`, `BatchExecutionResult` |
 | `async_bridge.rs` | `PythonAsyncFuture` for async handlers |
+
+**Key Types:**
+```rust
+// python/executor.rs
+pub enum ExecutorOutcome {
+    Ack,
+    Retry,
+    Rejected,
+}
+
+pub trait Executor: Send + Sync {
+    fn execute(
+        &self,
+        ctx: &ExecutionContext,
+        _message: &OwnedMessage,
+        result: &ExecutionResult,
+    ) -> ExecutorOutcome;
+}
+```
 
 ---
 

@@ -10,14 +10,7 @@ The `WorkerState` enum tracks the state of a worker task processing a message.
 stateDiagram-v2
     [*] --> Idle: WorkerPool spawns worker
     Idle --> Processing: Message received from queue
-    Processing --> Retrying: ExecutionResult::Retry
-    Processing --> WaitingForAck: Message executed, awaiting ack
-    Retrying --> Processing: Backoff elapsed, retry execution
-    Retrying --> WaitingForAck: Retry succeeded
-    Retrying --> DlqRouting: Max retries exceeded
-    WaitingForAck --> Idle: Offset committed
-    DlqRouting --> Idle: DLQ produce confirmed
-    Processing --> DlqRouting: ExecutionResult::Dlq
+    Processing --> Idle: Handler complete, offset committed
 ```
 
 ### States
@@ -25,10 +18,7 @@ stateDiagram-v2
 | State | Meaning |
 |-------|---------|
 | `Idle` | Worker ready to process next message |
-| `Processing` | Currently executing Python handler |
-| `Retrying` | Scheduled for retry after backoff |
-| `WaitingForAck` | Handler succeeded, waiting for offset commit |
-| `DlqRouting` | Routing to DLQ after permanent failure |
+| `Processing` | Currently executing Python handler with message in scope |
 
 ### Transitions
 
@@ -36,21 +26,7 @@ stateDiagram-v2
 // worker_pool/state.rs
 pub enum WorkerState {
     Idle,
-    Processing { message: OwnedMessage },
-    Retrying {
-        message: OwnedMessage,
-        attempt: u32,
-        next_retry_at: Instant,
-    },
-    WaitingForAck {
-        offset: i64,
-        partition: i32,
-        topic: String,
-    },
-    DlqRouting {
-        message: OwnedMessage,
-        reason: FailureReason,
-    },
+    Processing(OwnedMessage),
 }
 ```
 
@@ -62,29 +38,18 @@ The `BatchState` enum tracks batch accumulation and flush for batch handler mode
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Idle: WorkerPool starts batch worker
-    Idle --> Accumulating: First message for partition
-    Accumulating --> Accumulating: Messages added
-    Accumulating --> Flushing: Batch size reached
-    Accumulating --> Flushing: Timer expired
-    Flushing --> WaitingForAck: Batch sent to handler
-    WaitingForAck --> Idle: All offsets committed
-    WaitingForAck --> RetryRouting: Partial failure
-    Flushing --> DlqRouting: All failed
-    RetryRouting --> Idle: Retries complete
-    DlqRouting --> Idle: DLQ confirmed
+    [*] --> Normal: Batch worker starts
+    Normal --> Normal: Messages accumulated
+    Normal --> Backpressure: Queue full, waiting for capacity
+    Backpressure --> Normal: Capacity available
 ```
 
 ### States
 
 | State | Meaning |
 |-------|---------|
-| `Idle` | No batch in progress |
-| `Accumulating` | Collecting messages for batch |
-| `Flushing` | Batch sent to Python handler |
-| `WaitingForAck` | Awaiting offset commits for batch |
-| `RetryRouting` | Individual retry/DLQ for failed messages |
-| `DlqRouting` | All batch messages routing to DLQ |
+| `Normal` | Accumulating messages, flushing on batch full/deadline |
+| `Backpressure` | Flushed accumulator, blocking on capacity |
 
 ---
 
@@ -118,35 +83,50 @@ stateDiagram-v2
 
 ## RetryCoordinator State
 
-The `RetryCoordinator` tracks retry state per message using a 3-tuple.
+The `RetryCoordinator` tracks retry state per message using `RetryState` enum.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> NotScheduled: Message received
-    NotScheduled --> Scheduled: RetryPolicy::should_retry
-    Scheduled --> NotScheduled: Retry succeeded (ack)
-    Scheduled --> DlqRouting: should_dlq = true
-    Scheduled --> Exhausted: attempt >= max_attempts
-    DlqRouting --> [*]
-    Exhausted --> [*]
+    [*] --> Retrying: record_failure called
+    Retrying --> Retrying: retryable failure, under max_attempts
+    Retrying --> Exhausted: max_attempts exceeded
+    Exhausted --> [*]: DLQ routed
+    Retrying --> [*]: success (record_success clears state)
 ```
 
-### 3-Tuple Decision
+### RetryState Enum
 
 ```rust
-pub struct RetryDecision {
-    pub should_retry: bool,
-    pub should_dlq: bool,
-    pub delay: Option<Duration>,
+// retry/retry_coordinator.rs
+pub enum RetryState {
+    Retrying {
+        topic: String,
+        partition: i32,
+        offset: i64,
+        attempt: usize,
+        last_failure: FailureReason,
+        first_failure: DateTime<Utc>,
+    },
+    Exhausted {
+        topic: String,
+        partition: i32,
+        offset: i64,
+        last_failure: FailureReason,
+        first_failure: DateTime<Utc>,
+    },
 }
 ```
+
+### record_failure Return Value
+
+The `record_failure()` method returns a 3-tuple `(should_retry, should_dlq, delay)`:
 
 | should_retry | should_dlq | delay | Action |
 |-------------|------------|-------|--------|
 | true | false | Some(d) | Retry after delay |
-| true | true | Some(d) | Retry then DLQ if fails |
 | false | true | None | Immediate DLQ |
-| false | false | None | Ack without commit (silent drop) |
+
+The 3-tuple is the **return value** of `record_failure()`, not a stored state. The actual state is stored in the `RetryState` enum.
 
 ---
 

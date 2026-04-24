@@ -93,7 +93,7 @@ pub struct RoutingContext<'a> {
     pub offset: i64,
     pub key: Option<&'a [u8]>,
     pub payload: Option<&'a [u8]>,
-    pub headers: &'a [(String, Vec<u8>)],
+    pub headers: &'a [(String, Option<Vec<u8>>)],  // value is Option<bytes>
     pub handler_id: Option<HandlerId>,
 }
 
