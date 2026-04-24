@@ -13,8 +13,8 @@ use crate::runtime::RuntimeBuilder;
 
 /// Python-callable consumer. Use `add_handler` to register a topic → callback
 /// mapping, then `start()` to begin consumption.
-#[pyclass]
-pub struct Consumer {
+#[pyclass(name="Consumer")]
+pub struct PyConsumer {
     config: ConsumerConfig,
     /// Stores Arc<Py<PyAny>> so handlers can be cloned for PythonHandler::new.
     handlers: Arc<Mutex<HashMap<String, Arc<Py<PyAny>>>>>,
@@ -23,7 +23,7 @@ pub struct Consumer {
 }
 
 #[pymethods]
-impl Consumer {
+impl PyConsumer {
     #[new]
     pub fn new(config: ConsumerConfig) -> Self {
         Self {

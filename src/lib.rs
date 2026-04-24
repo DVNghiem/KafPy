@@ -58,7 +58,7 @@ pub(crate) mod runtime;
 use kafka_message::KafkaMessage;
 use logging::Logger;
 use produce::PyProducer;
-use pyconsumer::Consumer;
+use pyconsumer::PyConsumer;
 
 use benchmark::hardening::HardeningRunner;
 use benchmark::results::BenchmarkResult;
@@ -71,7 +71,7 @@ fn _kafpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Logger::init(&observability_config);
 
     m.add_class::<KafkaMessage>()?;
-    m.add_class::<Consumer>()?;
+    m.add_class::<PyConsumer>()?;
     m.add_class::<PyProducer>()?;
     m.add_class::<config::ConsumerConfig>()?;
     m.add_class::<config::ProducerConfig>()?;

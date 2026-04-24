@@ -146,12 +146,22 @@
 | 35. Handler Registration & Runtime | v1.8 | 1/1 | Complete | 2026-04-20 |
 | 36. Error Handling | v1.8 | 1/1 | Complete | 2026-04-20 |
 | 37. Documentation & Packaging | v1.8 | 1/1 | Complete | 2026-04-20 |
-| 01. Extract Duplicated Logic | v2.0 | 1/1 | Complete | 2026-04-20 |
+| 01. Extract Duplicated Logic | v2.0 | 1/1 | Complete   | 2026-04-24 |
 | 02. Split worker_pool/ | v2.0 | 2/2 | Complete | 2026-04-20 |
 | 03. Split dispatcher/ + Extract runtime/ | v2.0 | 1/1 | Complete | 2026-04-20 |
 | 04. State Machine Extraction | v2.0 | 2/2 | Complete | 2026-04-20 |
 | 05. Split coordinator/ | v2.0 | 1/1 | Complete | 2026-04-20 |
 | 06. Type Safety | v2.0 | 1/1 | Complete | 2026-04-20 |
+
+### Phase 1: architecture document
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 0
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 1 to break down)
 
 ---
 
