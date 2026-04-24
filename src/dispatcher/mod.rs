@@ -29,7 +29,6 @@ pub mod queue_manager;
 
 pub use crate::consumer::OwnedMessage;
 pub use consumer_dispatcher::ConsumerDispatcher;
-pub(crate) use backpressure::BackpressurePolicy;
 pub use backpressure::{BackpressureAction, DefaultBackpressurePolicy, PauseOnFullPolicy};
 pub use error::DispatchError;
 use queue_manager::QueueManager;
@@ -93,70 +92,6 @@ impl Dispatcher {
             .register_handler_with_semaphore(topic, capacity, semaphore)
     }
 
-    /// Sends `message` to the handler registered for `message.topic`,
-    /// using the provided backpressure policy when the queue is full.
-    ///
-    /// Non-blocking — returns immediately. Returns [`DispatchError`] if:
-    /// - No handler is registered ([`DispatchError::HandlerNotRegistered`])
-    /// - Queue is full and policy returns Drop or Wait ([`DispatchError::Backpressure`])
-    /// - Handler's receiver has been dropped ([`DispatchError::QueueClosed`])
-    pub(crate) async fn send_with_policy(
-        &self,
-        message: OwnedMessage,
-        policy: &dyn BackpressurePolicy,
-    ) -> Result<DispatchOutcome, DispatchError> {
-        let topic = message.topic.clone();
-        let partition = message.partition;
-        let offset = message.offset;
-
-        // Get handler entry - must be inside the lock
-        let guard = self.queue_manager.handlers.lock();
-        let entry = guard
-            .get(&topic)
-            .ok_or_else(|| DispatchError::HandlerNotRegistered(topic.clone()))?;
-
-        // DISP-15: Acquire semaphore permit BEFORE dispatch (non-blocking)
-        if !entry.metadata.try_acquire_semaphore() {
-            return Err(DispatchError::Backpressure(topic));
-        }
-
-        // Increment inflight immediately on dispatch attempt
-        entry.metadata.inflight.fetch_add(1, Ordering::Relaxed);
-
-        match entry.sender.try_send(message) {
-            Ok(()) => {
-                entry.metadata.queue_depth.fetch_add(1, Ordering::Relaxed);
-                let depth = entry.metadata.queue_depth.load(Ordering::Relaxed);
-                Ok(DispatchOutcome {
-                    topic,
-                    partition,
-                    offset,
-                    queue_depth: depth,
-                })
-            }
-            Err(TrySendError::Full(_)) => {
-                // Decrement inflight since we're not actually dispatching
-                entry.metadata.inflight.fetch_sub(1, Ordering::Relaxed);
-                let action = policy.on_queue_full(&topic, &entry.metadata);
-                match action {
-                    BackpressureAction::Drop | BackpressureAction::Wait => {
-                        Err(DispatchError::Backpressure(topic))
-                    }
-                    BackpressureAction::FuturePausePartition(_) => {
-                        // FuturePausePartition is a signal - still return Backpressure error
-                        // Actual pause/resume implementation comes in Phase 8 (DISP-18)
-                        Err(DispatchError::Backpressure(topic))
-                    }
-                }
-            }
-            Err(TrySendError::Closed(_)) => {
-                entry.metadata.inflight.fetch_sub(1, Ordering::Relaxed);
-                tracing::warn!(topic = %topic, "send_with_policy_and_signal: channel closed");
-                Err(DispatchError::QueueClosed(topic))
-            }
-        }
-    }
-
     /// Sends `message` to the handler registered for `message.topic`.
     ///
     /// Non-blocking — returns immediately. Uses [`DefaultBackpressurePolicy`] internally.
@@ -215,7 +150,6 @@ impl Dispatcher {
     pub(crate) async fn send_with_policy_and_signal(
         &self,
         message: OwnedMessage,
-        policy: &dyn BackpressurePolicy,
     ) -> (
         Result<DispatchOutcome, DispatchError>,
         Option<BackpressureAction>,

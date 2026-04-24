@@ -90,9 +90,7 @@ impl ConsumerDispatcher {
     /// the chain to determine the target handler_id, then dispatched to that handler.
     /// When no routing chain is set, messages are dispatched by topic (backward compat).
     pub(crate) async fn run(&self, policy: &dyn BackpressurePolicy) {
-        eprintln!("DISPATCH_RUN: ENTERED");
         let mut stream = self.runner.stream();
-        eprintln!("DISPATCH_RUN: STREAM_CREATED");
         while let Some(result) = stream.next().await {
             match result {
                 Ok(msg) => {
@@ -111,7 +109,7 @@ impl ConsumerDispatcher {
                         if let Some(ref chain) = self.routing_chain {
                             self.route_with_chain(msg, chain, policy).await
                         } else {
-                            self.dispatcher.send_with_policy_and_signal(msg, policy).await
+                            self.dispatcher.send_with_policy_and_signal(msg).await
                         }
                     };
                     match outcome {
@@ -320,7 +318,6 @@ impl ConsumerDispatcher {
 
 #[cfg(test)]
 mod tests {
-    use crate::dispatcher::DefaultBackpressurePolicy;
 
     use super::*;
 
@@ -363,13 +360,13 @@ mod tests {
 
         let msg = OwnedMessage::fake("test-topic", 0, 100);
         // First send should succeed
-        let (result, _) = dispatcher.send_with_policy_and_signal(msg, &DefaultBackpressurePolicy).await;
+        let (result, _) = dispatcher.send_with_policy_and_signal(msg).await;
         assert!(result.is_ok());
 
         // Second send should fail with backpressure (semaphore exhausted)
         let msg2 = OwnedMessage::fake("test-topic", 1, 101);
         let (result, _) =
-            dispatcher.send_with_policy_and_signal(msg2, &DefaultBackpressurePolicy).await;
+            dispatcher.send_with_policy_and_signal(msg2).await;
         assert!(matches!(result, Err(DispatchError::Backpressure(_))));
     }
 
@@ -383,7 +380,7 @@ mod tests {
         for i in 0..50 {
             let msg = OwnedMessage::fake("test-topic", i % 3, i as i64);
             let (result, _) =
-                dispatcher.send_with_policy_and_signal(msg, &DefaultBackpressurePolicy).await;
+                dispatcher.send_with_policy_and_signal(msg).await;
             assert!(result.is_ok(), "dispatch {} should succeed", i);
         }
     }
