@@ -82,40 +82,40 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DUP-01 | Phase 1 | Pending |
-| DUP-02 | Phase 1 | Pending |
-| DUP-03 | Phase 1 | Pending |
-| DUP-04 | Phase 1 | Pending |
-| SPLIT-A-01 | Phase 2 | Pending |
-| SPLIT-A-02 | Phase 2 | Pending |
-| SPLIT-A-03 | Phase 2 | Pending |
-| SPLIT-A-04 | Phase 2 | Pending |
-| SPLIT-A-05 | Phase 2 | Pending |
-| SPLIT-A-06 | Phase 2 | Pending |
-| SPLIT-B-01 | Phase 3 | Pending |
-| SPLIT-B-02 | Phase 3 | Pending |
-| SPLIT-B-03 | Phase 3 | Pending |
-| SPLIT-B-04 | Phase 3 | Pending |
-| STATE-01 | Phase 4 | Pending |
-| STATE-02 | Phase 4 | Pending |
-| STATE-03 | Phase 4 | Pending |
-| STATE-04 | Phase 4 | Pending |
-| STATE-05 | Phase 4 | Pending |
-| SPLIT-C-01 | Phase 5 | Pending |
-| SPLIT-C-02 | Phase 5 | Pending |
-| SPLIT-C-03 | Phase 5 | Pending |
-| SPLIT-C-04 | Phase 5 | Pending |
-| SPLIT-C-05 | Phase 5 | Pending |
-| TYPES-01 | Phase 6 | Pending |
-| TYPES-02 | Phase 6 | Pending |
-| TYPES-03 | Phase 6 | Pending |
-| TYPES-04 | Phase 6 | Pending |
-| TYPES-05 | Phase 6 | Pending |
-| GATES-01 | All phases | Pending |
-| GATES-02 | All phases | Pending |
-| GATES-03 | All phases | Pending |
-| GATES-04 | All phases | Pending |
-| GATES-05 | All phases | Pending |
+| DUP-01 | Phase 7 | Pending |
+| DUP-02 | Phase 7 | Pending |
+| DUP-03 | Phase 7 | Pending |
+| DUP-04 | Phase 7 | Pending |
+| SPLIT-A-01 | Phase 8 | Pending |
+| SPLIT-A-02 | Phase 8 | Pending |
+| SPLIT-A-03 | Phase 8 | Pending |
+| SPLIT-A-04 | Phase 8 | Pending |
+| SPLIT-A-05 | Phase 8 | Pending |
+| SPLIT-A-06 | Phase 8 | Pending |
+| SPLIT-B-01 | Phase 9 | Pending |
+| SPLIT-B-02 | Phase 9 | Pending |
+| SPLIT-B-03 | Phase 9 | Pending |
+| SPLIT-B-04 | Phase 9 | Pending |
+| STATE-01 | Phase 10 | Pending |
+| STATE-02 | Phase 10 | Pending |
+| STATE-03 | Phase 10 | Pending |
+| STATE-04 | Phase 10 | Pending |
+| STATE-05 | Phase 10 | Pending |
+| SPLIT-C-01 | Phase 11 | Pending |
+| SPLIT-C-02 | Phase 11 | Pending |
+| SPLIT-C-03 | Phase 11 | Pending |
+| SPLIT-C-04 | Phase 11 | Pending |
+| SPLIT-C-05 | Phase 11 | Pending |
+| TYPES-01 | Phase 12 | Pending |
+| TYPES-02 | Phase 12 | Pending |
+| TYPES-03 | Phase 12 | Pending |
+| TYPES-04 | Phase 12 | Pending |
+| TYPES-05 | Phase 12 | Pending |
+| GATES-01 | Phase 13 | Pending |
+| GATES-02 | Phase 13 | Pending |
+| GATES-03 | Phase 13 | Pending |
+| GATES-04 | Phase 13 | Pending |
+| GATES-05 | Phase 13 | Pending |
 
 **Coverage:**
 - v1 requirements: 31 total
