@@ -76,13 +76,6 @@ config = kafpy.ConsumerConfig(
     max_poll_interval_ms=300000,
 )
 
-retry_config = kafpy.RetryConfig(
-    max_attempts=5,
-    base_delay=1.0,
-    max_delay=30.0,
-    jitter_factor=0.1,
-)
-
 db_conn = psycopg2.connect(os.environ["DATABASE_URL"])
 processor = OrderProcessor(db_conn)
 
@@ -120,35 +113,20 @@ class IoTDataIngester:
         )
         self.write_api = self.client.write_api(write_options=SYNCHRONOUS)
 
-    def ingest(self, messages: list[kafpy.KafkaMessage], ctx: kafpy.HandlerContext):
-        """Batch ingestion for high-volume IoT data."""
-        points = []
-        for msg in messages:
-            try:
-                payload = json.loads(msg.get_payload_as_string())
-                point = influxdb_client.Point("sensors") \
-                    .tag("device_id", payload["device_id"]) \
-                    .tag("sensor_type", payload["type"]) \
-                    .field("value", payload["value"]) \
-                    .time(payload["timestamp"] * 1_000_000_000)
-                points.append(point)
-            except (json.JSONDecodeError, KeyError):
-                continue
-
-        if points:
-            self.write_api.write(bucket="iot_data", org="iot-project", record=points)
+    def ingest(self, msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext):
+        """Ingest a single sensor reading."""
+        try:
+            payload = json.loads(msg.get_payload_as_string())
+            point = influxdb_client.Point("sensors") \
+                .tag("device_id", payload["device_id"]) \
+                .tag("sensor_type", payload["type"]) \
+                .field("value", payload["value"]) \
+                .time(payload["timestamp"] * 1_000_000_000)
+            self.write_api.write(bucket="iot_data", org="iot-project", record=point)
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"Ingestion error: {e}")
 
         return kafpy.HandlerResult(action="ack")
-
-# Batch configuration for high throughput
-batch_config = kafpy.BatchConfig(
-    max_batch_size=500,
-    max_batch_timeout_ms=1000,
-)
-
-concurrency_config = kafpy.ConcurrencyConfig(
-    num_workers=8,
-)
 
 config = kafpy.ConsumerConfig(
     bootstrap_servers="kafka:9092",
@@ -162,9 +140,9 @@ app = kafpy.KafPy(consumer)
 
 ingester = IoTDataIngester()
 
-@app.handler(topic="iot.sensors.*", mode="batch")
-def handle_sensors(messages: list[kafpy.KafkaMessage], ctx: kafpy.HandlerContext):
-    return ingester.ingest(messages, ctx)
+@app.handler(topic="iot.sensors.*")
+def handle_sensors(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext):
+    return ingester.ingest(msg, ctx)
 
 app.run()
 ```
@@ -185,32 +163,25 @@ class LogAggregator:
         self.es = Elasticsearch([os.environ["ELASTICSEARCH_URL"]])
         self.index_prefix = "app-logs"
 
-    def index_logs(self, messages: list[kafpy.KafkaMessage], ctx: kafpy.HandlerContext):
-        """Batch index logs to Elasticsearch."""
-        bulk_data = []
-
-        for msg in messages:
-            try:
-                log_entry = {
-                    "@timestamp": datetime.utcfromtimestamp(msg.timestamp / 1000).isoformat(),
-                    "topic": msg.topic,
-                    "partition": msg.partition,
-                    "offset": msg.offset,
-                    "service": extract_service_name(msg),
-                    "level": extract_log_level(msg),
-                    "message": msg.get_payload_as_string(),
-                    "metadata": {
-                        "key": msg.get_key_as_string(),
-                        "headers": dict(msg.headers) if msg.headers else {},
-                    }
+    def index_logs(self, msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext):
+        """Index a log entry to Elasticsearch."""
+        try:
+            log_entry = {
+                "@timestamp": datetime.utcfromtimestamp(msg.timestamp / 1000).isoformat(),
+                "topic": msg.topic,
+                "partition": msg.partition,
+                "offset": msg.offset,
+                "service": extract_service_name(msg),
+                "level": extract_log_level(msg),
+                "message": msg.get_payload_as_string(),
+                "metadata": {
+                    "key": msg.get_key_as_string(),
+                    "headers": dict(msg.headers) if msg.headers else {},
                 }
-                bulk_data.append({"index": {"_index": f"{self.index_prefix}-{datetime.now():%Y.%m}"}})
-                bulk_data.append(log_entry)
-            except Exception:
-                continue
-
-        if bulk_data:
-            self.es.bulk(body=bulk_data, refresh=False)
+            }
+            self.es.index(index=f"{self.index_prefix}-{datetime.now():%Y.%m}", document=log_entry)
+        except Exception as e:
+            print(f"Failed to index log: {e}")
 
         return kafpy.HandlerResult(action="ack")
 
@@ -238,9 +209,9 @@ app = kafpy.KafPy(consumer)
 
 aggregator = LogAggregator()
 
-@app.handler(topic="logs.*", mode="batch")
-def handle_logs(messages: list[kafpy.KafkaMessage], ctx: kafpy.HandlerContext):
-    return aggregator.index_logs(messages, ctx)
+@app.handler(topic="logs.*")
+def handle_logs(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext):
+    return aggregator.index_logs(msg, ctx)
 
 app.run()
 ```
@@ -318,14 +289,6 @@ config = kafpy.ConsumerConfig(
     topics=["transactions.payments"],
     auto_offset_reset="earliest",
     enable_auto_commit=False,  # Manual commit for exactly-once
-)
-
-# Retry with exponential backoff
-retry_config = kafpy.RetryConfig(
-    max_attempts=3,
-    base_delay=2.0,
-    max_delay=60.0,
-    jitter_factor=0.15,
 )
 
 consumer = kafpy.Consumer(config)
@@ -445,19 +408,14 @@ class FeatureComputer:
     def __init__(self):
         self.model = load_feature_model()
 
-    def compute_features(self, messages: list[kafpy.KafkaMessage], ctx: kafpy.HandlerContext):
-        """Compute features in batch for efficiency."""
-        for msg in messages:
-            try:
-                data = json.loads(msg.get_payload_as_string())
-                features = self.extract_features(data)
-
-                # Publish features for inference
-                self.publish_features(features, msg.topic)
-
-            except Exception as e:
-                print(f"Feature computation error: {e}")
-                continue
+    def compute_features(self, msg: kafpy.KafkaMessage):
+        """Compute features from sensor data."""
+        try:
+            data = json.loads(msg.get_payload_as_string())
+            features = self.extract_features(data)
+            self.publish_features(features, msg.topic)
+        except Exception as e:
+            print(f"Feature computation error: {e}")
 
         return kafpy.HandlerResult(action="ack")
 
@@ -499,19 +457,14 @@ config = kafpy.ConsumerConfig(
     auto_offset_reset="latest",
 )
 
-batch_config = kafpy.BatchConfig(
-    max_batch_size=200,
-    max_batch_timeout_ms=500,
-)
-
 consumer = kafpy.Consumer(config)
 app = kafpy.KafPy(consumer)
 
 computer = FeatureComputer()
 
-@app.handler(topic="sensor.raw.data", mode="batch")
-def handle_raw_data(messages: list[kafpy.KafkaMessage], ctx: kafpy.HandlerContext):
-    return computer.compute_features(messages, ctx)
+@app.handler(topic="sensor.raw.data")
+def handle_raw_data(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext):
+    return computer.compute_features(msg)
 
 app.run()
 ```

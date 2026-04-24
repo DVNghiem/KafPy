@@ -2,18 +2,6 @@
 
 ## Performance
 
-### Batch Processing
-
-For high-throughput scenarios, use batch handlers:
-
-```python
-@app.handler(topic="high-volume", mode="batch")
-def handle_batch(messages: list[kafpy.KafkaMessage], ctx: kafpy.HandlerContext):
-    # Process messages in bulk
-    results = bulk_process([msg.payload for msg in messages])
-    return kafpy.HandlerResult(action="ack")
-```
-
 ### Connection Pooling
 
 Reuse consumer instances:
@@ -26,15 +14,6 @@ app = kafpy.KafPy(consumer)
 # BAD: Creating new consumer per message
 def handler(msg, ctx):
     consumer = kafpy.Consumer(config)  # Don't do this!
-```
-
-### Worker Configuration
-
-```python
-concurrency = kafpy.ConcurrencyConfig(
-    num_workers=4,  # Match to CPU cores for CPU-bound
-    # For I/O-bound, can go higher
-)
 ```
 
 ## Reliability
@@ -137,17 +116,6 @@ config = kafpy.ConsumerConfig(
 
 ## Monitoring
 
-### Metrics
-
-```python
-# Configure observability
-observability_config = kafpy.ObservabilityConfig(
-    otlp_endpoint="http://otel-collector:4317",
-    service_name="kafpy-consumer",
-    sampling_ratio=1.0,  # 100% sampling for critical services
-)
-```
-
 ### Health Checks
 
 ```python
@@ -186,17 +154,6 @@ def handle_data(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext):
             partition=ctx.partition,
             topic=ctx.topic,
         )
-```
-
-### Retry Budget
-
-```python
-retry = kafpy.RetryConfig(
-    max_attempts=5,
-    base_delay=0.5,    # Start with 500ms
-    max_delay=30.0,   # Cap at 30 seconds
-    jitter_factor=0.2,  # 20% jitter to prevent thundering herd
-)
 ```
 
 ## Testing
@@ -270,5 +227,4 @@ def test_consumer():
 - [ ] Use idempotent handlers
 - [ ] Test with production-like data volumes
 - [ ] Monitor consumer lag
-- [ ] Set appropriate worker count
 - [ ] Use batch processing for high-volume topics

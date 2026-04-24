@@ -11,10 +11,6 @@ The `kafpy` package exposes all public types directly:
 | Type | Description |
 |------|-------------|
 | `kafpy.ConsumerConfig` | Consumer configuration (frozen dataclass) |
-| `kafpy.RoutingConfig` | Routing configuration |
-| `kafpy.RetryConfig` | Retry configuration |
-| `kafpy.BatchConfig` | Batch processing configuration |
-| `kafpy.ConcurrencyConfig` | Concurrency configuration |
 | `kafpy.Consumer` | Python wrapper around Rust Consumer |
 | `kafpy.KafPy` | Main runtime with handler lifecycle |
 | `kafpy.KafkaMessage` | Kafka message with typed field access |
@@ -34,7 +30,7 @@ from kafpy.exceptions import KafPyError, ConsumerError, HandlerError, Configurat
 ## Configuration Import
 
 ```python
-from kafpy.config import ConsumerConfig, RoutingConfig, RetryConfig, BatchConfig, ConcurrencyConfig
+from kafpy.config import ConsumerConfig
 ```
 
 ## Handler Types Import

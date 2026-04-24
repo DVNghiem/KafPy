@@ -13,19 +13,6 @@ from kafpy.exceptions import (
 )
 ```
 
-## Retry Logic
-
-Configure automatic retries:
-
-```python
-retry_config = kafpy.RetryConfig(
-    max_attempts=3,
-    base_delay=1.0,     # 1 second base delay
-    max_delay=30.0,    # Maximum 30 seconds
-    jitter_factor=0.1, # 10% random jitter
-)
-```
-
 ## Dead Letter Queue
 
 Messages that fail after all retry attempts can be routed to a DLQ:

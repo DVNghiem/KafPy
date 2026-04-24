@@ -38,7 +38,7 @@ class HandlerContext:
     partition: int       # Partition number
     offset: int          # Message offset
     timestamp: int      # Message timestamp
-    headers: dict[str, str]  # Message headers
+    headers: list[tuple[str, bytes | None]]  # Message headers
 ```
 
 ## Error Handling
@@ -54,12 +54,3 @@ def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext):
         return kafpy.HandlerResult(action="nack")
 ```
 
-## Batch Handlers
-
-```python
-@app.handler(topic="my-topic", mode="batch")
-def handle_batch(messages: list[kafpy.KafkaMessage], ctx: kafpy.HandlerContext):
-    for msg in messages:
-        process(msg)
-    return kafpy.HandlerResult(action="ack")
-```

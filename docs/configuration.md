@@ -22,46 +22,6 @@ config = kafpy.ConsumerConfig(
     max_partition_fetch_bytes=1048576,
     partition_assignment_strategy="roundrobin",
     retry_backoff_ms=100,
-    message_batch_size=100,
-)
-```
-
-## Configuration Classes
-
-### RoutingConfig
-
-```python
-routing = kafpy.RoutingConfig(
-    routing_mode="default",  # "default", "pattern", "header", "key", "python"
-    fallback_handler=None,
-)
-```
-
-### RetryConfig
-
-```python
-retry = kafpy.RetryConfig(
-    max_attempts=3,
-    base_delay=1.0,
-    max_delay=None,
-    jitter_factor=None,
-)
-```
-
-### BatchConfig
-
-```python
-batch = kafpy.BatchConfig(
-    max_batch_size=100,
-    max_batch_timeout_ms=1000,
-)
-```
-
-### ConcurrencyConfig
-
-```python
-concurrency = kafpy.ConcurrencyConfig(
-    num_workers=4,
 )
 ```
 

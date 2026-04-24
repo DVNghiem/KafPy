@@ -6,10 +6,9 @@ High-performance Kafka consumer & producer for Python, built with Rust using PyO
 
 - **High Performance**: Built in Rust for maximum throughput and low latency
 - **Async Support**: Full support for async/await handlers
-- **Batch Processing**: Efficient batch message handling
+- **Batch Processing**: Efficient batch message handling (fixed-window timer per partition)
 - **Type Safe**: Full type annotations for Python
 - **Retry & DLQ**: Built-in retry logic and dead letter queue support
-- **Flexible Routing**: Multiple routing strategies (pattern, header, key, python)
 
 ## Quick Start
 
@@ -44,7 +43,6 @@ See the [Installation Guide](installation.md) for detailed setup instructions.
 - [Handlers](handlers.md) - Handler types and registration
 - [Consumer](consumer.md) - Consumer usage
 - [Error Handling](error-handling.md) - Retry and DLQ
-- [Routing](routing.md) - Routing strategies
 - [Benchmark](benchmark.md) - Performance benchmarking
 - [API Reference](api/kafpy.md) - Complete API documentation
 
