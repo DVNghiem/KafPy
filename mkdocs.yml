@@ -1,79 +1,61 @@
 site_name: KafPy Documentation
-site_description: High-performance Kafka consumer & producer for Python built with Rust
-site_author: Dang Van Nghiem
-site_url: https://DNghiem.github.io/KafPy
+site_description: High-performance Kafka client for Python
+site_url: https://kafpy.readthedocs.io/
 
-repo_name: DVNghiem/KafPy
-repo_url: https://github.com/DVNghiem/KafPy
+repo_name: dangvansam/kafpy
+repo_url: https://github.com/dangvansam/kafpy
 
 theme:
   name: material
   palette:
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
-      primary: blue
-      accent: blue
+    - scheme: default
+      primary: indigo
+      accent: indigo
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
-      primary: blue
-      accent: blue
+    - scheme: slate
+      primary: indigo
+      accent: indigo
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
   features:
+    - navigation.instant
+    - navigation.tracking
     - navigation.tabs
     - navigation.sections
-    - navigation.expand
-    - search.suggest
-    - search.highlight
-    - content.tabs.link
+    - toc.integrate
     - content.code.copy
+    - content.code.annotate
 
 plugins:
   - search
-
-nav:
-  - Home: index.md
-  - Installation:
-    - installation.md
-  - Getting Started:
-    - getting-started.md
-  - Configuration:
-    - configuration.md
-  - Handlers:
-    - handlers.md
-  - Consumer:
-    - consumer.md
-  - Error Handling:
-    - error-handling.md
-  - Routing:
-    - routing.md
-  - Best Practices:
-    - best-practices.md
-  - Use Cases:
-    - use-cases.md
-  - Benchmark:
-    - benchmark.md
-  - API Reference:
-    - api/kafpy.md
+  - mermaid2:
+      version: '10'
 
 markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
   - pymdownx.snippets
-  - pymdownx.superfences
-  - admonition
-  - pymdownx.details
-  - pymdownx.mark
-  - attr_list
-  - md_in_html
-  - tables
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
 
-extra:
-  social:
-    - icon: fontawesome/brands/github
-      link: https://github.com/DVNghiem/KafPy
+nav:
+  - Home: index.md
+  - Architecture:
+    - architecture/index.md
+    - architecture/overview.md
+    - architecture/modules.md
+    - architecture/message-flow.md
+    - architecture/state-machines.md
+    - architecture/routing.md
+    - architecture/pyboundary.md
+  - API Reference: api/kafpy.md
+  - Contributing:
+    - contributing/setup.md
+    - contributing/conventions.md
