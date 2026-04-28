@@ -1,51 +1,15 @@
-use crate::observability::config::ObservabilityConfig;
-use tracing_subscriber::fmt::format::FmtSpan;
+//! Logging module — KafPy uses Python's logging module exclusively.
+//!
+//! All log messages are emitted through Python's `logging` module. Users should
+//! configure logging in their Python code:
+//!
+//! ```python
+//! import logging
+//! logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+//! ```
+//!
+//! There is no Rust-side logging configuration. This is a no-op placeholder.
 
-pub struct Logger;
+/// Initialize logging system - no-op, Python logging is configured in Python code.
+pub fn init() {}
 
-impl Logger {
-    /// Initialize structured logging with ObservabilityConfig.
-    ///
-    /// Applies log format (json/pretty/simple) and per-component log levels.
-    /// Wires tracing_log::LogTracer for Python log forwarding (OBS-38).
-    pub fn init(config: &ObservabilityConfig) {
-        // Build EnvFilter from per-component log levels (OBS-37)
-        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| {
-                let levels = &config.component_log_levels;
-                format!(
-                    "kafpy.worker_loop={},kafpy.dispatcher={},kafpy.accumulator={},info",
-                    levels.worker_loop,
-                    levels.dispatcher,
-                    levels.accumulator
-                )
-                .into()
-            });
-
-        // Build fmt subscriber with common settings
-        let subscriber = tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .with_line_number(true)
-            .with_thread_ids(true)
-            .with_file(true)
-            .with_span_events(FmtSpan::CLOSE);
-
-        match config.log_format {
-            crate::observability::LogFormat::Json => {
-                subscriber.json().init();
-            }
-            crate::observability::LogFormat::Pretty => {
-                subscriber.pretty().init();
-            }
-            crate::observability::LogFormat::Simple => {
-                subscriber.init();
-            }
-        }
-
-        // Wire Python logging to tracing via LogTracer (OBS-38)
-        // LogTracer init must only be called once per process.
-        // If already initialized (from a prior import or test run), this returns
-        // SetLoggerError and we safely ignore it.
-        let _ = tracing_log::LogTracer::init();
-    }
-}

@@ -44,7 +44,7 @@ impl Router for HeaderRouter {
             };
             if let Some(value) = ctx.get_header(&rule.key) {
                 if let Ok(pattern) = Pattern::new(value_pattern) {
-                    if let Some(value_str) = std::str::from_utf8(value).ok() {
+                    if let Ok(value_str) = std::str::from_utf8(value) {
                         if pattern.matches(value_str) {
                             return RoutingDecision::Route(rule.handler_id.clone());
                         }

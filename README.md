@@ -107,6 +107,11 @@ app.run()
 - Instance-based configuration (no global state)
 - Structured logging and observability metrics
 - Graceful shutdown with drain
+- Observability via OTLP tracing and metrics export
+- Failure classification taxonomy (Retryable, Terminal, NonRetryable)
+- Worker pool with configurable concurrency
+- Auto offset store control
+- Configurable handler execution timeout to prevent poll timeouts
 
 ## Configuration
 
@@ -147,6 +152,12 @@ KAFKA_PARTITION_ASSIGNMENT_STRATEGY=roundrobin
 # Application Settings
 PROCESSING_TIMEOUT_MS=30000
 GRACEFUL_SHUTDOWN_TIMEOUT_MS=10000
+
+# Retry & DLQ
+KAFKA_DLQ_TOPIC_PREFIX=dlq.
+KAFKA_DRAIN_TIMEOUT_SECS=30
+KAFKA_NUM_WORKERS=4
+KAFKA_ENABLE_AUTO_OFFSET_STORE=false
 ```
 
 Then load configuration from environment:
@@ -196,6 +207,57 @@ consumer = Consumer(config)
 |-----------|------|---------|-------------|
 | `processing_timeout_ms` | int | `30000` | Message processing timeout |
 | `graceful_shutdown_timeout_ms` | int | `10000` | Graceful shutdown timeout |
+
+#### Retry Configuration
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `default_retry_policy` | RetryConfig \| None | `None` | Retry policy for failed messages |
+| `dlq_topic_prefix` | str \| None | `"dlq."` | Prefix for DLQ topic names |
+| `drain_timeout_secs` | int \| None | `30` | Graceful shutdown drain timeout in seconds |
+| `num_workers` | int \| None | `4` | Number of worker threads for processing |
+| `enable_auto_offset_store` | bool \| None | `False` | Auto store offsets after processing |
+
+**RetryConfig fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_attempts` | int | `3` | Maximum retry attempts |
+| `base_delay_ms` | int | `100` | Base delay in milliseconds |
+| `max_delay_ms` | int | `10000` | Maximum delay in milliseconds |
+| `jitter_factor` | float | `0.25` | Jitter factor (0.0–1.0) for backoff |
+
+#### Observability Configuration
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `observability_config` | ObservabilityConfig \| None | `None` | OTLP/metrics configuration |
+
+**ObservabilityConfig fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `otlp_endpoint` | str \| None | `None` | OTLP collector endpoint URL |
+| `service_name` | str | `"kafpy"` | Service name for tracing/metrics |
+| `sampling_ratio` | float | `0.1` | Trace sampling ratio (0.0–1.0) |
+| `log_format` | str | `"text"` | Log format (`"text"` or `"json"`) |
+
+#### Failure Classification
+
+KafPy classifies processing failures into three categories:
+
+| Category | Description |
+|----------|-------------|
+| `FailureCategory.Retryable` | Transient failures that should be retried |
+| `FailureCategory.Terminal` | Permanent failures that go directly to DLQ |
+| `FailureCategory.NonRetryable` | Failures that skip retry but aren't DLQ-bound |
+
+**FailureReason** provides structured details:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `category` | FailureCategory | Failure category |
+| `description` | str | Human-readable description |
 
 ## Usage Examples
 
@@ -412,7 +474,15 @@ ConsumerConfig(
     max_partition_fetch_bytes: int,
     partition_assignment_strategy: str,
     retry_backoff_ms: int,
-    message_batch_size: int
+    message_batch_size: int,
+    # New optional parameters
+    default_retry_policy: RetryConfig | None = None,
+    dlq_topic_prefix: str | None = "dlq.",
+    drain_timeout_secs: int | None = 30,
+    num_workers: int | None = 4,
+    enable_auto_offset_store: bool | None = False,
+    observability_config: ObservabilityConfig | None = None,
+    handler_timeout_ms: int | None = None,
 )
 ```
 
@@ -427,10 +497,12 @@ Represents a Kafka message.
 - `key: bytes | None` - Message key
 - `payload: bytes | None` - Message payload
 - `headers: list[tuple[str, bytes | None]]` - Message headers
+- `timestamp_millis: int | None` - Message timestamp in milliseconds
 
 **Methods:**
 - `get_key() -> bytes | None`: Get message key
 - `get_headers() -> list[tuple[str, bytes | None]]`: Get message headers
+- `get_timestamp_millis() -> int | None`: Get message timestamp in milliseconds
 
 #### `Consumer`
 
@@ -445,6 +517,8 @@ Consumer(config: ConsumerConfig)
 - `add_handler(topic: str, handler: callable[[KafkaMessage], None]) -> None`: Register a message handler for a specific topic
 - `async start() -> None`: Start consuming messages (async method)
 - `stop() -> None`: Stop the consumer gracefully
+- `status() -> dict`: Get runtime snapshot with consumer state, offsets, and queue depths
+- `set_handler_timeout(ms: int) -> None`: Set handler execution timeout in milliseconds (overrides config default)
 
 ## Advanced Topics
 
@@ -460,6 +534,72 @@ kafka_config = ConsumerConfig(
     message_batch_size=1000,            # Process 1000 messages per batch
     max_poll_interval_ms=600000,        # 10 minutes for heavy processing
 )
+```
+
+### Retry and DLQ
+
+Configure retry behavior and dead-letter queue routing:
+
+```python
+from kafpy import ConsumerConfig, RetryConfig, ObservabilityConfig
+
+config = ConsumerConfig(
+    # ... other params ...
+    default_retry_policy=RetryConfig(
+        max_attempts=5,
+        base_delay_ms=200,
+        max_delay_ms=30000,
+        jitter_factor=0.3,
+    ),
+    dlq_topic_prefix="dlq.",           # Prefix for DLQ topics
+    num_workers=8,                      # Increase worker threads for throughput
+)
+```
+
+### Observability
+
+Enable OTLP tracing and metrics:
+
+```python
+from kafpy import ConsumerConfig, ObservabilityConfig
+
+config = ConsumerConfig(
+    # ... other params ...
+    observability_config=ObservabilityConfig(
+        otlp_endpoint="http://localhost:4317",
+        service_name="my-service",
+        sampling_ratio=0.1,
+        log_format="json",
+    ),
+)
+```
+
+### Failure Classification
+
+Use `FailureCategory` and `FailureReason` for structured error handling:
+
+```python
+from kafpy.handlers import FailureCategory, FailureReason
+
+@app.handler(topic="orders")
+def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext):
+    try:
+        process_order(msg)
+        return kafpy.HandlerResult(action="ack")
+    except TemporaryError as e:
+        reason = FailureReason(
+            category=FailureCategory.Retryable,
+            description=str(e),
+        )
+        print(f"Retryable failure: {reason.description}")
+        return kafpy.HandlerResult(action="nack")
+    except PermanentError as e:
+        reason = FailureReason(
+            category=FailureCategory.Terminal,
+            description=str(e),
+        )
+        print(f"Terminal failure: {reason.description}")
+        return kafpy.HandlerResult(action="dlq")
 ```
 
 ### Manual Offset Commit

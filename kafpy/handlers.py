@@ -6,12 +6,17 @@ import inspect
 from dataclasses import dataclass
 from typing import Callable
 
+from enum import Enum
+from .config import FailureCategory, FailureReason
 from .exceptions import HandlerError
 
 __all__ = [
     "KafkaMessage",
     "HandlerContext",
     "HandlerResult",
+    "HandlerAction",
+    "FailureCategory",
+    "FailureReason",
     "register_handler",
 ]
 
@@ -31,15 +36,46 @@ class HandlerContext:
     headers: dict[str, str]
 
 
+class HandlerAction(str, Enum):
+    """Enum of possible actions a handler can return.
+
+    The runtime interprets these to decide the next step for a message.
+
+    Members:
+        ACK: Message processed successfully — commit offset.
+        NACK: Message failed, should be retried.
+        DLQ: Message failed permanently, route to dead letter queue.
+        RETRY: Message should be retried with backoff.
+    """
+    ACK = "ack"
+    NACK = "nack"
+    DLQ = "dlq"
+    RETRY = "retry"
+
+
 @dataclass(frozen=True)
 class HandlerResult:
     """Result of a handler invocation.
 
     Indicates the action the runtime should take next.
-    This is a stub — full implementation in Phase 36 or later.
+
+    Example::
+
+        return HandlerResult(action=HandlerAction.ACK)
+        return HandlerResult(action="ack")  # string form also accepted
     """
 
-    action: str
+    action: str | HandlerAction
+
+    def __post_init__(self) -> None:
+        if isinstance(self.action, HandlerAction):
+            # Normalize to string value
+            object.__setattr__(self, "action", self.action.value)
+        elif self.action not in (e.value for e in HandlerAction):
+            raise ValueError(
+                f"Invalid action {self.action!r}. Must be one of: "
+                f"{[e.value for e in HandlerAction]}"
+            )
 
 
 def register_handler(
@@ -83,7 +119,7 @@ class KafkaMessage:
         key: The message key as bytes, or None if not set (D-08: silent None return).
         payload: The message payload as bytes, or None if not set.
         headers: List of (key, value) header tuples.
-        timestamp: Message timestamp in milliseconds since epoch.
+        timestamp_millis: Message timestamp in milliseconds since epoch, or None.
         _trace_context: Internal trace context dict (not for public use).
 
     D-08: Accessing .key when None returns None silently — no exception raised.
@@ -97,7 +133,7 @@ class KafkaMessage:
     key: bytes | None
     payload: bytes | None
     headers: list[tuple[str, bytes | None]]
-    timestamp: int
+    timestamp_millis: int | None = None
     _trace_context: dict[str, str] | None = None
 
     def get_key_as_string(self) -> str | None:
@@ -148,7 +184,7 @@ class KafkaMessage:
 
         Args:
             data: Dictionary with keys: topic, partition, offset, key, payload,
-                  headers, timestamp, _trace_context.
+                  headers, timestamp_millis, _trace_context.
 
         Returns:
             A new KafkaMessage instance.
@@ -160,6 +196,6 @@ class KafkaMessage:
             key=data.get("key"),
             payload=data.get("payload"),
             headers=list(data.get("headers", [])),
-            timestamp=int(data.get("timestamp", 0)),
+            timestamp_millis=data.get("timestamp_millis"),
             _trace_context=data.get("_trace_context"),
         )

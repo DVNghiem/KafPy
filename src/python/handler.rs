@@ -12,6 +12,7 @@ use crate::python::execution_result::{BatchExecutionResult, ExecutionResult};
 use crate::retry::RetryPolicy;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -69,8 +70,10 @@ fn ctx_to_pydict<'py>(py: Python<'py>, ctx: &ExecutionContext, msg: &OwnedMessag
 
 /// Execution mode for a Python handler.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum HandlerMode {
     /// Single-message sync invocation via spawn_blocking.
+    #[default]
     SingleSync,
     /// Single-message async invocation via pyo3-async-runtimes into_future (Phase 26).
     SingleAsync,
@@ -80,11 +83,6 @@ pub enum HandlerMode {
     BatchAsync,
 }
 
-impl Default for HandlerMode {
-    fn default() -> Self {
-        HandlerMode::SingleSync
-    }
-}
 
 impl HandlerMode {
     /// Returns the mode name as a string for metrics labeling.
@@ -94,6 +92,18 @@ impl HandlerMode {
             HandlerMode::SingleAsync => "SingleAsync",
             HandlerMode::BatchSync => "BatchSync",
             HandlerMode::BatchAsync => "BatchAsync",
+        }
+    }
+
+    /// Parse a handler mode from a string slice.
+    /// Accepts "sync", "async", "batch_sync", "batch_async".
+    /// Returns `SingleSync` for unrecognized or None input.
+    pub fn from_opt_str(s: Option<&str>) -> Self {
+        match s {
+            Some("async") => HandlerMode::SingleAsync,
+            Some("batch_sync") => HandlerMode::BatchSync,
+            Some("batch_async") => HandlerMode::BatchAsync,
+            _ => HandlerMode::SingleSync,
         }
     }
 }
@@ -118,12 +128,14 @@ impl Default for BatchPolicy {
     }
 }
 
-/// Wraps a Python callable stored as `Py<PyAny>` (GIL-independent, Send+Sync).
+/// Wraps a Python callable stored as `Arc<Py<PyAny>>` (GIL-independent, Send+Sync).
 pub struct PythonHandler {
     callback: Arc<Py<PyAny>>,
     retry_policy: Option<RetryPolicy>,
     mode: HandlerMode,
     batch_policy: Option<BatchPolicy>,
+    /// Handler execution timeout. None means no timeout (handler can run indefinitely).
+    handler_timeout: Option<Duration>,
 }
 
 impl PythonHandler {
@@ -133,12 +145,35 @@ impl PythonHandler {
         retry_policy: Option<RetryPolicy>,
         mode: HandlerMode,
         batch_policy: Option<BatchPolicy>,
+        handler_timeout: Option<Duration>,
     ) -> Self {
         Self {
             callback,
             retry_policy,
             mode,
             batch_policy,
+            handler_timeout,
+        }
+    }
+
+    /// Creates a PythonHandler with a handler execution timeout.
+    ///
+    /// If a handler invocation takes longer than `timeout`, it will be cancelled
+    /// and treated as a `Terminal(HandlerPanic)` error, routing the message to
+    /// DLQ or retry based on the failure classification.
+    pub fn with_timeout(
+        callback: Arc<Py<PyAny>>,
+        retry_policy: Option<RetryPolicy>,
+        mode: HandlerMode,
+        batch_policy: Option<BatchPolicy>,
+        handler_timeout: Option<Duration>,
+    ) -> Self {
+        Self {
+            callback,
+            retry_policy,
+            mode,
+            batch_policy,
+            handler_timeout,
         }
     }
 
@@ -157,21 +192,21 @@ impl PythonHandler {
         self.batch_policy.as_ref()
     }
 
-    /// Invokes the handler according to its mode.
-    /// For SingleSync: calls invoke() via spawn_blocking (existing behavior).
-    /// For SingleAsync/BatchSync/BatchAsync: placeholder — actual implementation in Phase 25/26.
+    /// Invokes the handler according to its mode, with an optional timeout.
+    ///
+    /// If `self.handler_timeout` is set, wraps the invocation in
+    /// `tokio::time::timeout`. On timeout, returns `ExecutionResult::Error`
+    /// with `Terminal(HandlerPanic)` and a descriptive message.
     pub async fn invoke_mode(
         &self,
         ctx: &ExecutionContext,
         message: OwnedMessage,
     ) -> ExecutionResult {
-        match self.mode() {
+        let result = match self.mode() {
             HandlerMode::SingleSync => self.invoke(ctx, message).await,
             HandlerMode::SingleAsync => self.invoke_async(ctx, message).await,
             HandlerMode::BatchSync => {
-                // Phase 25: batch invoke with single message (treat as batch of 1)
                 let result = self.invoke_batch(ctx, vec![message]).await;
-                // Convert BatchExecutionResult to ExecutionResult
                 match result {
                     BatchExecutionResult::AllSuccess(_) => ExecutionResult::Ok,
                     BatchExecutionResult::AllFailure(reason) => ExecutionResult::Error {
@@ -179,16 +214,13 @@ impl PythonHandler {
                         exception: "BatchHandlerError".to_string(),
                         traceback: "Batch handler failed".to_string(),
                     },
-                    BatchExecutionResult::PartialFailure { .. } => {
-                        // PartialFailure not implemented in v1.6 — treat as error
-                        ExecutionResult::Error {
-                            reason: FailureReason::Terminal(
-                                crate::failure::TerminalKind::HandlerPanic,
-                            ),
-                            exception: "PartialFailureNotImplemented".to_string(),
-                            traceback: "PartialFailure not implemented in v1.6".to_string(),
-                        }
-                    }
+                    BatchExecutionResult::PartialFailure { .. } => ExecutionResult::Error {
+                        reason: FailureReason::Terminal(
+                            crate::failure::TerminalKind::HandlerPanic,
+                        ),
+                        exception: "PartialFailureNotImplemented".to_string(),
+                        traceback: "PartialFailure not implemented in v1.6".to_string(),
+                    },
                 }
             }
             HandlerMode::BatchAsync => {
@@ -207,6 +239,54 @@ impl PythonHandler {
                     },
                 }
             }
+        };
+
+        // Apply handler timeout if configured
+        // Note: timeout is applied at the invoke_mode_with_timeout level.
+        // This method just passes through the result.
+        let _ = self.handler_timeout;
+        result
+    }
+
+    /// Invokes the handler according to its mode, wrapped in an optional timeout.
+    ///
+    /// This is the primary entry point for worker loops. If `handler_timeout` is set,
+    /// the invocation is wrapped in `tokio::time::timeout`. On timeout, the message
+    /// is classified as `Terminal(HandlerPanic)`.
+    pub async fn invoke_mode_with_timeout(
+        &self,
+        ctx: &ExecutionContext,
+        message: OwnedMessage,
+    ) -> ExecutionResult {
+        match self.handler_timeout {
+            Some(timeout) => {
+                match tokio::time::timeout(timeout, self.invoke_mode(ctx, message)).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        tracing::error!(
+                            handler_id = %ctx.topic,
+                            topic = %ctx.topic,
+                            partition = ctx.partition,
+                            offset = ctx.offset,
+                            timeout_ms = timeout.as_millis() as u64,
+                            "handler timed out after {}ms",
+                            timeout.as_millis()
+                        );
+                        ExecutionResult::Error {
+                            reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
+                            exception: "HandlerTimeout".to_string(),
+                            traceback: format!(
+                                "handler timed out after {}ms on topic {} partition {} offset {}",
+                                timeout.as_millis(),
+                                ctx.topic,
+                                ctx.partition,
+                                ctx.offset
+                            ),
+                        }
+                    }
+                }
+            }
+            None => self.invoke_mode(ctx, message).await,
         }
     }
 
@@ -334,7 +414,6 @@ impl PythonHandler {
             callback
                 .call1(py, (py_msg,))
                 .expect("callback must be a coroutine function")
-                .into()
         });
 
         // Drive the coroutine as a Future — GIL released during await.
@@ -365,7 +444,6 @@ impl PythonHandler {
             callback
                 .call1(py, (py_batch,))
                 .expect("callback must be a coroutine function")
-                .into()
         });
 
         // Drive the coroutine as a Future

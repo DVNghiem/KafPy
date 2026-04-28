@@ -44,7 +44,7 @@ impl BatchAccumulator {
         let mut guard = self.partition_accumulators.lock();
         let acc = guard
             .entry(partition)
-            .or_insert_with(|| PerPartitionBuffer::new());
+            .or_insert_with(PerPartitionBuffer::new);
         acc.add(msg, self.max_batch_wait);
     }
 

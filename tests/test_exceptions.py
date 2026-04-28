@@ -193,7 +193,7 @@ class TestKafkaMessageAccessErrors:
             key=None,  # No key set
             payload=b"hello",
             headers=[],
-            timestamp=0,
+            timestamp_millis=None,
         )
 
         # Accessing .key should return None, not raise
@@ -212,7 +212,7 @@ class TestKafkaMessageAccessErrors:
             key=b"\xff\xfe invalid",  # Not valid UTF-8
             payload=b"hello",
             headers=[],
-            timestamp=0,
+            timestamp_millis=None,
         )
 
         with pytest.raises(HandlerError) as exc_info:
@@ -234,7 +234,7 @@ class TestKafkaMessageAccessErrors:
             key=None,
             payload=b"\xc0\xc1 invalid utf-8",  # Not valid UTF-8
             headers=[],
-            timestamp=0,
+            timestamp_millis=None,
         )
 
         with pytest.raises(HandlerError) as exc_info:
@@ -253,7 +253,7 @@ class TestKafkaMessageAccessErrors:
             "key": b"my-key",
             "payload": b"my-payload",
             "headers": [("content-type", b"application/json")],
-            "timestamp": 1700000000000,
+            "timestamp_millis": 1700000000000,
         }
 
         msg = KafkaMessage.from_dict(data)
@@ -263,7 +263,7 @@ class TestKafkaMessageAccessErrors:
         assert msg.offset == 1234
         assert msg.key == b"my-key"
         assert msg.payload == b"my-payload"
-        assert msg.timestamp == 1700000000000
+        assert msg.timestamp_millis == 1700000000000
 
 
 class TestPublicApiBoundaries:

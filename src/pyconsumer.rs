@@ -8,16 +8,28 @@ use pyo3::types::PyDict;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+
 use crate::config::ConsumerConfig;
+use crate::python::handler::HandlerMode;
 use crate::runtime::RuntimeBuilder;
+
+/// Per-handler metadata stored alongside the callback.
+#[derive(Debug, Clone)]
+pub struct HandlerMetadata {
+    pub callback: Arc<Py<PyAny>>,
+    pub mode: HandlerMode,
+    pub batch_max_size: Option<usize>,
+    pub batch_max_wait_ms: Option<u64>,
+    pub timeout_ms: Option<u64>,
+}
 
 /// Python-callable consumer. Use `add_handler` to register a topic → callback
 /// mapping, then `start()` to begin consumption.
 #[pyclass(name="Consumer")]
 pub struct PyConsumer {
     config: ConsumerConfig,
-    /// Stores Arc<Py<PyAny>> so handlers can be cloned for PythonHandler::new.
-    handlers: Arc<Mutex<HashMap<String, Arc<Py<PyAny>>>>>,
+    /// Stores handler metadata per topic.
+    handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
     /// Shared shutdown token — stop() cancels this to signal workers to exit.
     shutdown_token: tokio_util::sync::CancellationToken,
 }
@@ -34,12 +46,36 @@ impl PyConsumer {
     }
 
     /// Registers a Python callback to handle messages from `topic`.
-    /// The callback receives exactly one argument: a `KafkaMessage`.
-    /// Note: add_handler ONLY stores the callback. All dispatcher/WorkerPool wiring
-    /// happens in start().
-    pub fn add_handler(&mut self, topic: String, callback: Bound<'_, PyAny>) {
+    /// Accepts optional handler mode, batch config, and per-handler timeout.
+    ///
+    /// Args:
+    ///     topic: Kafka topic to subscribe to.
+    ///     callback: Python callable invoked for each message.
+    ///     mode: Optional handler mode — "sync", "async", "batch_sync", "batch_async".
+    ///           If None, defaults to "sync".
+    ///     batch_max_size: Max messages per batch (batch modes only). Defaults to 100.
+    ///     batch_max_wait_ms: Max wait time per batch in ms (batch modes only). Defaults to 1000.
+    ///     timeout_ms: Per-handler execution timeout in ms. None uses ConsumerConfig.handler_timeout_ms.
+    #[pyo3(signature = (topic, callback, mode=None, batch_max_size=None, batch_max_wait_ms=None, timeout_ms=None))]
+    pub fn add_handler(
+        &mut self,
+        topic: String,
+        callback: Bound<'_, PyAny>,
+        mode: Option<String>,
+        batch_max_size: Option<usize>,
+        batch_max_wait_ms: Option<u64>,
+        timeout_ms: Option<u64>,
+    ) {
+        let mode = HandlerMode::from_opt_str(mode.as_deref());
+        let meta = HandlerMetadata {
+            callback: Arc::new(callback.unbind()),
+            mode,
+            batch_max_size,
+            batch_max_wait_ms,
+            timeout_ms,
+        };
         if let Ok(mut handlers) = self.handlers.lock() {
-            handlers.insert(topic, Arc::new(callback.unbind()));
+            handlers.insert(topic, meta);
         }
     }
 

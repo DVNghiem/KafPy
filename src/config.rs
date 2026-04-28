@@ -1,5 +1,8 @@
 use pyo3::prelude::*;
 use std::env;
+
+use crate::pyconfig::{PyObservabilityConfig, PyRetryPolicy};
+
 #[derive(Debug, Clone)]
 #[pyclass]
 pub struct ConsumerConfig {
@@ -20,6 +23,23 @@ pub struct ConsumerConfig {
     pub partition_assignment_strategy: String,
     pub retry_backoff_ms: u32,
     pub message_batch_size: usize,
+    /// Override the default retry policy. None uses the Rust default (3 attempts, 100ms base).
+    pub default_retry_policy: Option<PyRetryPolicy>,
+    /// DLQ topic prefix. None defaults to "dlq.".
+    pub dlq_topic_prefix: Option<String>,
+    /// Drain timeout in seconds during graceful shutdown. None defaults to 30.
+    pub drain_timeout_secs: Option<u64>,
+    /// Number of worker threads. None defaults to 4.
+    pub num_workers: Option<u32>,
+    /// Whether to enable auto offset store. None defaults to false.
+    pub enable_auto_offset_store: Option<bool>,
+    /// Observability configuration (OTLP, tracing, metrics). None uses defaults.
+    pub observability_config: Option<PyObservabilityConfig>,
+    /// Handler execution timeout in milliseconds. If a handler takes longer than
+    /// this, it is cancelled and the message is treated as a failure (routed to
+    /// retry or DLQ). Defaults to 300000 (5 minutes) if None, which is lower
+    /// than rdkafka's default `max_poll_interval_ms` of 300000ms.
+    pub handler_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +85,13 @@ impl ConsumerConfig {
         partition_assignment_strategy = "roundrobin".to_string(),
         retry_backoff_ms = 100,
         message_batch_size = 100,
+        default_retry_policy = None,
+        dlq_topic_prefix = None,
+        drain_timeout_secs = None,
+        num_workers = None,
+        enable_auto_offset_store = None,
+        observability_config = None,
+        handler_timeout_ms = None,
     ))]
     pub fn new(
         brokers: String,
@@ -84,6 +111,13 @@ impl ConsumerConfig {
         partition_assignment_strategy: String,
         retry_backoff_ms: u32,
         message_batch_size: usize,
+        default_retry_policy: Option<PyRetryPolicy>,
+        dlq_topic_prefix: Option<String>,
+        drain_timeout_secs: Option<u64>,
+        num_workers: Option<u32>,
+        enable_auto_offset_store: Option<bool>,
+        observability_config: Option<PyObservabilityConfig>,
+        handler_timeout_ms: Option<u64>,
     ) -> Self {
         ConsumerConfig {
             brokers,
@@ -103,6 +137,13 @@ impl ConsumerConfig {
             partition_assignment_strategy,
             retry_backoff_ms,
             message_batch_size,
+            default_retry_policy,
+            dlq_topic_prefix,
+            drain_timeout_secs,
+            num_workers,
+            enable_auto_offset_store,
+            observability_config,
+            handler_timeout_ms,
         }
     }
 
@@ -162,6 +203,25 @@ impl ConsumerConfig {
             message_batch_size: env::var("KAFKA_MESSAGE_BATCH_SIZE")
                 .unwrap_or_else(|_| "100".to_string())
                 .parse()?,
+            default_retry_policy: None,
+            dlq_topic_prefix: env::var("KAFKA_DLQ_TOPIC_PREFIX").ok(),
+            drain_timeout_secs: env::var("KAFKA_DRAIN_TIMEOUT_SECS")
+                .ok()
+                .map(|s| s.parse())
+                .transpose()?,
+            num_workers: env::var("KAFKA_NUM_WORKERS")
+                .ok()
+                .map(|s| s.parse())
+                .transpose()?,
+            enable_auto_offset_store: env::var("KAFKA_ENABLE_AUTO_OFFSET_STORE")
+                .ok()
+                .map(|s| s.parse())
+                .transpose()?,
+            observability_config: None,
+            handler_timeout_ms: env::var("KAFKA_HANDLER_TIMEOUT_MS")
+                .ok()
+                .map(|s| s.parse())
+                .transpose()?,
         })
     }
 }

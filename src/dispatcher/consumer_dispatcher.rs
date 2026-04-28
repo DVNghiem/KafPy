@@ -117,7 +117,7 @@ impl ConsumerDispatcher {
                             self.check_resume(&topic, outcome.queue_depth);
                         }
                         Err(DispatchError::Backpressure(_)) => {
-                            tracing::Span::current().record("routing_decision", &"backpressure");
+                            tracing::Span::current().record("routing_decision", "backpressure");
                             if let Some(BackpressureAction::FuturePausePartition(pause_topic)) =
                                 pause_signal
                             {
@@ -140,11 +140,11 @@ impl ConsumerDispatcher {
                             }
                         }
                         Err(DispatchError::HandlerNotRegistered(t)) => {
-                            tracing::Span::current().record("routing_decision", &"not_registered");
+                            tracing::Span::current().record("routing_decision", "not_registered");
                             tracing::debug!("no handler for topic '{}', skipping", t);
                         }
                         Err(e) => {
-                            tracing::Span::current().record("routing_decision", &"queue_closed");
+                            tracing::Span::current().record("routing_decision", "queue_closed");
                             tracing::error!("dispatch error: {}", e);
                         }
                     }
@@ -181,7 +181,7 @@ impl ConsumerDispatcher {
                     Err(DispatchError::Backpressure(_)) => {
                         let action = policy.on_queue_full(
                             handler_id.as_str(),
-                            &qm.handlers
+                            qm.handlers
                                 .lock()
                                 .get(handler_id.as_str())
                                 .map(|e| &e.metadata)
@@ -231,8 +231,8 @@ impl ConsumerDispatcher {
             return;
         };
         let threshold = (capacity as f64 * self.resume_threshold) as usize;
-        if current_depth < threshold {
-            if self.paused_topics.lock().remove(topic) {
+        if current_depth < threshold
+            && self.paused_topics.lock().remove(topic) {
                 if let Err(e) = self.resume_partition(topic) {
                     tracing::error!("failed to resume topic '{}': {}", topic, e);
                 } else {
@@ -244,7 +244,6 @@ impl ConsumerDispatcher {
                     );
                 }
             }
-        }
     }
 
     /// Pauses consumption for all partitions of `topic` via rdkafka pause().
@@ -292,7 +291,7 @@ impl ConsumerDispatcher {
             let offset = elem.offset();
             by_topic
                 .entry(topic_name.clone())
-                .or_insert_with(|| rdkafka::TopicPartitionList::new());
+                .or_default();
             let tpl = by_topic.get_mut(&topic_name).unwrap();
             tpl.add_partition_offset(topic_name.as_str(), partition, offset)
                 .map_err(|e| crate::consumer::error::ConsumerError::Subscription(e.to_string()))?;

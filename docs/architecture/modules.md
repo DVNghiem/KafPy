@@ -20,12 +20,61 @@ fn _kafpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyProducer>()?;
     m.add_class::<config::ConsumerConfig>()?;
     m.add_class::<config::ProducerConfig>()?;
+    m.add_class::<pyconfig::PyRetryPolicy>()?;
+    m.add_class::<pyconfig::PyObservabilityConfig>()?;
+    m.add_class::<pyconfig::PyFailureCategory>()?;
+    m.add_class::<pyconfig::PyFailureReason>()?;
+    m.add_function(wrap_pyfunction!(get_runtime_snapshot, m)?)?;
+    m.add_function(wrap_pyfunction!(register_status_callback, m)?)?;
     Ok(())
 }
 ```
 
 **Key Files:**
 - `src/config.rs` — `ConsumerConfig`, `ProducerConfig` (#[pymodule-exposed])
+- `src/pyconfig.rs` — `PyRetryPolicy`, `PyObservabilityConfig`, `PyFailureCategory`, `PyFailureReason` (#[pymodule-exposed])
+
+---
+
+### `src/pyconfig.rs` — PyO3 Configuration Types
+
+**Responsibilities:**
+- Expose retry policy configuration to Python (`PyRetryPolicy`)
+- Expose observability configuration to Python (`PyObservabilityConfig`)
+- Expose failure classification to Python (`PyFailureCategory`, `PyFailureReason`)
+- Bridge between Python config dataclasses and Rust internal types
+
+**Key Types:**
+```rust
+#[pyclass]
+pub struct PyRetryPolicy {
+    pub max_attempts: u32,
+    pub base_delay_ms: u64,
+    pub max_delay_ms: u64,
+    pub jitter_factor: f64,
+}
+
+#[pyclass]
+pub struct PyObservabilityConfig {
+    pub otlp_endpoint: Option<String>,
+    pub service_name: String,
+    pub sampling_ratio: f64,
+    pub log_format: String,
+}
+
+#[pyclass]
+pub enum PyFailureCategory {
+    Retryable,
+    Terminal,
+    NonRetryable,
+}
+
+#[pyclass]
+pub struct PyFailureReason {
+    pub category: PyFailureCategory,
+    pub description: String,
+}
+```
 
 ---
 

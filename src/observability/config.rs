@@ -1,9 +1,7 @@
 // src/observability/config.rs
-// Observability configuration for metrics and tracing
+// Observability configuration for metrics and logging
 
-use tracing::Level;
-
-/// Log format for tracing-subscriber fmt layer.
+/// Log format for structured logging.
 #[derive(Debug, Clone, Copy, Default)]
 #[allow(dead_code)]
 pub enum LogFormat {
@@ -11,24 +9,6 @@ pub enum LogFormat {
     Pretty,
     #[default]
     Simple,
-}
-
-/// Per-component log levels for structured logging (OBS-37).
-#[derive(Debug, Clone)]
-pub struct ComponentLogLevels {
-    pub worker_loop: Level,
-    pub dispatcher: Level,
-    pub accumulator: Level,
-}
-
-impl Default for ComponentLogLevels {
-    fn default() -> Self {
-        Self {
-            worker_loop: Level::INFO,
-            dispatcher: Level::DEBUG,
-            accumulator: Level::DEBUG,
-        }
-    }
 }
 
 /// Observability configuration for KafPy.
@@ -47,14 +27,8 @@ pub struct ObservabilityConfig {
     /// Sampling ratio (0.0 to 1.0). 1.0 = sample everything.
     #[allow(dead_code)]
     pub sampling_ratio: f64,
-    /// Log format for tracing-subscriber fmt layer.
+    /// Log format for structured logging.
     pub log_format: LogFormat,
-    /// Polling interval for Kafka metrics (consumer_lag, highwater, etc.).
-    /// Default: 10 seconds.
-    #[allow(dead_code)]
-    pub kafka_poll_interval: std::time::Duration,
-    /// Per-component log levels (OBS-37).
-    pub component_log_levels: ComponentLogLevels,
 }
 
 impl Default for ObservabilityConfig {
@@ -64,8 +38,6 @@ impl Default for ObservabilityConfig {
             service_name: "kafpy".to_string(),
             sampling_ratio: 1.0,
             log_format: LogFormat::Pretty,
-            kafka_poll_interval: std::time::Duration::from_secs(10),
-            component_log_levels: ComponentLogLevels::default(),
         }
     }
 }

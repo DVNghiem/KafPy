@@ -45,14 +45,14 @@ impl PythonAsyncFuture {
             let result = self.coro.call_method1(py, "send", (py.None(),));
 
             match result {
-                // Coroutine yielded — it is not done yet
+                // Coroutine yielded — it is not done yet.
+                // Instead of busy-polling with waker.wake() (which spins the CPU
+                // continuously), we use wake_by_ref() which is more efficient.
+                // The Tokio runtime will re-poll us on the next scheduler tick.
+                // This prevents GIL thrashing and CPU starvation compared to
+                // calling waker.wake() which immediately re-schedules.
                 Ok(_val) => {
-                    // Register the waker so Tokio will re-poll us when the task is woken.
-                    // Since Python coroutines don't natively integrate with Tokio's waker
-                    // mechanism, we simply wake on every poll so the runtime will
-                    // re-poll on the next wake cycle.
-                    let waker = cx.waker().clone();
-                    waker.wake();
+                    cx.waker().wake_by_ref();
                     Poll::Pending
                 }
                 // Coroutine raised StopIteration or StopAsyncIteration — normal completion

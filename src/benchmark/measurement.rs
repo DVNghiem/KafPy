@@ -503,7 +503,7 @@ impl BackgroundAggregator {
         shutdown_token: CancellationToken,
     ) {
         tokio::select! {
-            _ = shutdown_token.cancelled() => return,
+            _ = shutdown_token.cancelled() => (),
             sample = rx.recv() => {
                 if let Some(sample) = sample {
                     self.process_sample(sample);

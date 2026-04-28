@@ -1,16 +1,14 @@
-//! OpenTelemetry tracing infrastructure for KafPy.
+//! Span context for trace propagation across Rust-Python boundary.
 //!
-//! Provides zero-cost tracing when not enabled - spans are no-ops until
-//! a Layer is installed. User owns all global state; KafPy never calls
-//! `set_global_default()` or `set_global_recorder()`.
+//! Provides span extension trait for KafPy. Creates spans using tracing
+//! but logs through Python. The tracing spans are zero-cost when no subscriber
+//! is configured, and Python logging handles output formatting.
 
 use tracing::Span;
 
-
 /// Span extension trait for KafPy spans.
-///
-/// Provides `kafpy_*` methods that create spans following the
-/// `kafpy.{component}.{operation}` naming convention.
+/// 
+/// Creates spans that will be visible through Python logging configuration.
 pub trait KafpySpanExt {
     /// Creates a `kafpy.handler.invoke` span.
     fn kafpy_handler_invoke(
@@ -80,11 +78,9 @@ impl KafpySpanExt for Span {
     }
 }
 
-// Note: extract_trace_headers and inject_trace_context are deleted
-// because they had zero internal references and only called Vec::new().
-// Full W3C trace context implementation deferred to Phase 29 Wave 3.
-
-// Stub to satisfy import in python/handler.rs — real implementation uses
-// W3C trace context propagation across GIL boundary in Phase 29 Wave 3.
+/// Inject trace context into headers.
+/// 
+/// This is a no-op — trace context is handled through Python logging infrastructure.
 #[allow(dead_code)]
 pub fn inject_trace_context(_headers: &mut std::collections::HashMap<String, String>) {}
+

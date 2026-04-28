@@ -20,18 +20,21 @@
 use crate::config::ConsumerConfig;
 use crate::consumer::error::ConsumerError;
 use crate::consumer::{ConsumerConfigBuilder, ConsumerRunner};
-use crate::coordinator::{OffsetCommitter, RetryCoordinator, ShutdownCoordinator, CommitConfig, OffsetTracker};
+use crate::coordinator::{CommitConfig, OffsetCommitter, OffsetTracker, RetryCoordinator, ShutdownCoordinator};
 use crate::dispatcher::consumer_dispatcher::ConsumerDispatcher;
 use crate::dispatcher::DefaultBackpressurePolicy;
 use crate::dlq::produce::SharedDlqProducer;
 use crate::dlq::router::DefaultDlqRouter;
 use crate::dlq::DlqRouter;
 use crate::observability::runtime_snapshot::RuntimeSnapshotTask;
+use crate::pyconsumer::HandlerMetadata;
 use crate::python::handler::PythonHandler;
+use crate::python::logger;
 use crate::python::{DefaultExecutor, Executor};
 use crate::worker_pool::pool::WorkerPool;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
@@ -40,7 +43,7 @@ use tokio_util::sync::CancellationToken;
 /// Created in `Consumer::start()` and consumed by `build()`.
 pub struct RuntimeBuilder {
     config: ConsumerConfig,
-    handlers: Arc<Mutex<HashMap<String, Arc<pyo3::Py<pyo3::PyAny>>>>>,
+    handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
     shutdown_token: CancellationToken,
 }
 
@@ -48,7 +51,7 @@ impl RuntimeBuilder {
     /// Creates a new runtime builder with the given consumer config and handlers.
     pub fn new(
         config: ConsumerConfig,
-        handlers: Arc<Mutex<HashMap<String, Arc<pyo3::Py<pyo3::PyAny>>>>>,
+        handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
         shutdown_token: CancellationToken,
     ) -> Self {
         Self {
@@ -63,7 +66,7 @@ impl RuntimeBuilder {
     /// Assembly order is fixed — see module-level doc for invariants.
     pub async fn build(self) -> Result<Runtime, ConsumerError> {
         // 1. Build pure-Rust config from the Python-facing config
-        let rust_config = ConsumerConfigBuilder::new()
+        let mut config_builder = ConsumerConfigBuilder::new()
             .brokers(&self.config.brokers)
             .group_id(&self.config.group_id)
             .topics(self.config.topics.iter().map(|s| s.as_str()))
@@ -80,8 +83,24 @@ impl RuntimeBuilder {
             ))
             .max_poll_interval(std::time::Duration::from_millis(
                 self.config.max_poll_interval_ms as u64,
-            ))
-            .build()?;
+            ));
+
+        // Wire retry policy from PyO3 config if provided, otherwise use default
+        if let Some(ref py_retry) = self.config.default_retry_policy {
+            config_builder = config_builder.default_retry_policy(py_retry.to_rust());
+        }
+
+        // Wire DLQ topic prefix from PyO3 config if provided
+        if let Some(ref prefix) = self.config.dlq_topic_prefix {
+            config_builder = config_builder.dlq_topic_prefix(prefix);
+        }
+
+        // Wire drain timeout from PyO3 config if provided
+        if let Some(secs) = self.config.drain_timeout_secs {
+            config_builder = config_builder.drain_timeout(secs);
+        }
+
+        let rust_config = config_builder.build()?;
 
         let default_retry_policy = rust_config.default_retry_policy.clone();
 
@@ -97,37 +116,59 @@ impl RuntimeBuilder {
         let dispatcher = ConsumerDispatcher::new((*runner_arc).clone());
 
         // 5. Collect receivers from all registered handlers
-        // BUG FIX: Collect ALL handlers (topic, Arc<PyAny>) pairs to get accurate count
-        let all_handlers: Vec<_> = {
+        let all_handlers: Vec<(String, HandlerMetadata)> = {
             let handlers_guard = self.handlers.lock().unwrap();
             handlers_guard
                 .iter()
-                .map(|(topic, handler)| (topic.clone(), Arc::clone(handler)))
+                .map(|(topic, meta)| (topic.clone(), meta.clone()))
                 .collect()
         };
-        tracing::info!(count = all_handlers.len(), topics = ?all_handlers.iter().map(|(t, _)| t).collect::<Vec<_>>(), "registering handlers");
+        logger::log("INFO", &format!(
+            "registering handlers count={} topics={:?}",
+            all_handlers.len(),
+            all_handlers.iter().map(|(t, _)| t).collect::<Vec<_>>()
+        ));
         let receivers: Vec<_> = all_handlers
             .iter()
             .map(|(topic, _)| dispatcher.register_handler(topic.clone(), 100, None))
             .collect();
 
-        // 6. Build PythonHandler from the registered callbacks
-        let handler_arc: Arc<PythonHandler> = {
+        // 6. Build per-topic PythonHandler map from registered HandlerMetadata
+        // Each topic gets its own handler with individual config (timeout, mode, batch).
+        let default_handler_timeout = self.config.handler_timeout_ms.map(Duration::from_millis);
+        let handler_map: HashMap<String, Arc<PythonHandler>> = {
             let handlers_guard = self.handlers.lock().unwrap();
-            let first_handler = handlers_guard
-                .values()
-                .next()
-                .expect("at least one handler must be registered");
-            Arc::new(PythonHandler::new(
-                first_handler.clone(),
-                Some(default_retry_policy),
-                crate::python::handler::HandlerMode::SingleSync,
-                None,
-            ))
+            handlers_guard
+                .iter()
+                .map(|(topic, meta)| {
+                    // Resolve timeout: per-handler > global config > None
+                    let timeout = meta
+                        .timeout_ms
+                        .map(Duration::from_millis)
+                        .or(default_handler_timeout);
+
+                    // Resolve batch config
+                    let batch_policy = meta.batch_max_size.map(|max_size| {
+                        crate::python::handler::BatchPolicy {
+                            max_batch_size: max_size,
+                            max_batch_wait_ms: meta.batch_max_wait_ms.unwrap_or(1000),
+                        }
+                    });
+
+                    let handler = Arc::new(PythonHandler::new(
+                        meta.callback.clone(),
+                        Some(default_retry_policy.clone()),
+                        meta.mode.clone(),
+                        batch_policy,
+                        timeout,
+                    ));
+                    (topic.clone(), handler)
+                })
+                .collect()
         };
 
         // 7. Create executor, queue_manager, retry_coordinator
-        let executor_arc: Arc<dyn Executor> = Arc::new(DefaultExecutor::default());
+        let executor_arc: Arc<dyn Executor> = Arc::new(DefaultExecutor);
         let queue_manager_arc = dispatcher.queue_manager();
         let retry_coordinator: Arc<RetryCoordinator> =
             Arc::new(RetryCoordinator::new(&rust_config));
@@ -138,17 +179,18 @@ impl RuntimeBuilder {
         let dlq_router: Arc<dyn DlqRouter> =
             Arc::new(DefaultDlqRouter::new(rust_config.dlq_topic_prefix.clone()));
 
-        let n_workers = 4; // EXEC-08: configurable
+        // Read num_workers from PyO3 config if provided, otherwise default to 4
+        let n_workers = self.config.num_workers.unwrap_or(4) as usize;
 
         // 9. Create shutdown coordinator with configured drain timeout
         let coordinator: Arc<ShutdownCoordinator> =
             Arc::new(ShutdownCoordinator::new(rust_config.drain_timeout_secs));
 
-        // 10. Create WorkerPool
+        // 10. Create WorkerPool with per-topic handler map
         let pool = WorkerPool::new(
             n_workers,
             receivers,
-            handler_arc,
+            handler_map,
             executor_arc,
             queue_manager_arc.clone(),
             offset_tracker.clone(),

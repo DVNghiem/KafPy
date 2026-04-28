@@ -129,6 +129,114 @@ fn invoke_callback(callback: &Py<PyAny>, py: Python<'_>) -> PyResult<HandlerResu
 }
 ```
 
+### PyO3 Configuration Type Conversions
+
+KafPy bridges Python configuration dataclasses to Rust internal types via intermediate PyO3 types in `src/pyconfig.rs`:
+
+#### PyRetryPolicy → RetryPolicy
+
+```rust
+// Python RetryConfig → PyRetryPolicy (PyO3 boundary) → Rust RetryPolicy (internal)
+impl PyRetryPolicy {
+    pub fn to_retry_policy(&self) -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: self.max_attempts,
+            base_delay: Duration::from_millis(self.base_delay_ms),
+            max_delay: Duration::from_millis(self.max_delay_ms),
+            jitter_factor: self.jitter_factor,
+        }
+    }
+}
+```
+
+| Python Field (RetryConfig) | PyO3 Type (PyRetryPolicy) | Rust Type (RetryPolicy) |
+|---|---|---|
+| `max_attempts: int` | `max_attempts: u32` | `max_attempts: u32` |
+| `base_delay_ms: int` | `base_delay_ms: u64` | `base_delay: Duration` |
+| `max_delay_ms: int` | `max_delay_ms: u64` | `max_delay: Duration` |
+| `jitter_factor: float` | `jitter_factor: f64` | `jitter_factor: f64` |
+
+#### PyObservabilityConfig → ObservabilityConfig
+
+```rust
+impl PyObservabilityConfig {
+    pub fn to_observability_config(&self) -> ObservabilityConfig {
+        ObservabilityConfig {
+            otlp_endpoint: self.otlp_endpoint.clone(),
+            service_name: self.service_name.clone(),
+            sampling_ratio: self.sampling_ratio,
+            log_format: self.log_format.clone(),
+        }
+    }
+}
+```
+
+| Python Field (ObservabilityConfig) | PyO3 Type (PyObservabilityConfig) | Rust Type (ObservabilityConfig) |
+|---|---|---|
+| `otlp_endpoint: str \| None` | `otlp_endpoint: Option<String>` | `otlp_endpoint: Option<String>` |
+| `service_name: str` | `service_name: String` | `service_name: String` |
+| `sampling_ratio: float` | `sampling_ratio: f64` | `sampling_ratio: f64` |
+| `log_format: str` | `log_format: String` | `log_format: String` |
+
+#### PyFailureCategory / PyFailureReason
+
+```rust
+// Python FailureCategory → PyFailureCategory (PyO3 enum) → Rust FailureCategory
+#[pyclass]
+pub enum PyFailureCategory {
+    Retryable,
+    Terminal,
+    NonRetryable,
+}
+
+// Python FailureReason → PyFailureReason (PyO3 struct) → Rust FailureReason
+#[pyclass]
+pub struct PyFailureReason {
+    pub category: PyFailureCategory,
+    pub description: String,
+}
+```
+
+| Python Type | PyO3 Type | Rust Type |
+|---|---|---|
+| `FailureCategory.Retryable` | `PyFailureCategory::Retryable` | `FailureCategory::Retryable` |
+| `FailureCategory.Terminal` | `PyFailureCategory::Terminal` | `FailureCategory::Terminal` |
+| `FailureCategory.NonRetryable` | `PyFailureCategory::NonRetryable` | `FailureCategory::NonRetryable` |
+| `FailureReason` | `PyFailureReason` | `FailureReason` |
+
+#### ConsumerConfig Extended Fields
+
+The `ConsumerConfig.to_rust()` method in `src/runtime/builder.rs` wires the new optional fields through the PyO3 boundary:
+
+```rust
+// In ConsumerConfig (Python) → ConsumerConfig.to_rust() → RuntimeBuilder
+impl ConsumerConfig {
+    pub fn to_rust(&self) -> PyResult<RuntimeBuilder> {
+        let mut builder = RuntimeBuilder::new(/* ... */);
+        if let Some(retry_policy) = &self.default_retry_policy {
+            builder = builder.retry_policy(retry_policy.to_retry_policy());
+        }
+        if let Some(obs_config) = &self.observability_config {
+            builder = builder.observability(obs_config.to_observability_config());
+        }
+        builder = builder.dlq_prefix(self.dlq_topic_prefix.as_deref());
+        builder = builder.drain_timeout(self.drain_timeout_secs);
+        builder = builder.num_workers(self.num_workers.unwrap_or(4));
+        builder = builder.auto_offset_store(self.enable_auto_offset_store.unwrap_or(false));
+        Ok(builder)
+    }
+}
+```
+
+| Python Field | PyO3 Type | Rust Internal Target |
+|---|---|---|
+| `default_retry_policy` | `Option<PyRetryPolicy>` | `RetryPolicy` via `RetryCoordinator` |
+| `dlq_topic_prefix` | `Option<String>` | `DlqRouter` prefix |
+| `drain_timeout_secs` | `Option<u64>` | `ShutdownCoordinator` timeout |
+| `num_workers` | `Option<usize>` | `WorkerPool` thread count |
+| `enable_auto_offset_store` | `Option<bool>` | `OffsetCoordinator` auto-store |
+| `observability_config` | `Option<PyObservabilityConfig>` | `MetricsSink` + `TracingSink` |
+
 ## Thread Safety Patterns
 
 ### Arc<RwLock<T>> for Shared Mutable State

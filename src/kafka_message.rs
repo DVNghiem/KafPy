@@ -52,6 +52,19 @@ impl KafkaMessage {
         }
     }
 
+    /// Returns the message headers as a list of (key, value) tuples.
+    ///
+    /// Each tuple contains the header key as a string and the header value
+    /// as bytes (or None if the header has no value).
+    pub fn get_headers(&self) -> Vec<(String, Option<Vec<u8>>)> {
+        self.headers.clone()
+    }
+
+    /// Returns the message timestamp in milliseconds since epoch, if available.
+    pub fn get_timestamp_millis(&self) -> Option<i64> {
+        self.timestamp_millis
+    }
+
     pub fn __repr__(&self) -> String {
         format!(
             "KafkaMessage(topic={}, partition={}, offset={})",

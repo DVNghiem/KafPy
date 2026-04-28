@@ -6,6 +6,7 @@ pub(crate) mod errors;
 pub mod error;
 pub mod kafka_message;
 pub mod produce;
+pub mod pyconfig;
 pub mod pyconsumer;
 
 // Pure Rust Kafka consumer core — no PyO3 dependencies
@@ -56,7 +57,7 @@ mod logging;
 pub(crate) mod runtime;
 
 use kafka_message::KafkaMessage;
-use logging::Logger;
+// logging::Logger removed — using Python logging
 use produce::PyProducer;
 use pyconsumer::PyConsumer;
 
@@ -66,15 +67,18 @@ use benchmark::runner::BenchmarkRunner;
 
 #[pymodule]
 fn _kafpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Initialize logging with default observability config (OBS-38)
-    let observability_config = crate::observability::ObservabilityConfig::default();
-    Logger::init(&observability_config);
+    // Initialize logging (no-op — Python logging is configured by user)
+    crate::logging::init();
 
     m.add_class::<KafkaMessage>()?;
     m.add_class::<PyConsumer>()?;
     m.add_class::<PyProducer>()?;
     m.add_class::<config::ConsumerConfig>()?;
     m.add_class::<config::ProducerConfig>()?;
+    m.add_class::<pyconfig::PyRetryPolicy>()?;
+    m.add_class::<pyconfig::PyObservabilityConfig>()?;
+    m.add_class::<pyconfig::PyFailureCategory>()?;
+    m.add_class::<pyconfig::PyFailureReason>()?;
 
     // Benchmark PyO3 functions
     m.add_function(wrap_pyfunction!(run_scenario_py, m.py())?)?;

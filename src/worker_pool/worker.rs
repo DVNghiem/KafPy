@@ -1,5 +1,6 @@
 //! Worker loop — polls messages and invokes the Python handler.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::select;
@@ -19,6 +20,7 @@ use crate::python::context::ExecutionContext;
 use crate::python::execution_result::ExecutionResult;
 use crate::python::executor::Executor;
 use crate::python::handler::PythonHandler;
+use crate::python::logger;
 use crate::worker_pool::handle_execution_failure;
 use crate::worker_pool::state::WorkerState;
 use crate::worker_pool::ExecutionAction;
@@ -33,9 +35,23 @@ use crate::worker_pool::HANDLER_METRICS;
 /// When a message is picked up it is processed before polling again.
 /// `WorkerState` tracks in-flight work — the cancelled branch only fires when
 /// `WorkerState::Idle`, ensuring graceful shutdown waits for in-flight completion (EXEC-12).
+/// Look up the PythonHandler for a given topic from the handler map.
+/// Falls back to the first handler if topic is not found (graceful degradation).
+fn handler_for_topic<'a>(
+    handlers: &'a HashMap<String, Arc<PythonHandler>>,
+    topic: &str,
+) -> &'a Arc<PythonHandler> {
+    handlers
+        .get(topic)
+        .unwrap_or_else(|| {
+            tracing::warn!(topic = %topic, "no handler registered for topic, using first available");
+            handlers.values().next().expect("handler map is empty")
+        })
+}
+
 pub(crate) async fn worker_loop(
     mut rx: mpsc::Receiver<OwnedMessage>,
-    handler: Arc<PythonHandler>,
+    handlers: Arc<HashMap<String, Arc<PythonHandler>>>,
     executor: Arc<dyn Executor>,
     queue_manager: Arc<QueueManager>,
     offset_coordinator: Arc<dyn OffsetCoordinator>,
@@ -46,7 +62,7 @@ pub(crate) async fn worker_loop(
     shutdown_token: CancellationToken,
     worker_pool_state: Arc<WorkerPoolState>,
 ) {
-    tracing::info!(worker_id = worker_id, "worker started");
+    logger::log("INFO", &format!("worker started worker_id={}", worker_id));
 
     let mut state = WorkerState::Idle;
 
@@ -64,7 +80,7 @@ pub(crate) async fn worker_loop(
                     );
                     worker_pool_state.set_active(
                         worker_id,
-                        "shared".to_string(),
+                        msg.topic.clone(),
                         msg.topic.clone(),
                         msg.partition,
                         msg.offset,
@@ -72,7 +88,7 @@ pub(crate) async fn worker_loop(
                     state = WorkerState::Processing(msg);
                 }
                 _ = shutdown_token.cancelled() => {
-                    tracing::info!(worker_id = worker_id, "worker stopped (cancelled, idle)");
+                    logger::log("INFO", &format!("worker stopped (cancelled, idle) worker_id={}", worker_id));
                     break;
                 }
             }
@@ -83,6 +99,7 @@ pub(crate) async fn worker_loop(
             let msg = msg.clone();
             let ctx =
                 ExecutionContext::new(msg.topic.clone(), msg.partition, msg.offset, worker_id);
+            let handler = handler_for_topic(&handlers, &msg.topic).clone();
             let start = std::time::Instant::now();
             let invocation_labels = MetricLabels::new()
                 .insert("handler_id", ctx.topic.as_str())
@@ -95,26 +112,18 @@ pub(crate) async fn worker_loop(
                 ctx.offset,
                 handler.mode().as_str(),
             );
-            tracing::info!(
-                handler_id = %ctx.topic,
-                topic = %ctx.topic,
-                partition = ctx.partition,
-                offset = ctx.offset,
-                mode = handler.mode().as_str(),
-                "handler invoke start"
-            );
+            logger::log("INFO", &format!(
+                "handler invoke start handler_id={} topic={} partition={} offset={} mode={}",
+                ctx.topic, ctx.topic, ctx.partition, ctx.offset, handler.mode().as_str()
+            ));
             let result = span.in_scope(|| async {
-                handler.invoke_mode(&ctx, msg.clone()).await
+                handler.invoke_mode_with_timeout(&ctx, msg.clone()).await
             }).await;
             let elapsed = start.elapsed();
-            tracing::info!(
-                handler_id = %ctx.topic,
-                topic = %ctx.topic,
-                partition = ctx.partition,
-                offset = ctx.offset,
-                elapsed_ms = elapsed.as_millis() as u64,
-                "handler invoke complete"
-            );
+            logger::log("INFO", &format!(
+                "handler invoke complete handler_id={} topic={} partition={} offset={} elapsed_ms={}",
+                ctx.topic, ctx.topic, ctx.partition, ctx.offset, elapsed.as_millis() as u64
+            ));
             HANDLER_METRICS.record_invocation(&NoopSink, &invocation_labels);
             HANDLER_METRICS.record_latency(&NoopSink, &invocation_labels, elapsed);
             if !result.is_ok() {
@@ -218,10 +227,7 @@ pub(crate) async fn worker_loop(
             }
 
             if shutdown_token.is_cancelled() {
-                tracing::info!(
-                    worker_id = worker_id,
-                    "worker stopped (cancelled after message)"
-                );
+                logger::log("INFO", &format!("worker stopped (cancelled after message) worker_id={}", worker_id));
                 worker_pool_state.set_idle(worker_id);
                 break;
             }
@@ -245,6 +251,23 @@ mod tests {
     use pyo3::prelude::*;
     use std::sync::Arc;
 
+    fn make_handler_map() -> Arc<HashMap<String, Arc<PythonHandler>>> {
+        use crate::python::handler::HandlerMode;
+        let handler = Python::attach(|py| {
+            let py_none = py.None();
+            Arc::new(PythonHandler::new(
+                py_none.into(),
+                None,
+                HandlerMode::SingleSync,
+                None,
+                None,
+            ))
+        });
+        let mut map = HashMap::new();
+        map.insert("test".to_string(), handler);
+        Arc::new(map)
+    }
+
     fn make_test_msg() -> OwnedMessage {
         OwnedMessage {
             topic: "test".to_string(),
@@ -255,19 +278,6 @@ mod tests {
             timestamp: crate::consumer::MessageTimestamp::NotAvailable,
             headers: vec![],
         }
-    }
-
-    fn dummy_handler() -> Arc<PythonHandler> {
-        use crate::python::handler::HandlerMode;
-        Python::attach(|py| {
-            let py_none = py.None();
-            Arc::new(PythonHandler::new(
-                py_none.into(),
-                None,
-                HandlerMode::SingleSync,
-                None,
-            ))
-        })
     }
 
     fn test_config() -> crate::consumer::ConsumerConfig {
@@ -297,7 +307,7 @@ mod tests {
             std::time::Duration::from_millis(500),
             worker_loop(
                 rx,
-                dummy_handler(),
+                make_handler_map(),
                 Arc::new(DefaultExecutor) as Arc<dyn Executor>,
                 Arc::new(QueueManager::new()),
                 Arc::new(crate::coordinator::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,
@@ -323,7 +333,7 @@ mod tests {
 
         let handle = tokio::spawn(worker_loop(
             rx,
-            dummy_handler(),
+            make_handler_map(),
             Arc::new(DefaultExecutor) as Arc<dyn Executor>,
             Arc::new(QueueManager::new()),
             Arc::new(crate::coordinator::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,

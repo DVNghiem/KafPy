@@ -149,7 +149,7 @@ impl OffsetTracker {
         assert!(offset >= 0, "offset must be >= 0, got {}", offset);
         let key = TopicPartitionKey::new(topic, partition);
         let mut guard = self.partitions.lock();
-        let state = guard.entry(key).or_insert_with(PartitionState::new);
+        let state = guard.entry(key).or_default();
         state.ack(offset);
     }
 

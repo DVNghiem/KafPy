@@ -32,6 +32,53 @@ For handler and message types, use ``kafpy.handlers``:
 
 __version__ = "0.1.0"
 
+# ─── Python Logging Configuration ──────────────────────────────────────────────
+#
+# KafPy uses Python's standard logging module. All log messages from the Rust
+# extension are forwarded to Python logging via the "kafpy" logger.
+#
+# Users can customise logging:
+#
+#     import logging
+#     logging.basicConfig(
+#         level=logging.INFO,
+#         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+#     )
+#     logging.getLogger("kafpy").setLevel(logging.DEBUG)
+#
+import logging as _logging
+_logger = _logging.getLogger("kafpy")
+if not _logger.hasHandlers():
+    _handler = _logging.StreamHandler()
+    _handler.setFormatter(_logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    ))
+    _logger.addHandler(_handler)
+_logger.setLevel(_logging.INFO)
+
+# Initialize KafPy's Python logging system.
+# Users can customize logging via Python's standard logging module:
+#
+#     import logging
+#     logging.basicConfig(
+#         level=logging.INFO,
+#         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+#     )
+#
+# KafPy logs through the "kafpy" logger. To see more detail:
+#
+#     logging.getLogger("kafpy").setLevel(logging.DEBUG)
+import logging
+_logger = logging.getLogger("kafpy")
+_logger.setLevel(logging.INFO)
+# If no handlers are configured, add a basic handler to stderr
+if not _logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    ))
+    _logger.addHandler(_handler)
+
 # Re-export from Rust extension (_kafpy) — conditional until extension is built
 try:
     from ._kafpy import (
@@ -39,11 +86,18 @@ try:
         Producer,
     )
     from ._kafpy import run_scenario_py, run_hardening_checks_py
+    # New PyO3-exposed types
+    from ._kafpy import PyRetryPolicy, PyObservabilityConfig
+    from ._kafpy import PyFailureCategory, PyFailureReason
 except ModuleNotFoundError:
     ProducerConfig = None  # type: ignore
     Producer = None  # type: ignore
     run_scenario_py = None  # type: ignore
     run_hardening_checks_py = None  # type: ignore
+    PyRetryPolicy = None  # type: ignore
+    PyObservabilityConfig = None  # type: ignore
+    PyFailureCategory = None  # type: ignore
+    PyFailureReason = None  # type: ignore
 
 # Configuration classes (Python wrapper, Phase 34)
 from .config import (
@@ -52,6 +106,9 @@ from .config import (
     RetryConfig,
     BatchConfig,
     ConcurrencyConfig,
+    ObservabilityConfig,
+    FailureCategory,
+    FailureReason,
 )
 
 # Handler types and registration (Phase 35/36)
@@ -85,6 +142,10 @@ __all__ = [
     "Producer",
     "run_scenario_py",
     "run_hardening_checks_py",
+    "PyRetryPolicy",
+    "PyObservabilityConfig",
+    "PyFailureCategory",
+    "PyFailureReason",
     # Benchmark result types — Phase 43
     "BenchmarkResult",
     # Configuration types — Phase 34
@@ -93,6 +154,9 @@ __all__ = [
     "RetryConfig",
     "BatchConfig",
     "ConcurrencyConfig",
+    "ObservabilityConfig",
+    "FailureCategory",
+    "FailureReason",
     # Consumer wrapper and runtime — Phase 35
     "Consumer",
     "KafPy",
@@ -100,6 +164,7 @@ __all__ = [
     "KafkaMessage",
     "HandlerContext",
     "HandlerResult",
+    "HandlerAction",
     "register_handler",
     # Exception types — Phase 36
     "KafPyError",
