@@ -1,0 +1,177 @@
+# Requirements: KafPy
+
+**Defined:** 2026-04-28
+**Core Value:** Python developers can write Kafka message handlers easily while Rust controls the hard runtime problems (concurrency, backpressure, retries, DLQ, offset tracking, graceful shutdown).
+
+---
+
+## v1 Requirements
+
+### Core Consumer
+
+- [ ] **CORE-01**: Rust-based Kafka consumer engine managing full message-consumption lifecycle
+- [ ] **CORE-02**: Consumer groups with dynamic partition assignment via rdkafka
+- [ ] **CORE-03**: Topic subscription by name and regex pattern
+- [ ] **CORE-04**: Manual offset commit with highest-contiguous-offset semantics
+- [ ] **CORE-05**: Auto offset commit as fallback option
+- [ ] **CORE-06**: Rebalance listener with on_partitions_revoked/assigned callbacks
+- [ ] **CORE-07**: Graceful start/stop with deterministic resource cleanup
+- [ ] **CORE-08**: Pause/resume partitions for flow control
+
+### Message Handling
+
+- [ ] **MSG-01**: Message deserialization (JSON, msgpack) with custom decoder support
+- [ ] **MSG-02**: Headers, timestamp, partition, and offset access in handlers
+- [ ] **MSG-03**: Key-based routing as fallback after topic routing
+- [ ] **MSG-04**: Per-handler bounded queues with configurable capacity
+- [ ] **MSG-05**: Backpressure propagation when handler queues are full
+
+### Python Handler API
+
+- [ ] **PY-01**: @handler decorator for registering topic handlers
+- [ ] **PY-02**: Sync Python handler support via spawn_blocking
+- [ ] **PY-03**: Async Python handler support via pyo3-async-runtimes
+- [ ] **PY-04**: ExecutionContext passed to handlers with trace context
+- [ ] **PY-05**: Batch handler support for high-throughput scenarios
+- [ ] **PY-06**: Handler concurrency configuration per handler
+
+### Offset and Delivery
+
+- [ ] **OFF-01**: Partition-aware offset tracking with BTreeSet buffering
+- [ ] **OFF-02**: Contiguous offset commit only when prior offsets are acked
+- [ ] **OFF-03**: Explicit store_offset + commit pattern (not auto-store)
+- [ ] **OFF-04**: Terminal failure blocking (poison messages block partition progress)
+
+### Failure Handling
+
+- [ ] **FAIL-01**: Failure classification: Retryable, Terminal, NonRetryable
+- [ ] **FAIL-02**: Default failure classifier mapping Python exceptions
+- [ ] **FAIL-03**: Capped exponential backoff with jitter for retries
+- [ ] **FAIL-04**: Maximum retry attempts configuration
+- [ ] **FAIL-05**: DLQ handoff after retries exhausted or terminal failure
+- [ ] **FAIL-06**: DLQ metadata envelope (original topic/partition/offset, failure reason, attempt count)
+- [ ] **FAIL-07**: Default DLQ router: dlq_topic_prefix + original_topic
+
+### Lifecycle and Operations
+
+- [ ] **LIFE-01**: Graceful shutdown with bounded drain timeout
+- [ ] **LIFE-02**: Queue draining before shutdown (in-flight messages complete or timeout)
+- [ ] **LIFE-03**: Failed messages flushed to DLQ on shutdown
+- [ ] **LIFE-04**: SIGTERM handling matching Kubernetes pod termination
+- [ ] **LIFE-05**: Rebalance-safe partition handling (revoke commits pending offsets)
+
+### Configuration
+
+- [ ] **CONF-01**: Python-first configuration via ConsumerConfig dataclass
+- [ ] **CONF-02**: Kafka client config mapping to rdkafka settings
+- [ ] **CONF-03**: RetryConfig: max_attempts, base_delay, max_delay, jitter_factor
+- [ ] **CONF-04**: BackpressurePolicy trait with Drop/Wait/PausePartition actions
+- [ ] **CONF-05**: Context manager support (with statement for clean shutdown)
+
+### Observability
+
+- [ ] **OBS-01**: tracing instrumentation with span per handler execution
+- [ ] **OBS-02**: W3C trace context propagation from Kafka headers
+- [ ] **OBS-03**: Message throughput metrics
+- [ ] **OBS-04**: Processing latency histograms
+- [ ] **OBS-05**: Consumer lag metrics
+- [ ] **OBS-06**: Queue depth gauges per handler
+- [ ] **OBS-07**: DLQ message volume as first-class metric
+
+---
+
+## v2 Requirements
+
+Deferred to future release.
+
+### Observability
+
+- **OBS-08**: OpenTelemetry OTLP exporter integration
+- **OBS-09**: Prometheus exporter endpoint
+
+### Advanced Features
+
+- **ADV-01**: State management with persistence
+- **ADV-02**: Windowed aggregations (tumbling, hopping, sliding)
+- **ADV-03**: Schema registry integration (Avro/Protobuf)
+- **ADV-04**: Exactly-once semantics (transactional produce)
+
+---
+
+## Out of Scope
+
+Explicitly excluded. Documented to prevent scope creep.
+
+| Feature | Reason |
+|---------|--------|
+| Rust-only framework with thin Python bindings | This project IS the Pythonic layer |
+| Fake abstraction layer with unused config | Public APIs must reflect real runtime behavior |
+| Rule engine for everything | Business logic belongs in Python handlers |
+| Platform exposing more features than implemented | Minimal, honest, maintainable codebase |
+| Complex DSL or custom language | "Just Python" — no new DSL to learn |
+| Heavyweight infrastructure (ZooKeeper) | Single process, pip install and go |
+| Multi-language support (JS, Java, Go) | Python focus only initially |
+| Built-in ML/Data science libraries | Users bring their own |
+
+---
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| CORE-01 | Phase 1 | Pending |
+| CORE-02 | Phase 1 | Pending |
+| CORE-03 | Phase 1 | Pending |
+| CORE-04 | Phase 1 | Pending |
+| CORE-05 | Phase 1 | Pending |
+| CORE-06 | Phase 2 | Pending |
+| CORE-07 | Phase 1 | Pending |
+| CORE-08 | Phase 2 | Pending |
+| MSG-01 | Phase 1 | Pending |
+| MSG-02 | Phase 1 | Pending |
+| MSG-03 | Phase 2 | Pending |
+| MSG-04 | Phase 1 | Pending |
+| MSG-05 | Phase 1 | Pending |
+| PY-01 | Phase 3 | Pending |
+| PY-02 | Phase 3 | Pending |
+| PY-03 | Phase 3 | Pending |
+| PY-04 | Phase 3 | Pending |
+| PY-05 | Phase 4 | Pending |
+| PY-06 | Phase 3 | Pending |
+| OFF-01 | Phase 1 | Pending |
+| OFF-02 | Phase 1 | Pending |
+| OFF-03 | Phase 1 | Pending |
+| OFF-04 | Phase 2 | Pending |
+| FAIL-01 | Phase 2 | Pending |
+| FAIL-02 | Phase 2 | Pending |
+| FAIL-03 | Phase 2 | Pending |
+| FAIL-04 | Phase 2 | Pending |
+| FAIL-05 | Phase 2 | Pending |
+| FAIL-06 | Phase 2 | Pending |
+| FAIL-07 | Phase 2 | Pending |
+| LIFE-01 | Phase 2 | Pending |
+| LIFE-02 | Phase 2 | Pending |
+| LIFE-03 | Phase 2 | Pending |
+| LIFE-04 | Phase 2 | Pending |
+| LIFE-05 | Phase 2 | Pending |
+| CONF-01 | Phase 1 | Pending |
+| CONF-02 | Phase 1 | Pending |
+| CONF-03 | Phase 2 | Pending |
+| CONF-04 | Phase 1 | Pending |
+| CONF-05 | Phase 3 | Pending |
+| OBS-01 | Phase 4 | Pending |
+| OBS-02 | Phase 4 | Pending |
+| OBS-03 | Phase 4 | Pending |
+| OBS-04 | Phase 4 | Pending |
+| OBS-05 | Phase 4 | Pending |
+| OBS-06 | Phase 4 | Pending |
+| OBS-07 | Phase 4 | Pending |
+
+**Coverage:**
+- v1 requirements: 45 total
+- Mapped to phases: 45
+- Unmapped: 0 ✓
+
+---
+*Requirements defined: 2026-04-28*
+*Last updated: 2026-04-28 after initial definition*
