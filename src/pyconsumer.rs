@@ -91,7 +91,7 @@ impl PyConsumer {
             let runtime = builder.build().await.map_err(|e| {
                 PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
             })?;
-            runtime.run().await;
+            runtime.run_with_sigterm().await;
             Ok(())
         })
         .map(|b| b.unbind())

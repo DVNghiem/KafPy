@@ -274,4 +274,27 @@ impl Runtime {
         let _ = self.dispatcher_handle.await;
         let _ = self.committer_handle.await;
     }
+
+    /// Runs the worker pool with SIGTERM handling.
+    ///
+    /// Spawns a task that listens for SIGTERM. When received, initiates
+    /// graceful shutdown via ShutdownCoordinator.begin_draining().
+    /// Then runs the pool and waits for shutdown.
+    pub async fn run_with_sigterm(self) {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let coordinator = Arc::clone(&self.coordinator);
+
+        tokio::spawn(async move {
+            let mut sigterm = signal(SignalKind::terminate()).unwrap();
+            sigterm.recv().await;
+            tracing::info!(
+                drain_timeout_secs = coordinator.drain_timeout().as_secs(),
+                "received SIGTERM, initiating graceful shutdown"
+            );
+            let _ = coordinator.begin_draining();
+        });
+
+        self.run().await;
+    }
 }
