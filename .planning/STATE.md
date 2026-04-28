@@ -1,3 +1,17 @@
+---
+gsd_state_version: 1.0
+milestone: v1.0
+milestone_name: milestone
+status: unknown
+last_updated: "2026-04-28T17:38:22.883Z"
+progress:
+  total_phases: 4
+  completed_phases: 0
+  total_plans: 1
+  completed_plans: 0
+  percent: 0
+---
+
 # KafPy Project State
 
 **Project:** Rust-Core, Python-Logic Kafka Consumer Framework
@@ -156,3 +170,5 @@ These are deferred to a future release and do not block v1.
 ---
 
 *Last updated: 2026-04-28*
+
+**Planned Phase:** 1 (Core Consumer Engine & Configuration) — 1 plans — 2026-04-28T17:31:59.092Z

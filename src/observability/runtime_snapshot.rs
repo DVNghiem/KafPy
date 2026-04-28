@@ -232,7 +232,7 @@ pub fn get_current_snapshot() -> RuntimeSnapshot {
     GLOBAL_SNAPSHOT_TASK
         .get()
         .map(|task| task.get_snapshot())
-        .unwrap_or_else(|| RuntimeSnapshot::default())
+        .unwrap_or_default()
 }
 
 /// Global accessor for the callback registry.
