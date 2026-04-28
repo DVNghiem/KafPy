@@ -173,5 +173,18 @@ Explicitly excluded. Documented to prevent scope creep.
 - Unmapped: 0 ✓
 
 ---
+
+## Traceability Notes
+
+The traceability matrix above was derived from the Phase 1-4 roadmap structure defined in `.planning/ROADMAP.md`. Each phase maps to a natural build order:
+
+- **Phase 1**: Core engine and configuration (foundation)
+- **Phase 2**: Rebalance handling, failure handling, and lifecycle operations (production hardening)
+- **Phase 3**: Python handler API (developer ergonomics)
+- **Phase 4**: Observability (operational visibility)
+
+Phase dependencies: Phase 2 blocked by Phase 1. Phase 3 blocked by Phase 1. Phase 4 blocked by Phase 2 and Phase 3.
+
+---
 *Requirements defined: 2026-04-28*
-*Last updated: 2026-04-28 after initial definition*
+*Last updated: 2026-04-28 after roadmap creation*
