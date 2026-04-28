@@ -104,12 +104,26 @@ impl RuntimeBuilder {
 
         let default_retry_policy = rust_config.default_retry_policy.clone();
 
-        // 2. Create ConsumerRunner
-        let runner = ConsumerRunner::new(rust_config.clone(), None)?;
+        // 2. Create DLQ producer and router (needed for ConsumerRunner with CustomConsumerContext)
+        let dlq_producer: Arc<SharedDlqProducer> =
+            Arc::new(SharedDlqProducer::new(&rust_config).expect("Failed to create DLQ producer"));
+        let dlq_router: Arc<dyn DlqRouter> =
+            Arc::new(DefaultDlqRouter::new(rust_config.dlq_topic_prefix.clone()));
 
-        // 3. Create OffsetTracker and wire ConsumerRunner
-        let runner_arc: Arc<ConsumerRunner> = Arc::new(runner);
+        // 3. Create OffsetTracker first (needed for CustomConsumerContext)
         let offset_tracker: Arc<OffsetTracker> = Arc::new(OffsetTracker::new());
+
+        // 4. Create ConsumerRunner with CustomConsumerContext
+        let runner = ConsumerRunner::new(
+            rust_config.clone(),
+            None,
+            Arc::clone(&offset_tracker),
+            Arc::clone(&dlq_router),
+            Arc::clone(&dlq_producer),
+        )?;
+
+        // 5. Wire ConsumerRunner into OffsetTracker
+        let runner_arc: Arc<ConsumerRunner> = Arc::new(runner);
         offset_tracker.set_runner(Arc::clone(&runner_arc));
 
         // 4. Create ConsumerDispatcher
@@ -172,12 +186,6 @@ impl RuntimeBuilder {
         let queue_manager_arc = dispatcher.queue_manager();
         let retry_coordinator: Arc<RetryCoordinator> =
             Arc::new(RetryCoordinator::new(&rust_config));
-
-        // 8. Create DLQ producer and router
-        let dlq_producer: Arc<SharedDlqProducer> =
-            Arc::new(SharedDlqProducer::new(&rust_config).expect("Failed to create DLQ producer"));
-        let dlq_router: Arc<dyn DlqRouter> =
-            Arc::new(DefaultDlqRouter::new(rust_config.dlq_topic_prefix.clone()));
 
         // Read num_workers from PyO3 config if provided, otherwise default to 4
         let n_workers = self.config.num_workers.unwrap_or(4) as usize;

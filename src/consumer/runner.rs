@@ -1,4 +1,5 @@
 use crate::consumer::config::ConsumerConfig;
+use crate::consumer::context::CustomConsumerContext;
 use crate::consumer::error::ConsumerError;
 use crate::consumer::message::OwnedMessage;
 use crate::coordinator::ShutdownCoordinator;
@@ -23,29 +24,38 @@ use tracing::{debug, error, info};
 /// Dropping the runner stops the consumer loop gracefully.
 #[derive(Clone)]
 pub struct ConsumerRunner {
-    consumer: Arc<StreamConsumer>,
+    consumer: Arc<StreamConsumer<CustomConsumerContext>>,
     shutdown_tx: broadcast::Sender<()>,
     /// Optional shutdown coordinator for phased graceful shutdown.
     /// When `Some`, `stop()` coordinates with the coordinator before signaling.
     coordinator: Option<Arc<ShutdownCoordinator>>,
+    /// Tracks paused state per topic-partition for backpressure.
+    pause_state: Arc<parking_lot::Mutex<std::collections::HashMap<String, bool>>>,
 }
 
 impl ConsumerRunner {
-    /// Creates a new runner from a consumer config.
+    /// Creates a new runner from a consumer config with CustomConsumerContext.
     ///
     /// # Arguments
     ///
     /// * `config` — consumer configuration
     /// * `coordinator` — optional shutdown coordinator for phased graceful shutdown.
     ///   When `None`, `stop()` falls back to the existing broadcast-channel shutdown.
+    /// * `offset_tracker` — for seeking to committed+1 on partition assignment
+    /// * `dlq_router` — for DLQ routing on partition revocation
+    /// * `dlq_producer` — for producing failed messages to DLQ
     pub fn new(
         config: ConsumerConfig,
         coordinator: Option<Arc<ShutdownCoordinator>>,
+        offset_tracker: Arc<crate::coordinator::OffsetTracker>,
+        dlq_router: Arc<dyn crate::dlq::DlqRouter>,
+        dlq_producer: Arc<crate::dlq::SharedDlqProducer>,
     ) -> Result<Self, ConsumerError> {
-        let consumer: StreamConsumer = config
+        let context = CustomConsumerContext::new(offset_tracker, dlq_router, dlq_producer);
+        let consumer: StreamConsumer<CustomConsumerContext> = config
             .clone()
             .into_rdkafka_config()
-            .create()
+            .create_with_context(context.clone())
             .map_err(ConsumerError::Kafka)?;
 
         consumer
@@ -64,6 +74,7 @@ impl ConsumerRunner {
             consumer: Arc::new(consumer),
             shutdown_tx,
             coordinator,
+            pause_state: context.pause_state(),
         })
     }
 
@@ -189,6 +200,28 @@ impl ConsumerRunner {
     /// Resumes consumption for the given topic-partition list.
     pub fn resume(&self, tpl: &rdkafka::TopicPartitionList) -> Result<(), ConsumerError> {
         self.consumer.resume(tpl).map_err(ConsumerError::Kafka)
+    }
+
+    /// Pauses a specific topic-partition for backpressure.
+    pub fn pause_partition(&self, topic: &str, partition: i32) -> Result<(), ConsumerError> {
+        let mut tpl = rdkafka::TopicPartitionList::new();
+        tpl.add_partition_offset(topic, partition, rdkafka::Offset::Beginning)
+            .map_err(|e| ConsumerError::Subscription(e.to_string()))?;
+        self.pause(&tpl)?;
+        let key = format!("{}-{}", topic, partition);
+        self.pause_state.lock().insert(key, true);
+        Ok(())
+    }
+
+    /// Resumes a specific topic-partition after backpressure subsides.
+    pub fn resume_partition(&self, topic: &str, partition: i32) -> Result<(), ConsumerError> {
+        let mut tpl = rdkafka::TopicPartitionList::new();
+        tpl.add_partition_offset(topic, partition, rdkafka::Offset::Beginning)
+            .map_err(|e| ConsumerError::Subscription(e.to_string()))?;
+        self.resume(&tpl)?;
+        let key = format!("{}-{}", topic, partition);
+        self.pause_state.lock().remove(&key);
+        Ok(())
     }
 }
 

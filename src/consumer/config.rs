@@ -112,7 +112,7 @@ impl ConsumerConfigBuilder {
             max_poll_interval_ms: 300000,
             fetch_min_bytes: 1048576,
             max_partition_fetch_bytes: 10485760,
-            partition_assignment_strategy: Default::default(),
+            partition_assignment_strategy: PartitionAssignmentStrategy::CooperativeSticky,
             retry_backoff_ms: 100,
             default_retry_policy: RetryPolicy::default(),
             dlq_topic_prefix: "dlq.".to_string(),

@@ -31,6 +31,7 @@
 //! ```
 
 pub mod config;
+pub mod context;
 pub mod error;
 pub mod message;
 pub mod runner;
@@ -38,6 +39,7 @@ pub mod runner;
 pub use config::{
     AutoOffsetReset, ConsumerConfig, ConsumerConfigBuilder, PartitionAssignmentStrategy,
 };
+pub use context::CustomConsumerContext;
 pub use error::ConsumerError;
 pub use message::{MessageRef, MessageTimestamp, OwnedMessage};
 pub use runner::{ConsumerRunner, ConsumerStream, ConsumerTask};
