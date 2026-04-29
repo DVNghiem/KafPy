@@ -202,7 +202,8 @@ impl ShutdownCoordinator {
         if let Some(ref pool) = self.rayon_pool {
             let drain_timeout = self.drain_timeout;
             match tokio::time::timeout(drain_timeout, async {
-                pool.drain();
+                let barrier = pool.drain();
+                barrier.wait();
             }).await {
                 Ok(_) => tracing::info!("rayon pool drained gracefully"),
                 Err(_) => {

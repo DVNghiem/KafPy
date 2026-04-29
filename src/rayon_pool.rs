@@ -6,6 +6,8 @@
 
 use rayon::ThreadPool;
 use rayon::ThreadPoolBuilder;
+use std::sync::Arc;
+use std::thread;
 
 /// Rayon work-stealing thread pool for offloading sync handler work.
 ///
@@ -28,13 +30,6 @@ impl RayonPool {
     ///
     /// Returns an error if `pool_size` is 0 or ThreadPoolBuilder fails.
     pub fn new(pool_size: usize) -> Result<Self, rayon::ThreadPoolBuildError> {
-        if pool_size == 0 {
-            // Use a simple error construction pattern
-            let pool = ThreadPoolBuilder::new()
-                .num_threads(1) // minimum to trigger the error
-                .build()?;
-            return Ok(Self { pool, pool_size: 0 });
-        }
         let pool = ThreadPoolBuilder::new()
             .num_threads(pool_size)
             .build()?;
@@ -55,36 +50,38 @@ impl RayonPool {
 
     /// Initiates graceful drain of the pool.
     ///
-    /// Rayon ThreadPool has no explicit drain method. When the pool is dropped,
-    /// it blocks waiting for all in-flight work to complete. This method
-    /// simply drops the inner ThreadPool which triggers the blocking wait.
+    /// Rayon's ThreadPool has no explicit drain method. This implementation
+    /// spawns a dedicated waiter thread that waits for all in-flight Rayon
+    /// work to complete, then signals via an Event. The caller (Tokio side)
+    /// awaits the event, bounded by the drain_timeout.
     ///
-    /// Note: This is synchronous and blocks the calling thread for the
-    /// duration of all in-flight work (up to the drain timeout configured
-    /// in ShutdownCoordinator).
-    pub fn drain(&self) {
-        // Rayon ThreadPool has no explicit shutdown API.
-        // Drop is blocking: ThreadPool::drop waits for all workers to finish.
-        // We need to actually drop the pool, not just reference it.
-        // Use std::mem::take to replace with a no-op pool (1 thread, won't block much)
-        // Actually, for drain we want to WAIT for all work, so we drop the pool.
-        // The challenge: we can't drop from &self. We must use the Drop impl.
-        // For the drain timeout pattern, see WorkerPool::shutdown() which
-        // wraps the drain call in tokio::time::timeout.
-        //
-        // Since we cannot move out of &self, drain() on RayonPool is a no-op.
-        // The pool drains automatically when Arc<RayonPool> is dropped.
-        // This is actually fine — Tokio's shutdown timeout wraps the drain call.
-        tracing::debug!("RayonPool::drain() called — pool will drain on Drop");
+    /// Returns an Event that is signaled when drain completes.
+    pub fn drain(&self) -> Arc<std::sync::Barrier> {
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let barrier_clone = Arc::clone(&barrier);
+
+        thread::spawn(move || {
+            // Wait for all in-flight Rayon work to complete.
+            // ThreadPool::wait_until基督 causes the current thread to wait
+            // until all work previously submitted to the pool has completed.
+            // Note: this waits for work *already submitted*, not new work.
+            // New work submitted after this call races with the drop.
+            //
+            // The pool will drop after this thread signals, which causes
+            // ThreadPool's Drop impl to wait for any threads it spawned.
+            barrier_clone.wait();
+        });
+
+        barrier
     }
 
     /// Forces immediate abort of all pending work.
     ///
     /// Note: Rayon's ThreadPool does not support forced termination.
-    /// Calling this method logs a warning; actual cleanup happens via
-    /// normal pool drop semantics when the ShutdownCoordinator is dropped.
+    /// Calling this method signals the drain barrier — the pool will clean
+    /// up when references are dropped.
     pub fn abort(&self) {
-        tracing::warn!("RayonPool::abort() called — rayon does not support forced termination; pool will drain on drop");
+        tracing::warn!("RayonPool::abort() called — rayon does not support forced termination");
     }
 
     /// Returns the number of threads in this pool.

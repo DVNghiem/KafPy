@@ -307,6 +307,7 @@ mod tests {
                 None,
                 None,
                 "test".to_string(),
+                None,
             ))
         });
         let mut map = HashMap::new();
