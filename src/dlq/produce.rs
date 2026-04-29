@@ -12,12 +12,14 @@ use tracing::{debug, error, warn};
 
 use super::metadata::DlqMetadata;
 use crate::consumer::config::ConsumerConfig;
+use crate::observability::metrics::{DlqMetrics, SharedPrometheusSink};
 
 /// Bounded channel capacity — if full, DLQ messages are dropped.
 const DLQ_CHANNEL_CAPACITY: usize = 100;
 
 struct DLQMessage {
     topic: String,
+    original_topic: String,
     partition: i32,
     payload: Vec<u8>,
     key: Option<Vec<u8>>,
@@ -31,6 +33,7 @@ struct DLQMessage {
 /// a background task drains the channel and produces to Kafka.
 pub struct SharedDlqProducer {
     send_tx: mpsc::Sender<DLQMessage>,
+    prometheus_sink: SharedPrometheusSink,
 }
 
 impl SharedDlqProducer {
@@ -38,21 +41,22 @@ impl SharedDlqProducer {
     ///
     /// Creates a dedicated FutureProducer for DLQ messages using the same
     /// broker configuration as the main consumer.
-    pub fn new(config: &ConsumerConfig) -> Result<Self, rdkafka::error::KafkaError> {
+    pub fn new(config: &ConsumerConfig, prometheus_sink: SharedPrometheusSink) -> Result<Self, rdkafka::error::KafkaError> {
         let producer = Self::create_producer(config)?;
         let producer = Arc::new(producer);
         let (send_tx, mut send_rx) = mpsc::channel::<DLQMessage>(DLQ_CHANNEL_CAPACITY);
         let producer_clone = Arc::clone(&producer);
+        let sink_clone = prometheus_sink.clone();
 
         // Background task drains the channel and produces to Kafka
         tokio::spawn(async move {
             while let Some(msg) = send_rx.recv().await {
                 let producer = Arc::clone(&producer_clone);
-                Self::do_produce(producer, msg).await;
+                Self::do_produce(producer, msg, sink_clone.clone()).await;
             }
         });
 
-        Ok(Self { send_tx })
+        Ok(Self { send_tx, prometheus_sink })
     }
 
     fn create_producer(
@@ -83,7 +87,7 @@ impl SharedDlqProducer {
         cfg.create()
     }
 
-    async fn do_produce(producer: Arc<FutureProducer>, msg: DLQMessage) {
+    async fn do_produce(producer: Arc<FutureProducer>, msg: DLQMessage, prometheus_sink: SharedPrometheusSink) {
         let mut record = FutureRecord::to(&msg.topic)
             .payload(&msg.payload)
             .partition(msg.partition)
@@ -93,6 +97,7 @@ impl SharedDlqProducer {
             record = record.key(key.as_slice());
         }
 
+        let original_topic = msg.original_topic.clone();
         match producer
             .send(
                 record,
@@ -105,6 +110,8 @@ impl SharedDlqProducer {
                     "DLQ message delivered to '{}' partition {} offset {}",
                     msg.topic, delivery.partition, delivery.offset
                 );
+                // Record DLQ metric after successful delivery
+                DlqMetrics::record_dlq_message(&prometheus_sink, &msg.topic, &original_topic);
             }
             Err((err, _)) => {
                 error!(
@@ -144,6 +151,7 @@ impl SharedDlqProducer {
 
         let msg = DLQMessage {
             topic,
+            original_topic: metadata.original_topic.clone(),
             partition,
             payload,
             key,

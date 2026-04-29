@@ -7,4 +7,5 @@ pub mod runtime_snapshot;
 pub mod tracing;
 
 pub use metrics::MetricLabels;
+pub use metrics::SharedPrometheusSink;
 pub use metrics::noop_sink::NoopSink;
