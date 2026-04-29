@@ -27,6 +27,13 @@ pub enum BranchResult {
     Timeout { timeout_ms: u64 },
 }
 
+/// Results from all fan-out branches for a single message dispatch.
+#[derive(Debug, Clone, Default)]
+pub struct BranchResults {
+    /// Vector of (branch_id, result) pairs collected from all branches.
+    pub results: Vec<(u64, BranchResult)>,
+}
+
 // ─── Sink Config ──────────────────────────────────────────────────────────────
 
 /// Sink configuration holding topic and handler for a single fan-out branch.
@@ -36,6 +43,8 @@ pub struct SinkConfig {
     pub topic: String,
     /// Handler to invoke for this sink.
     pub handler: Arc<PythonHandler>,
+    /// Per-sink timeout override. None means use handler's default timeout.
+    pub timeout: Option<std::time::Duration>,
 }
 
 impl std::fmt::Debug for SinkConfig {
@@ -156,6 +165,14 @@ pub struct FanOutTracker {
     sinks: Vec<SinkConfig>,
     inflight: std::sync::atomic::AtomicU8,
     callback_registry: CallbackRegistry,
+    /// Total number of registered branches.
+    total: std::sync::atomic::AtomicU8,
+    /// Counter for completed branches.
+    completed: std::sync::atomic::AtomicU8,
+    /// Notify signal fired when all branches complete.
+    notify: tokio::sync::Notify,
+    /// Results collected from all branches (branch_id -> result).
+    results: Mutex<Vec<(u64, BranchResult)>>,
 }
 
 impl FanOutTracker {
@@ -169,12 +186,16 @@ impl FanOutTracker {
             sinks: Vec::new(),
             inflight: std::sync::atomic::AtomicU8::new(0),
             callback_registry: CallbackRegistry::new(),
+            total: std::sync::atomic::AtomicU8::new(0),
+            completed: std::sync::atomic::AtomicU8::new(0),
+            notify: tokio::sync::Notify::new(),
+            results: Mutex::new(Vec::new()),
         }
     }
 
     /// Register a sink topic and handler for this fan-out tracker.
-    pub fn register_sink(&mut self, topic: String, handler: Arc<PythonHandler>) {
-        self.sinks.push(SinkConfig { topic, handler });
+    pub fn register_sink(&mut self, topic: String, handler: Arc<PythonHandler>, timeout: Option<std::time::Duration>) {
+        self.sinks.push(SinkConfig { topic, handler, timeout });
     }
 
     /// Returns the number of registered sinks.
@@ -232,6 +253,41 @@ impl FanOutTracker {
     /// Invoke the callback for a branch result and remove the callback.
     pub fn emit_completion(&self, branch_id: u64, result: BranchResult) {
         self.callback_registry.emit(branch_id, result);
+    }
+
+    /// Register a new branch and return its branch_id.
+    ///
+    /// Must be called before spawning the branch task.
+    pub fn register_branch(&self) -> u64 {
+        let branch_id = self.total.fetch_add(1, std::sync::atomic::Ordering::SeqCst) as u64;
+        branch_id
+    }
+
+    /// Record a branch result and signal completion if all branches are done.
+    pub fn record_branch_result(&self, branch_id: u64, result: BranchResult) {
+        {
+            let mut results = self.results.lock().expect("poisoned");
+            results.push((branch_id, result));
+        }
+        let prev = self.completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if prev + 1 >= self.total.load(std::sync::atomic::Ordering::SeqCst) {
+            self.notify.notify_waiters();
+        }
+    }
+
+    /// Wait for all fan-out branches to reach terminal state.
+    ///
+    /// Returns a `BranchResults` containing all branch outcomes.
+    /// This MUST be awaited after all branches have been spawned.
+    pub async fn wait_all(&self) -> BranchResults {
+        loop {
+            let done = self.completed.load(std::sync::atomic::Ordering::SeqCst);
+            if done >= self.total.load(std::sync::atomic::Ordering::SeqCst) && done > 0 {
+                let results = self.results.lock().expect("poisoned").clone();
+                return BranchResults { results };
+            }
+            self.notify.notified().await;
+        }
     }
 
     /// Returns the registered sinks.
@@ -380,8 +436,8 @@ mod tests {
     fn fan_out_tracker_register_sink() {
         let mut tracker = FanOutTracker::new(4);
         assert_eq!(tracker.sink_count(), 0);
-        tracker.register_sink("topic-a".to_string(), make_dummy_handler("handler-a"));
-        tracker.register_sink("topic-b".to_string(), make_dummy_handler("handler-b"));
+        tracker.register_sink("topic-a".to_string(), make_dummy_handler("handler-a"), None);
+        tracker.register_sink("topic-b".to_string(), make_dummy_handler("handler-b"), None);
         assert_eq!(tracker.sink_count(), 2);
     }
 
@@ -433,10 +489,12 @@ mod tests {
                 SinkConfig {
                     topic: "topic-a".to_string(),
                     handler: make_dummy_handler("h1"),
+                    timeout: None,
                 },
                 SinkConfig {
                     topic: "topic-b".to_string(),
                     handler: make_dummy_handler("h2"),
+                    timeout: None,
                 },
             ],
             max_fan_out: 4,
