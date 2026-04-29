@@ -16,6 +16,17 @@ Python developers can write Kafka message handlers easily while Rust controls th
 - Middleware chain (Logging, Metrics) per handler via @handler(middleware=[...])
 - Streaming handler support (@stream_handler) for persistent async iterables with backpressure
 
+**v2.0 Fan-Out/Fan-In IN PROGRESS.** Milestone started 2026-04-29.
+
+## Current Milestone: v2.0 Fan-Out/Fan-In
+
+**Goal:** Enable parallel multi-sink production and multi-source consumption patterns.
+
+**Target features:**
+- Fan-Out: One message triggers multiple async handlers/sinks in parallel via JoinSet
+- Fan-In: Multiple async sources merged into single handler (round-robin)
+- Python API for both patterns
+
 ## Requirements
 
 ### Validated
@@ -40,9 +51,8 @@ Python developers can write Kafka message handlers easily while Rust controls th
 
 ### Active
 
-- [ ] Fan-Out: One message triggers multiple async handlers/sinks in parallel
-- [ ] Fan-In: Multiple async sources merged into single handler (round-robin, priority)
-- [ ] Async fan-out/fan-in (multiple async sources in one handler)
+- [ ] Fan-Out: One message triggers multiple async handlers/sinks in parallel via JoinSet (FANOUT-01, FANOUT-02, FANOUT-03)
+- [ ] Fan-In: Multiple async sources merged into single handler round-robin (FANIN-01, FANIN-02, FANIN-03)
 
 ### Out of Scope
 
@@ -60,20 +70,11 @@ Python developers can write Kafka message handlers easily while Rust controls th
 - Middleware that mutates messages — Hidden mutations break debugging and predictability
 - Unbounded fan-out — No limit causes resource exhaustion
 
-## Next Milestone: v2.0 Fan-Out/Fan-In
-
-**Goal:** Enable parallel multi-sink production and multi-source consumption patterns.
-
-**Target features:**
-- Fan-Out: One message triggers multiple async handlers/sinks in parallel via JoinSet
-- Fan-In: Multiple async sources merged into single handler (round-robin, priority)
-- Python API for both patterns
-
 ## Context
 
 **v1.1 shipped:** Rust consumer engine with Rayon thread pool, handler timeout, middleware chain, streaming handlers.
+**v2.0 in progress:** Fan-out (multi-sink parallel) and Fan-in (multi-source round-robin).
 **Tech stack:** Rust runtime + Python business logic, PyO3 bindings, rdkafka for Kafka ingestion.
-**v1.0 shipped:** Rust consumer engine with bounded queues, backpressure, retry/DLQ, Prometheus metrics, W3C tracing.
 
 ## Constraints
 
@@ -100,6 +101,8 @@ Python developers can write Kafka message handlers easily while Rust controls th
 | Oneshot channels for Tokio-Rayon communication | Prevent deadlock (no Tokio APIs from Rayon) | ✓ Validated v1.1 |
 | Streaming handler with four-phase state machine | Lifecycle: start/subscribe, run/loop, stop/drain, error recovery | ✓ Validated v1.1 |
 | PausePartition/ResumePartition for backpressure | Slow consumer signal to Kafka, fast producer doesn't overflow memory | ✓ Validated v1.1 |
+| Fan-Out partial success (sinks fail independently) | Preserve at-least-once, primary message ACKed immediately | v2.0 decision |
+| Fan-In round-robin (no ordering guarantee) | Simplicity, no head-of-line blocking | v2.0 decision |
 
 ## Evolution
 
@@ -119,4 +122,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-29 after v1.1 milestone shipped*
+*Last updated: 2026-04-29 after v2.0 milestone started*
