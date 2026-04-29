@@ -20,6 +20,7 @@ use crate::python::execution_result::ExecutionResult;
 use crate::python::executor::Executor;
 use crate::python::handler::PythonHandler;
 use crate::python::logger;
+use crate::failure::FailureReason;
 use crate::worker_pool::handle_execution_failure;
 use crate::worker_pool::state::WorkerState;
 use crate::worker_pool::ExecutionAction;
@@ -246,6 +247,41 @@ pub(crate) async fn worker_loop(
                         &ctx,
                         &msg,
                         reason,
+                        Arc::clone(&retry_coordinator),
+                        Arc::clone(&dlq_producer),
+                        Arc::clone(&dlq_router),
+                        Arc::clone(&queue_manager),
+                    )
+                    .await;
+
+                    match action {
+                        ExecutionAction::Ack => {}
+                        ExecutionAction::Retry { delay } => {
+                            tokio::time::sleep(delay).await;
+                            state = WorkerState::Processing(msg);
+                            continue;
+                        }
+                        ExecutionAction::Dlq => {}
+                    }
+                }
+                ExecutionResult::Timeout { ref info } => {
+                    tracing::warn!(
+                        worker_id = worker_id,
+                        topic = %ctx.topic,
+                        partition = ctx.partition,
+                        offset = ctx.offset,
+                        timeout_ms = info.timeout_ms,
+                        "handler timed out"
+                    );
+                    let reason = FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic);
+                    crate::failure::logging::log_failure(&ctx, &reason, "HandlerTimeout", false);
+
+                    offset_coordinator.mark_failed(&ctx.topic, ctx.partition, ctx.offset, &reason);
+
+                    let action = handle_execution_failure(
+                        &ctx,
+                        &msg,
+                        &reason,
                         Arc::clone(&retry_coordinator),
                         Arc::clone(&dlq_producer),
                         Arc::clone(&dlq_router),

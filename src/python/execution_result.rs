@@ -2,6 +2,17 @@
 
 use crate::failure::FailureReason;
 
+/// Information captured when a handler times out.
+/// Carried through ExecutionResult so handle_execution_failure can populate DLQ metadata.
+#[derive(Debug, Clone)]
+pub struct TimeoutInfo {
+    /// The configured timeout duration in milliseconds.
+    pub timeout_ms: u64,
+    /// The offset of the last message the handler completed before the timeout
+    /// (i.e., original_offset - 1 for single-message handlers, None if not trackable).
+    pub last_processed_offset: Option<i64>,
+}
+
 /// Normalized execution result from a Python handler.
 #[derive(Debug, Clone)]
 pub enum ExecutionResult {
@@ -23,6 +34,10 @@ pub enum ExecutionResult {
         /// Rejection reason string.
         reason_str: String,
     },
+    /// Handler invocation timed out — carries TimeoutInfo so DLQ metadata can be enriched.
+    Timeout {
+        info: TimeoutInfo,
+    },
 }
 
 impl ExecutionResult {
@@ -35,13 +50,17 @@ impl ExecutionResult {
     pub fn is_rejected(&self) -> bool {
         matches!(self, ExecutionResult::Rejected { .. })
     }
+    pub fn is_timeout(&self) -> bool {
+        matches!(self, ExecutionResult::Timeout { .. })
+    }
 
     /// Returns the error type label for metrics recording.
     pub fn error_type_label(&self) -> &'static str {
         match self {
-            ExecutionResult::Ok => "Ok",
-            ExecutionResult::Error { .. } => "Error",
-            ExecutionResult::Rejected { .. } => "Rejected",
+            ExecutionResult::Ok => "ok",
+            ExecutionResult::Error { .. } => "error",
+            ExecutionResult::Rejected { .. } => "rejected",
+            ExecutionResult::Timeout { .. } => "timeout",
         }
     }
 }

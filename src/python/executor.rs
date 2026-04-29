@@ -67,6 +67,16 @@ impl Executor for DefaultExecutor {
                     "handler rejected message"
                 );
             }
+            ExecutionResult::Timeout { info } => {
+                tracing::warn!(
+                    topic = %ctx.topic,
+                    partition = ctx.partition,
+                    offset = ctx.offset,
+                    worker_id = ctx.worker_id,
+                    timeout_ms = info.timeout_ms,
+                    "handler timed out"
+                );
+            }
         }
         ExecutorOutcome::Ack
     }

@@ -8,7 +8,7 @@ use crate::failure::FailureReason;
 use crate::observability::tracing::inject_trace_context;
 use crate::python::async_bridge::PythonAsyncFuture;
 use crate::python::context::ExecutionContext;
-use crate::python::execution_result::{BatchExecutionResult, ExecutionResult};
+use crate::python::execution_result::{BatchExecutionResult, ExecutionResult, TimeoutInfo};
 use crate::rayon_pool::RayonPool;
 use crate::retry::RetryPolicy;
 use std::collections::HashMap;
@@ -296,18 +296,11 @@ impl PythonHandler {
                             "handler timed out after {}ms",
                             timeout.as_millis()
                         );
-                        ExecutionResult::Error {
-                            reason: FailureReason::Terminal(
-                                crate::failure::TerminalKind::HandlerPanic,
-                            ),
-                            exception: "HandlerTimeout".to_string(),
-                            traceback: format!(
-                                "handler timed out after {}ms on topic {} partition {} offset {}",
-                                timeout.as_millis(),
-                                ctx.topic,
-                                ctx.partition,
-                                ctx.offset
-                            ),
+                        ExecutionResult::Timeout {
+                            info: TimeoutInfo {
+                                timeout_ms: timeout.as_millis() as u64,
+                                last_processed_offset: None,
+                            },
                         }
                     }
                 }
@@ -568,6 +561,12 @@ impl PythonHandler {
             ExecutionResult::Error { reason, .. } => BatchExecutionResult::AllFailure(reason),
             ExecutionResult::Rejected { reason: _, .. } => {
                 // Treat rejected as failure with Terminal kind
+                BatchExecutionResult::AllFailure(FailureReason::Terminal(
+                    crate::failure::TerminalKind::HandlerPanic,
+                ))
+            }
+            ExecutionResult::Timeout { .. } => {
+                // Treat timeout as failure with Terminal kind
                 BatchExecutionResult::AllFailure(FailureReason::Terminal(
                     crate::failure::TerminalKind::HandlerPanic,
                 ))
