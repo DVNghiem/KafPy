@@ -186,5 +186,22 @@ The traceability matrix above was derived from the Phase 1-4 roadmap structure d
 Phase dependencies: Phase 2 blocked by Phase 1. Phase 3 blocked by Phase 1. Phase 4 blocked by Phase 2 and Phase 3.
 
 ---
+
+## v1.1 Requirements: Lint & Hardening
+
+### Code Quality
+
+- [ ] **LH-01**: ConsumerConfig builder pattern — replace 24-arg `ConsumerConfig::new()` with fluent `ConsumerConfigBuilder`
+- [ ] **LH-02**: ProducerConfig builder pattern — replace 17-arg `ProducerConfig::new()` with fluent `ProducerConfigBuilder`
+- [ ] **LH-03**: Replace `#[allow]` suppressions with proper implementations where feasible
+- [ ] **LH-04**: Add unit tests for config builder edge cases
+
+### Hardening
+
+- [ ] **LH-05**: Improve error messages for common runtime failures (connection, deserialization, timeout)
+- [ ] **LH-06**: Add `Debug` impls to all public structs used in error contexts
+- [ ] **LH-07**: Validate required fields (brokers, group_id) at config build time, not runtime
+
+---
 *Requirements defined: 2026-04-28*
-*Last updated: 2026-04-28 after roadmap creation*
+*Last updated: 2026-04-29 after v1.1 milestone start*
