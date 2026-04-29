@@ -1,15 +1,15 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
+milestone: v1.1
+milestone_name: Async & Concurrency Hardening
 current_phase: 10
-status: milestone_complete
-last_updated: "2026-04-29T13:56:45.230Z"
+status: milestone_shipped
+last_updated: "2026-04-29T21:15:00.000Z"
 progress:
   total_phases: 4
   completed_phases: 4
   total_plans: 10
-  completed_plans: 6
+  completed_plans: 10
   percent: 100
 ---
 
@@ -22,23 +22,23 @@ progress:
 
 ## Current Position
 
-Phase: --phase (08) — EXECUTING
-Plan: Not started
-**Milestone:** v1.1 Async & Concurrency Hardening
-**Current Phase:** 10
-**Next Phase:** Phase 8 (Async Timeout)
-**Status:** Milestone complete
+**Milestone:** v1.1 SHIPPED
+**Current Phase:** 10 (complete)
+**Next Phase:** Phase 11 (Fan-Out) — v2.0
+**Status:** Milestone shipped, awaiting next milestone
 
 ---
 
-## Shipped Milestone: v1.0 MVP
+## Shipped Milestone: v1.1 Async & Concurrency Hardening
 
 | Dimension | Status |
 |-----------|--------|
-| Requirements | 45/45 v1 requirements verified as satisfied |
-| Phases | 6/6 complete |
-| Plans | 8/8 complete |
-| Archive | `.planning/milestones/v1.0-ROADMAP.md`, `v1.0-REQUIREMENTS.md` |
+| Requirements | 14/14 v1.1 requirements verified as satisfied |
+| Phases | 4/4 complete |
+| Plans | 10/10 complete |
+| Archive | `.planning/milestones/v1.1-ROADMAP.md`, `v1.1-REQUIREMENTS.md` |
+
+**v1.0 MVP shipped.** Full milestone history at `.planning/milestones/`.
 
 ---
 
@@ -46,17 +46,16 @@ Plan: Not started
 
 **Core value:** Python developers can write Kafka message handlers easily while Rust controls the hard runtime problems (concurrency, backpressure, retries, DLQ, offset tracking, graceful shutdown).
 
-**v1.1 Focus:** Prevent long-running sync handlers from blocking poll cycle; expand Python handler API with streaming patterns, middleware, timeouts, and async fan-in/out.
+**v2.0 Focus:** Fan-out (one message → multiple sinks) and Fan-in (multiple sources → one handler).
 
 ---
 
-## Phase Dependencies
+## Phase Dependencies (v2.0)
 
 ```
-Phase 7 (Thread Pool)
-  └── Phase 8 (Async Timeout)
-        └── Phase 9 (Handler Middleware)
-              └── Phase 10 (Streaming Handler)
+Phase 10 (Streaming Handler)
+  └── Phase 11 (Fan-Out)
+        └── Phase 12 (Fan-In)
 ```
 
 ---
@@ -65,40 +64,26 @@ Phase 7 (Thread Pool)
 
 ### Key Decisions (v1.1)
 
-| Decision | Rationale |
-|----------|-----------|
-| Rayon work-stealing pool for sync handlers | Prevent poll cycle blocking (heartbeat/rebalance risk) |
-| Tokio stays as async runtime | No change to existing async infrastructure |
-| Python GIL calls via spawn_blocking | GIL safety preserved |
-| Oneshot channels for Tokio-Rayon communication | Prevent deadlock (no Tokio APIs from Rayon) |
+| Decision | Rationale | Outcome |
+|----------|-----------|---------|
+| Rayon work-stealing pool for sync handlers | Prevent poll cycle blocking (heartbeat/rebalance risk) | ✓ Validated |
+| Tokio stays as async runtime | No change to existing async infrastructure | ✓ Validated |
+| Python GIL calls via spawn_blocking | GIL safety preserved | ✓ Validated |
+| Oneshot channels for Tokio-Rayon communication | Prevent deadlock (no Tokio APIs from Rayon) | ✓ Validated |
+| Streaming handler with four-phase state machine | Lifecycle: start/subscribe, run/loop, stop/drain, error recovery | ✓ Validated |
+| PausePartition/ResumePartition for backpressure | Slow consumer signal to Kafka | ✓ Validated |
 
-### Research Flags
+### Technical Debt
 
-- **Phase 10 (Streaming Handler):** Async iterator lifecycle management is complex — may need API research during planning
-- **Phase 9 (Middleware):** User-defined middleware safety (no blocking, no GIL issues) needs verification
-
----
-
-## Success Criteria Summary
-
-| Phase | Goal | Criteria Count |
-|-------|------|---------------|
-| 7 | Thread Pool | 5 |
-| 8 | Async Timeout | 4 |
-| 9 | Handler Middleware | 5 |
-| 10 | Streaming Handler | 4 |
-| **Total** | | **18** |
+- RayonPool::drain() and abort() are no-ops (Rayon limitation, documented)
+- streaming_worker_loop State::Draining path may need production edge case testing
+- PausePartition/ResumePartition backpressure untested with actual Kafka consumer
 
 ---
 
-## Context Efficiency
+## Next Steps
 
-- Archive files keep ROADMAP.md and REQUIREMENTS.md constant-size per milestone
-- v1.0 requirements captured in `.planning/milestones/v1.0-REQUIREMENTS.md`
-- v1.0 roadmap captured in `.planning/milestones/v1.0-ROADMAP.md`
-- Next milestone starts with fresh REQUIREMENTS.md via `/gsd-new-milestone`
+To start v2.0, run `/gsd-new-milestone` to define fan-out and fan-in requirements.
 
 ---
-*Last updated: 2026-04-29 after v1.1 roadmap created*
-
-**Planned Phase:** 10 (streaming-handler) — 4 plans — 2026-04-29T13:56:45.226Z
+*Last updated: 2026-04-29 after v1.1 milestone shipped*
