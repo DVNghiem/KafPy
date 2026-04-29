@@ -1,335 +1,263 @@
-# Architecture: Tokio + Rayon Thread Pool Integration
+# Architecture Integration
 
-**Project:** KafPy v1.1 — Async & Concurrency Hardening
-**Domain:** Work-stealing thread pool (Rayon) for blocking sync handlers
+**Project:** KafPy v2.0 Fan-Out/Fan-In
 **Researched:** 2026-04-29
+**Confidence:** MEDIUM-HIGH (based on code analysis, not yet implemented)
+
+## Executive Summary
+
+Fan-Out and Fan-In integrate with the existing WorkerPool architecture by extending dispatch routing and worker spawning patterns, not by replacing them. Fan-Out uses the existing `send_to_handler_by_id` for parallel multi-sink dispatch via JoinSet. Fan-In introduces a multiplexer worker that merges multiple topic receivers into a single round-robin stream. The QueueManager is reused as-is for both patterns.
 
 ---
 
-## System Overview
+## Fan-Out Integration
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Tokio Runtime                                  │
-│                                                                          │
-│  ┌──────────────┐     ┌─────────────────┐     ┌──────────────────────┐  │
-│  │   Consumer   │────▶│    Dispatcher    │────▶│   Handler Queue      │  │
-│  │   Runner     │     │   (topic-based)  │     │   (mpsc channel)     │  │
-│  │  (rdkafka)   │     │                  │     │                      │  │
-│  └──────────────┘     └─────────────────┘     └──────────┬───────────┘  │
-│                                                             │              │
-│                         ┌────────────────────────────────────┘              │
-│                         ▼                                              │
-│  ┌─────────────────────────────────────────────────────────────────┐    │
-│  │                    Worker Pool (N Tokio tasks)                  │    │
-│  │                                                                  │    │
-│  │   ┌──────────┐  ┌──────────┐       ┌──────────┐                 │    │
-│  │   │Worker 0  │  │Worker 1  │  ...  │Worker N  │                 │    │
-│  │   │async fn  │  │async fn  │       │async fn  │                 │    │
-│  │   └─────┬────┘  └────┬────┘       └────┬────┘                 │    │
-│  │         │             │                 │                       │    │
-│  │         ▼             ▼                 ▼                       │    │
-│  │   ┌─────────────────────────────────────────────────────────┐   │    │
-│  │   │              Rayon Thread Pool (blocking work)        │   │    │
-│  │   │                                                          │   │    │
-│  │   │   ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐         │   │    │
-│  │   │   │ Rayon  │  │ Rayon  │  │ Rayon  │  │ Rayon  │         │   │    │
-│  │   │   │ Thread │  │ Thread │  │ Thread │  │ Thread │         │   │    │
-│  │   │   │   0    │  │   1    │  │   2    │  │   3    │  ...    │   │    │
-│  │   │   └────────┘  └────────┘  └────────┘  └────────┘         │   │    │
-│  │   │                                                          │   │    │
-│  │   │   work-stealing: idle threads steal tasks from busy ones │   │    │
-│  │   └─────────────────────────────────────────────────────────┘   │    │
-│  └─────────────────────────────────────────────────────────────────┘    │
-│                         ▲                                              │
-│                         │                                              │
-│              ┌──────────┴───────────┐                                   │
-│              │  Python Handler     │                                   │
-│              │  (sync or async)     │                                   │
-│              │  invoked via PyO3    │                                   │
-│              └─────────────────────┘                                   │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Why Rayon for Blocking Handlers
-
-**Problem:** Long-running sync Python handlers block the Tokio event loop, causing poll cycle delays that lead to heartbeat misses and rebalances.
-
-**Solution:** Rayon provides a work-stealing thread pool specifically designed for CPU-bound and blocking work. By dispatching sync handlers to Rayon, Tokio remains free to poll Kafka.
-
-| Characteristic | Tokio (async tasks) | Rayon (blocking work) |
-|---------------|---------------------|----------------------|
-| Model | Non-blocking async tasks | Work-stealing thread pool |
-| Blocking behavior | Blocked tasks stall the runtime | Tasks yield to other Rayon work |
-| GIL awareness | Python calls must be on a thread with GIL | Same — Python calls still need GIL |
-| Use for | Kafka poll, channel ops, async I/O | Long-running sync Python handlers |
-| Heartbeat impact | Blocking in async context stalls polls | Does not block Tokio event loop |
-
----
-
-## Component Responsibilities
+**Definition:** One message triggers multiple async handlers/sinks in parallel via JoinSet.
 
 ### New Components
 
-| Component | File | Responsibility |
-|-----------|------|----------------|
-| `RayonPool` | `src/worker_pool/rayon_pool.rs` | Owns the Rayon thread pool, submits blocking work |
-| `ThreadPoolBridge` | `src/worker_pool/thread_pool_bridge.rs` | Converts Tokio async context to Rayon blocking call |
+| Component | Purpose | Location |
+|-----------|---------|----------|
+| `FanOutRegistry` | Tracks which topics receive the same message -- 1-to-many mapping | New: `src/fanout/mod.rs` |
+| `FanOutSet` | Manages JoinSet of parallel handler dispatches; collects all results | New: `src/fanout/set.rs` |
+| `FanOutResult` | Aggregates per-sink outcomes (success/failure per sink) | New: `src/fanout/result.rs` |
+| `send_to_all` method on `QueueManager` | Dispatches to all registered sinks for a given fan-out group | Modify: `src/dispatcher/queue_manager.rs` |
 
-### Modified Components
+### Modifications to Existing
 
-| Component | File | Change |
-|-----------|------|--------|
-| `worker_loop` | `src/worker_pool/worker.rs` | Route sync handlers to Rayon; async handlers stay on Tokio |
-| `PythonHandler` | `src/python/handler.rs` | Add `is_blocking()` method to distinguish sync/async modes |
-| `HandlerMode` | `src/python/handler.rs` | Add variant for thread-pool-backed sync handlers |
-| `WorkerPool` | `src/worker_pool/pool.rs` | Initialize and hold `Arc<RayonPool>` |
+| File | Change |
+|------|--------|
+| `src/dispatcher/queue_manager.rs` | Add `send_to_all(topic, message) -> Vec<Result<DispatchOutcome, DispatchError>>` -- iterates registered handlers for a fan-out group, calls `try_send` on each |
+| `src/worker_pool/pool.rs` | `WorkerPool::new` spawns fan-out workers alongside regular workers; accepts `FanOutRegistry` |
+| `src/worker_pool/worker.rs` | `worker_loop` gets optional `fanout_sinks: Vec<String>` -- when set, spawns a JoinSet to dispatch to all sinks in parallel |
+| `src/python/handler.rs` | `HandlerMode::SingleAsync` already exists -- fan-out uses this for async parallel dispatch |
+| `src/routing/context.rs` | `HandlerId` already supports topic-pattern routing; add `fanout_group: Option<String>` for 1-to-many dispatch |
+| `src/consumer/config.rs` | Add `topic_patterns: Vec<String>` for multi-topic subscription (fan-out sources) |
+| `src/pyconsumer.rs` | Python consumer builder exposes `register_fanout(group, sinks)` to register 1-to-many routing |
 
-### Unchanged Components
+### Data Flow Changes
 
-- `ConsumerRunner` — Tokio owns poll cycle, no changes needed
-- `Dispatcher` — routing unchanged, only execution changes
-- `OffsetCoordinator` — offset tracking independent of execution model
-- `ShutdownCoordinator` — drain signaling unchanged
+```
+Message arrives at ConsumerDispatcher
+        │
+        ▼
+  RoutingChain decides: "this message has fan-out group 'analytics'"
+        │
+        ▼
+  FanOutRegistry maps group -> [sink_topic_1, sink_topic_2, sink_topic_3]
+        │
+        ▼
+  QueueManager::send_to_all(message) called
+        │
+        ├──────────────────┬──────────────────┬──────────────────
+        ▼                  ▼                  ▼
+   try_send to          try_send to          try_send to
+   sink_topic_1         sink_topic_2         sink_topic_3
+   (bounded queue)      (bounded queue)      (bounded queue)
+        │                  │                  │
+        ▼                  ▼                  ▼
+   WorkerPool           WorkerPool           WorkerPool
+   (async parallel)     (async parallel)     (async parallel)
+        │
+        ▼
+   All results collected via JoinSet
+   Primary outcome (first sink success) drives offset ack
+   Per-sink failures recorded for observability
+```
+
+**Key design decisions from PROJECT.md:**
+- Fan-Out partial success (sinks fail independently) -- primary message ACKed immediately regardless of sink failures. Sink failures are logged/metrics-tracked but do not block ack.
+- At-least-once delivery -- each sink has its own queue with independent offset tracking.
+- Unbounded fan-out is explicitly OUT OF SCOPE -- `FanOutRegistry::register` requires a maximum sink count; registration fails if exceeded.
+
+### Suggested Build Order
+
+**Phase 1 (FANOUT-01):** `FanOutRegistry` and `send_to_all` on QueueManager
+- Implement `FanOutRegistry` struct with 1-to-many topic mapping
+- Add `send_to_all` to QueueManager (parallel try_send to all registered sinks)
+- Unit tests for registry and parallel dispatch
+
+**Phase 2 (FANOUT-02):** `FanOutSet` with JoinSet-based parallel dispatch
+- Implement `FanOutSet::dispatch_and_collect` using tokio::join! or JoinSet
+- Wire into WorkerPool -- fan-out workers spawn JoinSet of handler futures
+- Ensure primary ack is driven by first completion (not all)
+
+**Phase 3 (FANOUT-03):** Python API and multi-topic subscription
+- `ConsumerConfigBuilder::topics_patterns([])` for multi-topic subscribe
+- `PyConsumer::register_fanout(group, sinks)` expose to Python
+- Integration test: one message -> 3 sinks, verify all receive
 
 ---
 
-## Data Flow: Message Processing with Thread Pool
+## Fan-In Integration
+
+**Definition:** Multiple async sources merged into single handler (round-robin).
+
+### New Components
+
+| Component | Purpose | Location |
+|-----------|---------|----------|
+| `FanInMultiplexer` | Merges multiple `mpsc::Receiver<OwnedMessage>` into single `Receiver<OwnedMessage>` via round-robin select | New: `src/fanin/multiplexer.rs` |
+| `FanInSource` | Wraps a topic receiver with source metadata (topic, partition) for round-robin ordering | New: `src/fanin/source.rs` |
+| `round_robin_select` helper | Async loop that uses `tokio::select!` to interleave from multiple receivers | New: `src/fanin/scheduler.rs` |
+| `register_fanin` on QueueManager | Registers multiple topic receivers under a single fan-in handler key | Modify: `src/dispatcher/queue_manager.rs` |
+
+### Modifications to Existing
+
+| File | Change |
+|------|--------|
+| `src/dispatcher/queue_manager.rs` | Add `register_fanin(handler_key, sources: Vec<(topic, capacity)>) -> mpsc::Receiver<OwnedMessage>` -- creates internal `FanInMultiplexer` that owns all source receivers |
+| `src/worker_pool/pool.rs` | WorkerPool spawns multiplexer workers; accepts `FanInGroup` definitions |
+| `src/worker_pool/worker.rs` | New `multiplexer_worker_loop` -- drives the FanInMultiplexer, receives messages round-robin, invokes handler |
+| `src/consumer/config.rs` | `ConsumerConfigBuilder::topics([])` already supports multiple topics -- fan-in uses this for multi-source subscription |
+| `src/pyconsumer.rs` | `PyConsumer::register_fanin(handler_key, topics)` expose to Python |
+
+### Data Flow Changes
 
 ```
-1. ConsumerRunner::run() polls rdkafka → produces OwnedMessage
-                                    │
-2. Dispatcher routes message to handler-specific queue
-                                    │
-3. WorkerLoop picks up message from mpsc::Receiver
-   (tokio::select! on rx.recv())
-                                    │
-4. Acquire concurrency permit (Semaphore) ─────────────────┐
-                                                            │
-5. Determine handler mode:                                  │
-   ┌─────────────────────────────────────────────────────┐   │
-   │ if is_blocking_handler(handler.mode()) {             │   │
-   │     // Use Rayon for sync handlers                   │   │
-   │     rayon_pool.spawn_blocking(move || {             │   │
-   │         handler.invoke_sync(&ctx, &msg)              │   │
-   │     }).await                                         │   │
-   │ } else {                                              │   │
-   │     // Use async path for async handlers             │   │
-   │     handler.invoke_async(&ctx, msg).await            │   │
-   │ }                                                     │   │
-   └─────────────────────────────────────────────────────┘   │
-                                                            │
-6. Release concurrency permit ◀────────────────────────────┘
-                                    │
-7. Executor decides outcome (Ack/Retry/Rejected)
-                                    │
-8. OffsetCoordinator records position
+Kafka: topic_A (partition 0) --┐
+Kafka: topic_B (partition 1) --┼---> ConsumerDispatcher::register_fanin
+Kafka: topic_C (partition 2) --┘         │
+                                      ▼
+                            FanInMultiplexer owns 3 receivers
+                            (one per topic subscription)
+                                      │
+                            round_robin_select loop
+                            (tokio::select! with biased)
+                                      │
+                            Single message stream
+                            -> WorkerPool worker
+                            -> PythonHandler::invoke
+                                      │
+                            OffsetCoordinator::ack per topic
 ```
+
+**Key design decisions from PROJECT.md:**
+- Fan-In round-robin (no ordering guarantee) -- simplicity, no head-of-line blocking.
+- Messages from different topics are interleaved in arrival order.
+- Each topic's offset is tracked independently via OffsetCoordinator.
+
+### Suggested Build Order
+
+**Phase 4 (FANIN-01):** `FanInMultiplexer` and round-robin select
+- Implement `FanInMultiplexer::new(sources)` -- takes ownership of multiple receivers
+- Implement `fanin_worker_loop` -- tokio::select! biased round-robin, yields `OwnedMessage` with source metadata
+- Unit tests for round-robin interleaving
+
+**Phase 5 (FANIN-02):** QueueManager integration
+- Add `register_fanin(handler_key, topic_capacity_pairs)` to QueueManager
+- FanInMultiplexer stored internally in HandlerEntry for the fan-in case
+- Modify `ack` to route to correct source topic's offset tracker
+
+**Phase 6 (FANIN-03):** Python API
+- `PyConsumer::register_fanin(handler_key, topics)` registers multi-source consumer
+- `PythonHandler` receives messages from all sources via multiplexer
+- Integration test: 3 topics -> 1 handler, verify round-robin interleaving
 
 ---
 
-## Integration Patterns for Blocking Work
+## Interaction Points
 
-### Pattern 1: Dedicated Rayon Pool (Recommended)
+### Fan-Out + Fan-In Combined
 
-```rust
-// src/worker_pool/rayon_pool.rs
+```
+Topic_A -> Fan-Out (to sinks B, C) -> WorkerPool (parallel async)
 
-use rayon::ThreadPool;
-use std::sync::Arc;
-
-pub struct RayonPool {
-    pool: ThreadPool,
-}
-
-impl RayonPool {
-    pub fn new(num_threads: usize) -> Arc<Self> {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(num_threads)
-            .thread_name(|i| format!("rayon-worker-{}", i))
-            .build()
-            .expect("rayon pool creation failed");
-
-        Arc::new(Self { pool })
-    }
-
-    /// Submit a blocking sync handler to the Rayon thread pool.
-    /// The async future resolves once the blocking work completes.
-    pub async fn spawn_blocking<F, T>(&self, f: F) -> Result<T, SpawnError>
-    where
-        F: FnOnce() -> T + Send + 'static,
-        T: Send + 'static,
-    {
-        let (tx, rx) = std::sync::mpsc::channel();
-
-        self.pool.spawn(move || {
-            let result = f();
-            let _ = tx.send(result);
-        });
-
-        // Block on a Tokio blocking task — not a regular async task.
-        // This keeps Tokio's event loop free while waiting.
-        tokio::task::spawn_blocking(move || rx.recv().unwrap())
-            .await
-            .map_err(|e| SpawnError::Cancelled(e.to_string()))?
-            .map_err(|e| SpawnError::Panic(e.to_string()))
-    }
-}
+Topic_B --┐
+Topic_C --+---> Fan-In (merge) -> WorkerPool (round-robin) -> same PythonHandler
+Topic_D --┘
 ```
 
-### Pattern 2: Tokio-Rayon Bridge for GIL-Python Calls
+Both patterns can coexist. Fan-Out is a dispatch-time decision (one message -> many sinks). Fan-In is a receive-time decision (many topics -> one handler). They do not conflict.
 
-```rust
-/// Execute a Python handler on a Rayon thread with GIL.
-/// This is the bridge between Tokio async context and Rayon blocking work.
-pub async fn execute_python_on_rayon<F, T>(
-    pool: &RayonPool,
-    f: F,
-) -> Result<T, ExecuteError>
-where
-    F: FnOnce() -> T + Send + 'static,
-    T: Send + 'static,
-{
-    pool.spawn_blocking(f).await
-}
-```
+### Shared Components
 
-### Pattern 3: Handler Mode Dispatch
-
-```rust
-// In worker_loop.rs — determines where to run handler
-
-match handler.mode() {
-    HandlerMode::SingleAsync => {
-        // Async handlers stay on Tokio — no thread pool needed
-        handler.invoke_async(&ctx, msg).await
-    }
-    HandlerMode::SingleSync => {
-        // Sync handlers go to Rayon — non-blocking for Tokio poll cycle
-        rayon_pool.spawn_blocking(move || {
-            handler.invoke_sync(&ctx, &msg)
-        }).await
-    }
-    HandlerMode::BatchSync => {
-        // Batch sync — process entire batch on Rayon
-        rayon_pool.spawn_blocking(move || {
-            handler.invoke_batch_sync(&ctx, batch)
-        }).await
-    }
-}
-```
+| Component | Used By Fan-Out | Used By Fan-In |
+|-----------|-----------------|----------------|
+| `QueueManager` | `send_to_all` | `register_fanin` |
+| `HandlerMetadata` | Per-sink tracking | Per-source tracking |
+| `OffsetCoordinator` | Independent per-sink ack | Independent per-source ack |
+| `WorkerPool` | Fan-out workers (JoinSet) | Multiplexer workers |
+| `PythonHandler` | Per-sink invoke | Single merged invoke |
 
 ---
 
-## Anti-Patterns to Avoid
+## Architecture Diagram
 
-### Anti-Pattern 1: Blocking Tokio's Event Loop
-
-```rust
-// BAD — long Python sync call blocks the entire Tokio event loop
-async fn worker_loop(...) {
-    let result = handler.invoke_sync(&ctx, &msg).await; // blocks poll cycle!
-}
 ```
-
-```rust
-// GOOD — dispatch to Rayon, Tokio remains free to poll Kafka
-async fn worker_loop(...) {
-    let result = rayon_pool.spawn_blocking(move || {
-        handler.invoke_sync(&ctx, &msg)
-    }).await;
-}
-```
-
-### Anti-Pattern 2: Unbounded Thread Pool
-
-```rust
-// BAD — no limit on threads causes resource exhaustion under load
-let pool = rayon::ThreadPoolBuilder::new()
-    .num_threads(0) // unrestricted — dangerous
-    .build();
-```
-
-```rust
-// GOOD — explicit thread limit, tuned for workload
-let pool = rayon::ThreadPoolBuilder::new()
-    .num_threads(num_cpus::get() * 2) // or configurable
-    .build();
-```
-
-### Anti-Pattern 3: Releasing GIL in Python C API Calls
-
-```rust
-// BAD — releasing GIL in blocking Python code causes crashes
-rayon::spawn(|| {
-    // Python C API calls MUST hold the GIL — this crashes
-    Python::with_gil(|py| { /* GIL held here */ }); // OK
-    drop_gil(); // RAYON THREAD HAS NO GIL — crash
-});
-```
-
-```rust
-// GOOD — PyO3 retains GIL automatically during Python::call()
-// Rayon thread has GIL for the duration of the Python call
-rayon::spawn(move || {
-    Python::call(/* retains GIL automatically via PyO3 */);
-});
-```
-
-### Anti-Pattern 4: Nested Tokio Inside Rayon
-
-```rust
-// BAD — blocking inside spawn_blocking that then calls back to Tokio
-tokio::task::spawn_blocking(move || {
-    let rt = tokio::runtime::Handle::current();
-    rt.block_on(async { /* nested Tokio inside blocking — causes deadlock */ });
-});
+                        Kafka Cluster
+                              │
+                 rdkafka::consumer::StreamConsumer
+                              │
+                 +------------+------------+
+                 │                         │
+                 ▼                         ▼
+        ConsumerDispatcher          FanOutRegistry
+        (dispatcher/mod.rs)          (1-to-many map)
+                 │                         │
+                 ▼                         ▼
+        WorkerPool::run            send_to_all()
+        (JoinSet workers)                 │
+                 │          +-------------+-------------+
+                 │          ▼             ▼             ▼
+                 │     try_send to    try_send to   try_send to
+                 │     sink_topic_1   sink_topic_2  sink_topic_3
+                 │          │             │             │
+                 │          ▼             ▼             ▼
+                 │     WorkerPool     WorkerPool    WorkerPool
+                 │     (async)        (async)       (async)
+                 │          │             │             │
+                 │          +-------------+-------------+
+                 │                       │
+                 ▼                       ▼
+        FanInMultiplexer           JoinSet (parallel)
+        (round_robin_select)              │
+                 │                       ▼
+                 ▼                 PythonHandler
+        multiplexer_worker_loop    (per-sink async)
+                 │
+                 ▼
+        PythonHandler (merged stream)
+                 │
+                 ▼
+        OffsetCoordinator::ack (per topic)
 ```
 
 ---
 
-## Thread Pool Configuration
+## Risks and Mitigations
 
-| Parameter | Recommended Value | Rationale |
-|-----------|-------------------|-----------|
-| `num_threads` | `num_cpus::get() * 2` or configurable | Balances parallelism with memory overhead |
-| `thread_name` | `rayon-worker-{index}` | Easier debugging and profiling |
-| `stack_size` | Default (sufficient for Python handlers) | Only increase if deep Python call stacks |
-| `queue_depth` | Unlimited (work-stealing is inherent) | Rayon handles load internally |
-| `shutdown_timeout` | 5 seconds | Allow graceful drain before hard abort |
-
----
-
-## Build Order
-
-```
-1. src/worker_pool/rayon_pool.rs          (new — core Rayon pool)
-2. src/worker_pool/thread_pool_bridge.rs  (new — Tokio/Rayon bridge)
-3. src/python/handler.rs                 (modify — add is_blocking(), new mode variant)
-4. src/worker_pool/worker.rs             (modify — dispatch to Rayon for sync handlers)
-5. src/worker_pool/pool.rs              (modify — initialize RayonPool, pass to workers)
-6. src/pyconsumer.rs                     (modify — wire Rayon pool to workers)
-```
+| Risk | Severity | Mitigation |
+|------|----------|------------|
+| Fan-out sink timeout blocks primary ack | MEDIUM | Primary ack driven by first completion; slow sinks tracked separately |
+| Fan-in source skew causes offset gaps | LOW | Per-source offset tracking; no cross-source ordering assumed |
+| JoinSet memory pressure with many sinks | MEDIUM | `FanOutRegistry::register` enforces max_sinks limit; bounded JoinSet |
+| QueueManager lock contention with many fan-in sources | LOW | parking_lot::Mutex already fine-grained; multiplexer owns receivers after registration |
+| Cancellation propagation for fan-out JoinSet | MEDIUM | CancellationToken shared across all sink tasks; abort on shutdown |
 
 ---
 
-## Interaction with Existing Concurrency Controls
+## Confidence Assessment
 
-The Rayon pool **works alongside** existing controls, not replaces them:
+| Area | Confidence | Reason |
+|------|------------|--------|
+| Fan-Out architecture | HIGH | `send_to_handler_by_id` already exists in QueueManager; JoinSet pattern well-understood |
+| Fan-In architecture | MEDIUM | Round-robin multiplexer is standard pattern; integration with offset tracking needs verification |
+| Build ordering | HIGH | Fan-Out before Fan-In aligns with project requirements |
+| Python API surface | MEDIUM | HandlerId and registry patterns understood; exact PyO3 API needs phase planning |
 
-| Control | Mechanism | Interaction |
-|---------|-----------|-------------|
-| `Arc<Semaphore>` per handler key | Limits concurrent handler executions | Still acquired BEFORE dispatching to Rayon |
-| `WorkerPool` (JoinSet) | Tokio tasks for message polling | Worker task dispatches to Rayon for sync handlers |
-| `CancellationToken` | Graceful shutdown signaling | Rayon threads receive cancel via their task handles |
-| `ShutdownCoordinator` | Phased drain (Running -> Draining -> Finalizing) | Worker pool drain waits for Rayon tasks via `join_set.shutdown()` |
+---
+
+## Open Questions
+
+1. **Fan-Out sink failure observability:** How does the primary ack outcome reflect per-sink failures? Need to define metrics/event emission for sink-level failures.
+2. **Fan-In rebalance safety:** When Kafka rebalances across multiple fan-in sources, does the multiplexer need to re-subscribe? Likely yes -- need to propagate rebalance callbacks to `FanInMultiplexer`.
+3. **Maximum fan-out fan-in combination:** Can a message be both fan-out dispatched AND fan-in consumed? Unlikely needed, but worth explicit exclusion in scope.
 
 ---
 
 ## Sources
 
-- [Rayon documentation](https://docs.rs/rayon/latest/rayon/) — thread pool configuration
-- [Tokio spawn_blocking](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html) — blocking task bridging
-- KafPy existing worker pool architecture: `.claude/worktrees/agent-ad7fb0ce/src/worker_pool/pool.rs`, `worker.rs`
+- KafPy existing architecture: `src/worker_pool/pool.rs`, `src/worker_pool/worker.rs`, `src/dispatcher/queue_manager.rs`, `src/python/handler.rs`
+- Tokio JoinSet: https://docs.rs/tokio/latest/tokio/task/struct.JoinSet.html
+- tokio::select! for round-robin: https://docs.rs/tokio/latest/tokio/macro.select.html

@@ -1,211 +1,175 @@
-# Stack Research: Work-Stealing Thread Pool for Blocking Sync Handlers
+# Stack Additions: Fan-Out / Fan-In
 
-**Project:** KafPy
-**Context:** v1.1 milestone — add non-blocking execution for long-running sync Python handlers
+**Project:** KafPy v2.0 Fan-Out/Fan-In
 **Researched:** 2026-04-29
 **Confidence:** HIGH
 
-## Executive Summary
+---
 
-Long-running sync Python handlers block the Tokio poll cycle, causing heartbeat misses and potential rebalances. The solution is a dedicated Rayon work-stealing thread pool that runs blocking sync work alongside the Tokio async runtime. Tokio continues processing Kafka heartbeats and async events while Rayon handles Python handler execution. No changes to existing Tokio configuration, no migration of message routing to async — just a bounded Rayon pool that receives work from Tokio via oneshot channels and notifies completion back.
+## New Dependencies
+
+### No new crates required
+
+**Rationale:** The existing dependency stack already provides everything needed:
+
+| Crate | Version | Status | Rationale |
+|-------|---------|--------|-----------|
+| `tokio` | `1.40` | Existing | `JoinSet` is the standard tool for Fan-Out parallel spawning |
+| `rdkafka` | `0.38` | Existing | Multi-topic subscribe already supported via `subscribe(&[&str])` |
+| `futures-util` | `0.3` | Existing | `StreamExt::merge()` for Fan-In round-robin merging |
+
+The Fan-Out use case (one message -> multiple sinks in parallel) is solved entirely with `tokio::task::JoinSet`, which is already imported and used in `WorkerPool`. The Fan-In use case (multiple topics -> single handler round-robin) is solved by subscribing to multiple topics in one consumer and merging streams via `futures_util::StreamExt::merge`.
 
 ---
 
-## Recommended Stack Addition
+## Integration Points
 
-### Rayon
+### Fan-Out: `JoinSet`-Based Parallel Dispatch
 
-| Property | Value | Rationale |
-|----------|-------|-----------|
-| Version | `1.12.0` | Current crates.io latest. Stable API, well-maintained, widely adopted. |
-| Purpose | Work-stealing thread pool for blocking sync handlers | NUMA-aware work-stealing with zero-cost fork-join abstraction. Guarantees data-race freedom. |
-| Integration | Pool-per-consumer-instance, not global | Clean isolation; each consumer can have independent pool size. |
+**Existing infrastructure:** `WorkerPool` already owns a `JoinSet<()>` and spawns worker tasks via `join_set.spawn(...)`. The Fan-Out fan-out feature reuses this same primitive at a finer grain -- within a single message's handler chain, not just across workers.
 
-**Cargo.toml addition:**
+**New integration point:** A `FanOutDispatcher` struct that, given one `OwnedMessage` and a list of target handler IDs:
 
-```toml
-[dependencies]
-rayon = "1.12"
-```
-
-### Version Verification
-
-| Crate | Current in Cargo.toml | Recommended | Status |
-|-------|----------------------|--------------|--------|
-| `rayon` | Not present | `1.12.0` | New addition |
-| `tokio` | `1.40` | `1.40` or `1.52.1` | Keep existing |
-| `pyo3-async-runtimes` | `0.27.0` | `0.28.0` | Upgrade path noted, not blocking |
-
----
-
-## Integration Architecture
-
-### Data Flow
-
-```
-Tokio (async event loop)
-  ├── poll loop → message → bounded channel (per handler, already exists)
-  │                      └── dispatch work to Rayon via pool.spawn()
-  │                      └── Python sync handler runs on Rayon thread
-  │                      └── oneshot sender → completion flag
-  │                      └── poll oneshot receiver (non-blocking try_recv)
-  │                      └── if ready: advance offset, commit if batch-ready
-  └── Kafka heartbeat / offset commit / channel ops (continues uninterrupted)
-```
-
-**Key property:** Tokio never blocks on sync Python work. The poll cycle stays responsive because blocking work lives exclusively on Rayon threads.
-
-### Why Rayon Over Alternatives
-
-| Option | Verdict | Reason |
-|--------|---------|--------|
-| `tokio::task::spawn_blocking` | Not recommended | Shared blocking pool; cannot cancel individual long-running tasks; designed for brief CPU work (< 10ms) |
-| `std::thread::spawn` manual pool | Not recommended | No work-stealing, no graceful shutdown, significant implementation/maintenance burden |
-| `async-std` runtime | Out of scope | Migration would rewrite entire async layer; Tokio already integrated and working |
-| `threadpool` crate | Not recommended | Unmaintained, no work-stealing |
-
-Rayon is the correct choice because:
-1. Work-stealing handles uneven workloads without manual load balancing
-2. `spawn()` returns immediately (fire-and-forget with work-tracking for shutdown)
-3. `shutdown_timeout()` enables graceful drain of in-flight handlers
-4. No shared state with Tokio — clean separation of concerns
-
----
-
-## Integration Points with Existing Tokio Stack
-
-### Components Used as-Is
-
-| Component | Role | Integration |
-|-----------|------|-------------|
-| `tokio::sync::bounded` channel | Per-handler message queue | Already exists; upstream dispatches to this queue |
-| `tokio::sync::oneshot` | Completion notification | Send from Rayon thread, receive on Tokio task |
-| `Arc<Semaphore>` per handler | Concurrency limiting | Already exists; continues to govern both sync and async |
-| `ConsumerConfigBuilder` | Config API | Add `rayon_pool_size(u32)` to builder |
-| Prometheus metrics + W3C tracing | Observability | Unchanged |
-
-### No Changes To
-
-- Tokio runtime configuration (`tokio = { version = "1.40", features = ["full"] }`)
-- Async handler signatures or dispatch paths
-- Bounded channel backpressure behavior
-- Message routing architecture
-- Offset tracking or commit logic
-
-### New Integration Points
-
-1. **Pool initialization**: `rayon::ThreadPoolBuilder::new().num_threads(n).build()?` at consumer startup
-2. **Work dispatch**: `pool.spawn(move || { /* Python handler via PyO3 */ })`
-3. **Completion polling**: `oneshot_receiver.try_recv()` on each poll cycle iteration
-4. **Graceful shutdown**: `pool.shutdown_timeout(Duration::from_secs(30))` joined with consumer drain sequence
-
----
-
-## Specific Configuration Recommendations
-
-### Thread Pool Size
+1. For each target handler, acquires a semaphore permit (concurrency limit)
+2. Spawns a task onto the existing Tokio runtime via `tokio::spawn`
+3. Tracks all spawned tasks in a local `JoinSet`
+4. Waits for all to complete (or until cancelled)
+5. Aggregates results -- primary handler ACKs immediately; secondary sink failures are logged but do not block ACK
 
 ```rust
-let rayon_threads = std::cmp::max(2, num_cpus::get() - 2);
-```
+// Pseudocode for fan-out dispatch
+pub async fn fan_out_dispatch(
+    msg: OwnedMessage,
+    handler_ids: &[String],
+    queue_manager: Arc<QueueManager>,
+) -> Result<DispatchOutcome, DispatchError> {
+    let mut join_set = JoinSet::new();
 
-**Rationale:** Tokio needs at least 1-2 threads for its own async operations (Kafka client, channel sends). Over-subscribing the CPU causes context-switching overhead. Rayon's work-stealing handles load imbalance, so exact thread count is less critical than having a sensible default that does not starve Tokio.
+    for handler_id in handler_ids {
+        let handler_msg = msg.clone(); // each sink gets its own copy
+        join_set.spawn(async move {
+            // Route to handler via queue_manager.send_to_handler_by_id
+            queue_manager.send_to_handler_by_id(handler_id, handler_msg).await
+        });
+    }
 
-**User-configurable:** Add `ConsumerConfigBuilder::rayon_pool_size(u32)` so users can tune for their workload. Default can be `num_cpus::get()` if they want full CPU allocation.
+    // Collect results as they complete
+    let mut errors = Vec::new();
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(Ok(())) => {} // sink succeeded
+            Ok(Err(e)) => errors.push(e), // sink failed, continue
+            Err(e) => errors.push(anyhow::anyhow!("task panicked: {}", e)),
+        }
+    }
 
-### Handler Result Routing
-
-Sync handler results must route back through the same offset-commit path as async handlers:
-
-```rust
-// On Rayon thread: compute result, send via oneshot
-oneshot_sender.send(handler_result)?;
-
-// On Tokio task: non-blocking check
-if let Ok(result) = oneshot_receiver.try_recv() {
-    // advance offset, DLQ routing, retry logic — identical to async path
+    // Primary outcome from first handler; secondary failures logged
+    Ok(DispatchOutcome::PartialSuccess { errors })
 }
 ```
 
-This ensures retry/DLQ/backoff logic works identically for both handler types.
+**Connection to existing code:**
+- `QueueManager::send_to_handler_by_id` already exists and is used by `ConsumerDispatcher::route_with_chain`
+- `OwnedMessage` is `Clone` (via `#[derive(Clone)]`), enabling zero-copy sharing across spawned tasks
+- Semaphore-based concurrency limiting already exists per handler via `Arc<Semaphore>`
 
-### Graceful Shutdown Sequence
+**No new module required:** Fan-Out dispatch logic can live as a method on `QueueManager` or as a free function in `dispatcher/fanout.rs`.
+
+---
+
+### Fan-In: Multi-Topic Subscribe + Stream Merge
+
+**Existing infrastructure:** `ConsumerRunner` already calls `consumer.subscribe(&config.topics.iter().map(|s| s.as_str()).collect::<Vec<_>>())`. The rdkafka `subscribe` call accepts a `Vec<&str>`, meaning one consumer can subscribe to many topics simultaneously. The `ConsumerStream` wraps the receiver in a `ReceiverStream` and implements `Stream`.
+
+**New integration point:** A `FanInManager` that:
+
+1. Takes a list of topic subscriptions
+2. Creates one `ConsumerRunner` per topic (or uses partition-aware routing to route messages to a unified queue)
+3. Merges multiple `ConsumerStream`s into one via `futures_util::StreamExt::merge`
+4. Emits messages round-robin from all topics
 
 ```rust
-// 1. Consumer stops polling new messages
-// 2. Wait for in-flight messages to complete or timeout
-pool.shutdown_timeout(std::time::Duration::from_secs(30));
-// 3. Drain remaining Tokio tasks (offset commits, metrics flush)
+// Pseudocode for fan-in
+use futures_util::StreamExt;
+
+pub async fn fan_in_loop(
+    topics: Vec<String>,
+    config: &ConsumerConfig,
+    handler: mpsc::Sender<OwnedMessage>,
+) -> Result<(), ConsumerError> {
+    let mut streams: Vec<ConsumerStream> = Vec::new();
+
+    for topic in &topics {
+        let runner = ConsumerRunner::new(config.clone(), None, /* ... */)?;
+        streams.push(runner.stream());
+    }
+
+    // Merge N streams into one round-robin stream
+    let merged = futures_util::stream::select_all(streams);
+    let mut merged = Box::pin(merged);
+
+    while let Some(msg) = merged.next().await {
+        handler.send(msg).await?;
+    }
+
+    Ok(())
+}
 ```
 
-Do not simply drop the pool — in-flight sync handlers may be mid-processing (database transaction, HTTP call). The timeout-based drain sets user expectations.
+**Key decision:** Fan-In via multi-topic consumer (all topics in one consumer group) vs. Fan-In via multiple consumers (each topic its own consumer group). Current architecture uses a single consumer group. If users need independent consumption offsets per topic, multiple `ConsumerRunner` instances are needed. The simpler case (shared consumer group, merge at dispatch) is achievable with the existing single-consumer approach by configuring the router to fan in at the routing layer.
 
-### Memory Considerations
-
-Each Rayon thread holds stack memory. Default stack size is usually 2MB on Linux. A 4-thread pool adds ~8MB resident memory. This is acceptable for a consumer framework. If memory is tight, `ThreadPoolBuilder::stack_size()` can reduce per-thread allocation at the cost of less headroom for deep Python call stacks.
-
----
-
-## Alternatives Considered
-
-### `tokio::task::spawn_blocking`
-
-**Verdict:** Not recommended for long-running Python handlers.
-
-`spawn_blocking` is designed for short-lived CPU-bound work. Python sync handlers may run for seconds (database calls, HTTP requests, file I/O). Long-running blocking tasks on Tokio's blocking thread pool:
-- Consume slots from the shared blocking thread pool (exhaustion causes deadlocks)
-- Cannot be individually cancelled (no per-task cancellation token)
-- No work-stealing — tasks queue serially on the blocking pool
-
-**Trade-off:** Simpler to integrate (no new dependency), but breaks under long-running handlers and provides no isolation, tunability, or graceful shutdown.
+**Connection to existing code:**
+- `ConsumerRunner::new` already supports multi-topic subscribe
+- `ConsumerStream` implements `Stream` and can be merged with `StreamExt::merge`
+- `RoutingChain` + `RoutingDecision` already provide handler-based routing, which can serve as the Fan-In entry point (messages from multiple topics route to the same handler ID based on the chain)
 
 ---
 
-### Manual `std::thread::spawn` Pool
+### Python API Integration
 
-**Verdict:** Not recommended.
+**Fan-Out Python API:** The `@handler` decorator accepts `sinks=[...]` parameter (or similar). When `sinks` is set, the Rust-side dispatcher clones the message and sends to each sink queue in parallel via `JoinSet`.
 
-Rolling your own thread pool requires implementing:
-- Lock-free work queue to avoid contention
-- Thread lifecycle management (start, stop, join)
-- Graceful shutdown with in-flight task completion
-- Task cancellation
+**Fan-In Python API:** The `@handler` decorator accepts `sources=[...]` or the router configuration does topic -> handler ID mapping for multiple topics to the same handler.
 
-Rayon provides all of this with battle-tested correctness. The implementation burden and ongoing maintenance risk are not worth zero dependencies.
-
-**Trade-off:** Zero new dependencies at the cost of significant implementation risk.
-
----
-
-### `crossbeam-channel` for Message Passing
-
-**Verdict:** Not needed.
-
-Existing `tokio::sync::bounded` channels already handle inter-thread communication via their sender side. The message routing from Kafka to handler channels is already working. We only need Rayon for parallel execution, not for replacing the message-passing infrastructure.
-
-**Trade-off:** Adding `crossbeam-channel` would increase dependency surface without solving the actual problem (blocking sync handlers).
+**Integration with existing decorators:**
+- `PythonHandler` already stores handler metadata including `mode`
+- The `HandlerMode` enum differentiates `SingleAsync`, `SingleSync`, `BatchAsync`, `BatchSync`, `StreamingAsync`
+- A new mode `FanOut` / `FanIn` or a flag on existing modes extends the dispatch decision tree
 
 ---
 
 ## What NOT to Add
 
-1. **Do not replace Tokio runtime with Rayon** — Tokio owns async I/O, Kafka polling, and channel operations. Rayon only handles sync Python handler execution.
-
-2. **Do not use `spawn_blocking` for all sync work** — Designed for brief CPU work, not long-running Python handlers. Use the dedicated Rayon pool instead.
-
-3. **Do not make the Rayon pool global** — Pool-per-consumer-instance is cleaner. Global pool prevents independent consumer instances from having different pool sizes.
-
-4. **Do not add `crossbeam-channel` or other queue implementations** — Existing `tokio::sync::bounded` channels handle all message passing. Rayon only provides the execution venue.
-
-5. **Do not add `threadpool` crate (old/unmaintained)** — `threadpool` lacks work-stealing and is unmaintained. Rayon is the standard for work-stealing parallelism in Rust.
-
-6. **Do not change PyO3 binding signatures** — The existing `#[pyfunction]` pattern works for sync handlers on Rayon. No changes needed to the Python-callable interface.
+| Rejected Choice | Why Rejected |
+|-----------------|--------------|
+| `async-std` runtime for Fan-In | Migration would rewrite the entire async layer. Tokio + `futures_util::StreamExt::merge` is sufficient. |
+| `tokio::sync::broadcast` for Fan-Out result aggregation | Unnecessary -- `JoinSet::join_next()` handles all completion tracking. |
+| `flume` or `crossbeam-channel` for cross-task communication | Existing `tokio::sync::mpsc` channels handle all inter-task messaging. |
+| Separate thread pool per fan-out sink | Over-engineering. Tokio tasks handle fan-out parallelism; Rayon pool is for sync Python handlers only. |
+| Distributed transaction coordinator (2PC) for fan-out | Explicitly out of scope per PROJECT.md. At-least-once semantics only. |
+| New `SubscriptionManager` crate | Can be a module within the existing `consumer` module. No external crate needed. |
+| `tracing` instrumentation beyond span propagation | Existing observability infrastructure handles metrics and tracing. Fan-Out/Fan-In metrics extend `WorkerPoolState`. |
+| `serde` serialization for fan-out message cloning | `OwnedMessage` is already `Clone` and owns its data. No serialization needed for in-process cloning. |
 
 ---
 
-## Sources
+## Summary
 
-- [Rayon crate — crates.io](https://crates.io/crates/rayon) — version 1.12.0
-- [Rayon documentation — Context7](https://context7.com/rayon-rs/rayon)
-- [Tokio spawn_blocking limitations — docs.rs](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html)
-- Current `Cargo.toml` — confirmed existing dependency versions
+Fan-Out and Fan-In require **zero new Rust crates**. The dependency additions are:
+
+```toml
+# No changes to Cargo.toml for Fan-Out/Fan-In
+# Existing crates provide:
+# - tokio::task::JoinSet      -> Fan-Out parallel dispatch
+# - rdkafka subscribe(&[&str]) -> Multi-topic Fan-In consumer
+# - futures_util::StreamExt   -> Stream merging for Fan-In
+```
+
+The work is entirely integration code:
+1. Fan-Out: Clone message per sink, spawn via `JoinSet`, aggregate results
+2. Fan-In: Multi-topic subscribe + `StreamExt::merge` into a single handler queue
+
+Sources:
+- Existing `WorkerPool::join_set` usage confirms `JoinSet` is the correct tool
+- `ConsumerRunner::subscribe` call in `runner.rs:62` confirms multi-topic support
+- `futures_util` version `0.3` is already in `Cargo.toml`

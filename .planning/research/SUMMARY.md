@@ -1,143 +1,184 @@
 # Project Research Summary
 
-**Project:** KafPy v1.1 — Async & Concurrency Hardening
-**Domain:** Rust-core, Python-logic Kafka consumer framework
+**Project:** KafPy v2.0 Fan-Out / Fan-In
+**Domain:** Kafka consumer framework with parallel multi-sink dispatch (fan-out) and multi-source merge (fan-in)
 **Researched:** 2026-04-29
 **Confidence:** MEDIUM-HIGH
 
 ## Executive Summary
 
-KafPy v1.0 shipped with Tokio async runtime and `spawn_blocking` for Python handlers, but long-running sync handlers block the poll cycle, risking heartbeat misses and rebalances. The v1.1 milestone adds a Rayon work-stealing thread pool (separate from Tokio's blocking pool) to execute blocking sync handlers without stalling the Kafka poll cycle, plus richer async handler patterns (streaming, middleware, timeout, fan-in/out).
+KafPy v2.0 adds two patterns to the existing WorkerPool-based consumer: Fan-Out (one message triggers parallel async dispatch to multiple sinks) and Fan-In (messages from multiple topics merged into a single handler round-robin). Both patterns are solvable with existing infrastructure: `tokio::task::JoinSet` for fan-out parallelism, `futures_util::StreamExt::merge` for fan-in round-robin, and the existing `QueueManager` for routing. No new Rust crates are required.
 
-**Stack:** Add `rayon = "1.12"` for the thread pool. Tokio stays as-is. No changes to PyO3 bindings, bounded channels, or offset tracking. Integration via oneshot channels from Tokio to Rayon — Tokio never blocks on sync work.
-
-**Architecture:** New `RayonPool` and `ThreadPoolBridge` components. Modified `worker_loop` routes sync handlers to Rayon. `HandlerMode` gets new variant. Python calls still go through `spawn_blocking` for GIL safety.
-
-**Key risk:** Tokio/Rayon deadlock if Rayon threads call Tokio primitives. Prevention: strict isolation — no Tokio APIs called from Rayon closures.
-
----
+The recommended approach is Fan-Out first (Phase 1-3), then Fan-In (Phase 4-6). Fan-Out is architecturally independent and uses only existing primitives (JoinSet, Semaphore, invoke_mode_with_timeout). Fan-In depends on the streaming handler async iterator infrastructure from v1.1. The primary risk is unbounded fan-out degree exhausting memory (FOUT-01) -- this must be gated at construction time. The GIL serialization issue (FOUT-05) means fan-out to Python handlers is effectively serialized; this must be documented explicitly rather than treated as a bug.
 
 ## Key Findings
 
 ### Recommended Stack
 
-**Add `rayon = "1.12"`** for work-stealing thread pool. Tokio remains the async runtime (no change). Python GIL calls stay on Tokio's blocking pool via `spawn_blocking`. Rayon handles CPU-intensive Rust preprocessing only — no Python calls on Rayon threads directly.
+**Zero new crates needed.** The existing dependency stack provides everything for both patterns.
 
-Configuration: `ConsumerConfigBuilder::rayon_pool_size(u32)` for user tuning. Default: `num_cpus::get()` with Tokio needing at least 1-2 threads.
+**Core technologies:**
+- `tokio::task::JoinSet` -- fan-out parallel dispatch. Already imported and used in WorkerPool. Each spawned task gets its own message clone; results collected via `join_next()`.
+- `rdkafka::client::subscribe(&[&str])` -- multi-topic fan-in subscription. Already supported; one consumer can subscribe to N topics simultaneously.
+- `futures_util::StreamExt::merge` / `select_all` -- fan-in round-robin stream merging. Already in `Cargo.toml` as `futures-util 0.3`.
+
+Integration is entirely in-process:
+- Fan-Out: `QueueManager::send_to_all` clones the message per sink and spawns via JoinSet
+- Fan-In: `FanInMultiplexer` owns N receivers and round-robins via `tokio::select!` biased
 
 ### Expected Features
 
 **Must have (table stakes):**
-- Async handler timeout — wraps existing `invoke_mode_with_timeout` with Python API, DLQ metadata, metrics
-- Work-stealing thread pool for sync handlers — prevents poll blocking (the core v1.1 goal)
 
-**Should have (differentiators):**
-- Handler middleware chain (logging, metrics, retries) — leverages existing `TracingSink`/`MetricsSink` infra
-- Streaming handler patterns (`@stream_handler`) — persistent async iterable, new lifecycle management
+Fan-Out:
+- **Parallel async dispatch via JoinSet** -- one message triggers N handler futures in parallel
+- **Configurable fan-out degree** -- bounded max (default 4, hard cap 64), enforced at registration and dispatch
+- **Fan-out result aggregation** -- `ExecutionResult` with per-sink success/failure map
+- **Timeout propagation per task** -- each fan-out branch gets its own timeout scope via `invoke_mode_with_timeout`
+- **Partial success handling** -- primary message ACKed immediately on primary success; sink failures logged/metrics-tracked but non-blocking
+
+Fan-In:
+- **Multi-topic subscription** -- rdkafka `subscribe(&[&str])`; one consumer, N topics
+- **Round-robin merge** -- `tokio::select!` biased interleaving by arrival order
+- **Source identification in context** -- `source_topic: String` field on `ExecutionContext`
+- **Independent per-source backpressure** -- `PausePartition`/`ResumePartition` per topic+partition (already exists)
+
+**Should have (competitive):**
+
+Fan-Out:
+- **Per-sink error classification** -- `ExecutionResult` carries per-sink error metadata map for monitoring
+- **Per-sink metrics** -- `branch_name` label on fan-out metrics; latency histograms and error counters per sink
+- **Fire-and-forget sink dispatch** -- non-critical sinks tracked in background JoinSet without blocking primary ack
+
+Fan-In:
+- **Per-source consumer lag metrics** -- topic label on existing lag metrics for per-source monitoring
+- **Source-aware retry policies** -- per-source retry config map (non-retryable vs retryable source)
 
 **Defer (v2+):**
-- Fan-out (parallel multi-handler) — depends on timeout, complex partial failure semantics
-- Fan-in (multi-source merge) — depends on streaming handler async iterator infra
+- **Cancellable fan-out** -- `AbortHandle` per fan-out task; structured cancellation; cancellation safety requires idempotency guarantees
+- **Sequential ordered fan-out** -- policy for sink B depending on sink A result; rare use case
+- **Priority-based fan-in ordering** -- weighted round-robin or priority queue; high complexity
+- **Cross-source aggregation windows** -- buffering + window trigger logic; separate feature
+- **Distributed transactions across fan-out sinks** -- explicitly incompatible with at-least-once delivery; use idempotent handlers instead
 
 ### Architecture Approach
 
-Tokio dispatches work to Rayon via `pool.spawn()`. Python handler runs on Rayon thread. Completion notified via `oneshot::try_recv()`. Tokio continues polling Kafka and processing async handlers uninterrupted.
+Fan-Out extends dispatch routing at the message level: `RoutingChain` decides a message belongs to a fan-out group, `FanOutRegistry` maps group -> [sink topics], and `QueueManager::send_to_all` dispatches clones to all sinks in parallel via JoinSet. Fan-In introduces a `FanInMultiplexer` worker that owns N topic receivers and round-robins them into a single message stream consumed by one handler.
 
-New components: `RayonPool`, `ThreadPoolBridge`. Modified: `worker_loop`, `PythonHandler`/`HandlerMode`, `WorkerPool`, `pyconsumer.rs`.
+**Major components:**
 
-Build order: `rayon_pool.rs` → `thread_pool_bridge.rs` → handler.rs modifications → worker.rs modifications → pool.rs → pyconsumer.rs.
+1. **`FanOutRegistry`** (new: `src/fanout/mod.rs`) -- 1-to-many topic mapping; enforces max fan-out degree at registration
+2. **`FanOutSet`** (new: `src/fanout/set.rs`) -- JoinSet manager for parallel handler dispatches; aggregates per-sink outcomes
+3. **`FanOutResult`** (new: `src/fanout/result.rs`) -- per-sink outcome aggregation with error metadata
+4. **`FanInMultiplexer`** (new: `src/fanin/multiplexer.rs`) -- owns N receivers; `tokio::select!` biased round-robin merge
+5. **`FanInSource`** (new: `src/fanin/source.rs`) -- topic receiver wrapper with source metadata
+6. **`QueueManager::send_to_all`** (modify) -- parallel try_send to all registered sinks
+7. **`QueueManager::register_fanin`** (modify) -- registers multiple topic receivers under one handler key
+
+Both patterns reuse: `WorkerPool`, `OffsetCoordinator` (independent per-sink/per-source ack), `PythonHandler` (per-sink invoke or merged invoke), `HandlerMetadata`.
 
 ### Critical Pitfalls
 
-1. **Tokio/Rayon deadlock** — Rayon threads calling Tokio primitives causes deadlock. Prevention: never call Tokio APIs from Rayon closures. Use oneshot channels for communication.
-2. **PyO3 GIL on Rayon threads** — Python called from Rayon without proper thread state crashes. Prevention: all Python calls go through `spawn_blocking`, never directly from `rayon::spawn`.
-3. **Memory pressure from oversized pool** — Rayon pool sized to CPU count multiplies concurrent Python invocations under load. Prevention: explicit pool size configuration, semaphore on concurrency.
-4. **Nested Tokio runtime** — Creating Tokio runtime inside Rayon causes panic. Prevention: use `Handle::current()` instead of creating new runtime.
-5. **Sync handler poll cycle blocking** — The core problem: long-running sync handlers block Tokio poll. Prevention: Rayon pool for sync handlers, Tokio stays free.
+1. **FOUT-01: Unbounded fan-out causes resource exhaustion** -- A misconfigured rule produces 10,000 sink targets, exhausting memory. Prevention: `ConsumerConfigBuilder::max_fan_out(u32)` validated at construction (1-64). Enforce cap in WorkerPool dispatch before spawning. Reject handler registration if exceeded.
 
----
+2. **FOUT-03: Primary message ACKed before fan-out branches complete** -- WorkerPool acks offset immediately after primary handler returns, but JoinSet branches are still running. At-least-once guarantee violated. Prevention: Add `fan_out_tracker: Arc<FanOutTracker>` to WorkerPool. Decrement pending branch counter on each completion. Only call `queue_manager.ack()` when counter reaches zero.
+
+3. **FOUT-05: GIL serialization creates false parallelism** -- Fan-out spawns N Python handler tasks via JoinSet expecting parallelism, but PyO3 GIL means only one executes Python code at a time. Throughput does not scale with fan-out degree beyond ~2-3x. Prevention: Document this explicitly in API docs. Recommend I/O-bound handlers for fan-out; CPU-bound handlers should use multiprocessing.
+
+4. **FOUT-08: JoinSet borrow checker friction with Python GIL** -- `JoinSet` requires futures to be `Send`. PyO3 GIL tokens (`Python<'py>`) are not `Send`. Storing a GIL token in the future causes "Future is not Send" compilation errors. Prevention: Acquire GIL inside the spawned task body, not before. Use `unsafe { Python::assume_gil() }` only in non-Send contexts.
+
+5. **FIN-02: Round-robin fan-in loses message ordering within key scope** -- Round-robin interleaves messages from independent sources without respecting per-key ordering. Kafka guarantees within-partition ordering only. Prevention: Document this explicitly. If ordering required, use a sharded fan-in approach: hash by key to key-specific queues.
 
 ## Implications for Roadmap
 
-Based on research, suggested phase structure:
+Based on research, suggested phase structure: **Fan-Out first (3 phases), then Fan-In (3 phases)**.
 
-### Phase 7: Work-Stealing Thread Pool
-**Rationale:** Core v1.1 goal — prevent sync handlers from blocking poll. All other features depend on having non-blocking execution.
-**Delivers:** `RayonPool`, `ThreadPoolBridge`, modified `worker_loop`, `ConsumerConfigBuilder::rayon_pool_size()`
-**Addresses:** Poll blocking, async/sync execution, memory pressure from unbounded blocking pool
-**Avoids:** Tokio/Rayon deadlock, GIL thread state errors
+### Phase 1: Fan-Out Core (Registry + JoinSet Dispatch)
+**Rationale:** Fan-out is the simpler pattern with well-understood primitives (JoinSet, existing QueueManager). It establishes the fan-out infrastructure that later phases (DLQ, Python handlers) depend on. FOUT-01 (bounded fan-out) must be enforced here before any dispatch.
+**Delivers:** `FanOutRegistry`, `FanOutSet`, `QueueManager::send_to_all`, bounded fan-out degree enforcement, `FanOutResult` aggregation
+**Implements:** Fan-Out parallel dispatch mechanism
+**Avoids:** FOUT-01 (unbounded resource exhaustion), FOUT-08 (JoinSet GIL Send issue -- GIL acquired inside spawned task)
+**Research flags:** None -- JoinSet and QueueManager patterns are well-documented
 
-### Phase 8: Async Handler Timeout
-**Rationale:** Table stakes — existing `invoke_mode_with_timeout` already implemented. Python API + DLQ metadata + metrics unblock production safety.
-**Delivers:** `@handler(topic, timeout=X)` Python API, timeout metadata in DLQ envelope, timeout metrics
-**Uses:** Phase 7 thread pool infrastructure
-**Implements:** Handler timeout per FEATURES.md
+### Phase 2: Fan-Out Offset Commit + Partial Success
+**Rationale:** FOUT-03 (primary ack before branches complete) is the most critical correctness issue for at-least-once semantics. It must be implemented alongside fan-out dispatch, not added later.
+**Delivers:** `FanOutTracker` integration with WorkerPool; offset commit gated on all branch completions; partial success policy (primary ACKs immediately, sink failures non-blocking)
+**Implements:** Offset commit sequencing for fan-out
+**Avoids:** FOUT-03 (premature ack), FOUT-04 (duplicate processing on restart via `fan_out_id` deduplication)
+**Research flags:** Existing offset commit mechanism in WorkerPool needs verification
 
-### Phase 9: Handler Middleware Chain
-**Rationale:** High-value differentiator — leverages existing `TracingSink`/`MetricsSink`. Common request, significant boilerplate reduction.
-**Delivers:** `HandlerMiddleware` trait, built-in logging/metrics middleware, Python API `@handler(middleware=[...])`
-**Uses:** Phase 7's pool, Phase 8's timeout pattern
-**Implements:** Middleware chain per FEATURES.md
+### Phase 3: Fan-Out Python API + Multi-Topic Subscribe
+**Rationale:** Python API is needed for user-facing ergonomics. Multi-topic subscribe is the fan-in side's consumer primitive, but it is also needed for fan-out source configuration. It uses existing rdkafka subscribe which already supports multiple topics.
+**Delivers:** `ConsumerConfigBuilder::max_fan_out`, `PyConsumer::register_fanout`, multi-topic subscribe via `topics_patterns`, Python `@handler(sinks=[...])` decorator
+**Implements:** Python-facing API surface
+**Avoids:** FOUT-05 (document GIL serialization limits in API docs), FOUT-07 (metrics tagging with fan_out_id and branch_name)
+**Research flags:** Existing Python handler decorator API shape needs verification for new parameter naming
 
-### Phase 10: Streaming Handler Patterns
-**Rationale:** New lifecycle — requires async iterator infrastructure. High complexity but enables WebSocket/SSE/live dashboard use cases.
-**Delivers:** `HandlerMode::StreamingAsync`, `AsyncMessageStream`, `@stream_handler(topic)` Python API, lifecycle management (start/run/stop)
-**Uses:** PythonAsyncFuture (already exists), async iterator patterns
-**Implements:** Streaming handler per FEATURES.md
+### Phase 4: Fan-In Multiplexer + Round-Robin Select
+**Rationale:** Fan-In depends on streaming handler async iterator infrastructure (v1.1 AsyncMessageStream). Fan-In multiplexer is the core fan-in primitive -- it owns multiple receivers and round-robins them. This builds on Phase 3's multi-topic subscribe.
+**Delivers:** `FanInMultiplexer`, `FanInSource`, `round_robin_select` helper, `fanin_worker_loop`
+**Implements:** Fan-In stream merge mechanism
+**Avoids:** FIN-01 (partition conflict -- one consumer per topic), FIN-03 (source exhaustion blocking -- proper stream termination)
+**Research flags:** rdkafka multi-topic partition assignment behavior needs verification
+
+### Phase 5: Fan-In QueueManager Integration + Backpressure
+**Rationale:** `register_fanin` on QueueManager wires the multiplexer into the existing worker pool. Per-source backpressure (PausePartition per topic+partition) must be correctly routed -- slow source must not block fast source.
+**Delivers:** `QueueManager::register_fanin`, per-source backpressure routing, independent offset tracking per topic via OffsetCoordinator
+**Implements:** Fan-In integrated into existing WorkerPool
+**Avoids:** FIN-01 (multi-topic partition conflict -- per-source offset tracking), FIN-02 (ordering loss -- documented explicitly)
+**Research flags:** Existing PausePartition signaling mechanism needs verification for multi-topic routing
+
+### Phase 6: Fan-In Python API + Observability
+**Rationale:** Final user-facing API and observability. Metrics per source (topic label) and source health monitoring complete the fan-in feature. Fan-out observability (per-sink metrics, trace context branching) also completes here.
+**Delivers:** `PyConsumer::register_fanin`, per-source consumer lag metrics, source identification in ExecutionContext, fan-out trace context branching (FOUT-02 if tracing exists), fan-out DLQ schema extension (FOUT-06)
+**Implements:** Full v2.0 API and observability surface
+**Research flags:** Existing DLQ schema structure (FOUT-06), existing trace infrastructure (FOUT-02)
 
 ### Phase Ordering Rationale
 
-- Phase 7 first: Thread pool is the foundation for non-blocking execution — without it, sync handlers block poll.
-- Phase 8 next: Timeout is table stakes with existing implementation — quick win, production safety.
-- Phase 9 (middleware) leverages existing observability infra — medium complexity, high value.
-- Phase 10 (streaming) is new async iterator lifecycle — complex, depends on nothing but enables fan-in.
-- Fan-out and fan-in deferred to v1.2 (depend on timeout + streaming infra respectively).
-
-### Research Flags
-
-Phases likely needing deeper research during planning:
-- **Phase 10 (Streaming Handler):** Async iterator lifecycle management is complex — may need API research during planning
-- **Phase 9 (Middleware):** User-defined middleware safety (no blocking, no GIL issues) needs verification
-
-Phases with standard patterns (skip research-phase):
-- **Phase 7 (Thread Pool):** Rayon + Tokio integration is well-documented — standard pattern, implementation straightforward
-- **Phase 8 (Timeout):** Existing code foundation — mostly wiring work
-
----
+1. **Fan-Out before Fan-In:** Fan-out is independent of streaming handler infrastructure. Fan-in depends on AsyncMessageStream from v1.1 streaming handler.
+2. **Core dispatch before API:** Phase 1 establishes the mechanism before Phase 3 exposes it to Python. This allows the Rust-level correctness issues (FOUT-01, FOUT-03) to be solved without API churn.
+3. **Offset commit sequencing in Phase 2:** FOUT-03 is a correctness issue (at-least-once violation) that must be fixed alongside dispatch, not retrofitted.
+4. **Multiplexer before wiring:** Phase 4 builds the multiplexer as a standalone component with unit tests. Phase 5 integrates it into QueueManager. This separation enables testing without full system integration.
+5. **Observability last:** FOUT-02 (tracing) and FOUT-07 (metrics) depend on the underlying mechanisms existing first. Phase 6 adds the observability layer on top of complete fan-out and fan-in mechanisms.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | Rayon 1.12.0 verified via crates.io; integration approach confirmed against existing codebase |
-| Features | MEDIUM | Based on codebase inspection + standard async patterns; streaming/fan-in depend on new infra |
-| Architecture | MEDIUM | Based on existing worker_pool code review; new components are implementation-dependent |
-| Pitfalls | MEDIUM-HIGH | Tokio/Rayon deadlock and GIL issues are documented; exact timing/handling needs validation |
+| Stack | HIGH | Zero new crates; JoinSet, StreamExt::merge, rdkafka multi-topic subscribe all verified |
+| Features | MEDIUM-HIGH | Fan-out table stakes well-understood; some differentiators (cancellation, ordered fan-out) deferred |
+| Architecture | MEDIUM-HIGH | Integration patterns confirmed from code; offset commit sequencing needs verification |
+| Pitfalls | MEDIUM | Many pitfalls identified with prevention strategies; some gaps (DLQ schema, trace infra) need code verification |
 
 **Overall confidence:** MEDIUM-HIGH
 
 ### Gaps to Address
 
-- **Rayon pool granularity:** Global pool vs per-handler pool safety when handlers have different CPU/Rust ratios — needs benchmarking
-- **Streaming handler lifecycle:** Start/subscribe/stop/drain state machine — complex, needs careful design during Phase 10
-- **Handler timeout interaction with Rayon:** When timeout fires on a Rayon task, does it properly cancel/abort? Needs implementation verification
-
----
+1. **Existing DLQ schema structure** -- FOUT-04 and FOUT-06 depend on understanding the current DLQ metadata layout. Needs reading of `src/dlq/` files during Phase 6 planning.
+2. **Existing metrics crate and labeling conventions** -- FOUT-07 requires knowing current Prometheus metric naming. Needs verification of `MetricsSink` implementation.
+3. **Existing trace infrastructure** -- FOUT-02 requires knowing which tracing crate (tracing, opentelemetry) and current header injection pattern. Needs verification if tracing already exists.
+4. **JoinSet Send requirement for Python futures** -- FOUT-08 requires verifying whether current Python handler future type is actually `Send` and what the migration path is if not.
+5. **rdkafka multi-topic consumer behavior** -- FIN-01 requires verifying whether a single consumer can subscribe to multiple topics and maintain correct partition offset tracking across all of them.
+6. **Existing ack mechanism in WorkerPool** -- FOUT-03 requires verifying how the current offset commit fence works to know where to inject the fan-out tracker.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- Rayon crates.io — version 1.12.0 confirmed
-- Tokio spawn_blocking docs — blocking semantics documented
-- KafPy existing worker_pool architecture — pool.rs, worker.rs inspected
+- Tokio `JoinSet` documentation -- Send requirements for stored futures
+- PyO3 GIL guide -- GIL acquisition patterns in async contexts
+- W3C traceparent specification -- child span creation per branch
+- futures-util `StreamExt` -- merge and select_all combinators for fan-in
 
 ### Secondary (MEDIUM confidence)
-- PyO3 GitHub issue #58 — GIL + async runtime interaction
-- Tokio/Rayon community patterns — deadlock risk documented
+- KafPy existing architecture -- `src/worker_pool/pool.rs`, `src/worker_pool/worker.rs`, `src/dispatcher/queue_manager.rs`
+- rdkafka `subscribe(&[&str])` -- multi-topic subscription support
+- Existing `invoke_mode_with_timeout`, `Arc<Semaphore>`, `PausePartition`/`ResumePartition` patterns
 
 ### Tertiary (LOW confidence)
-- Rayon pool sizing — principle sound, exact numbers need benchmarking
-- Streaming handler lifecycle — standard async iterator pattern, implementation-specific
+- Existing DLQ schema -- needs code verification
+- Existing trace infrastructure -- unknown if tracing is currently used in project
+- rdkafka multi-topic partition assignment behavior under rebalance -- needs testing verification
 
 ---
 *Research completed: 2026-04-29*

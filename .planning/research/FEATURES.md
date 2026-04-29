@@ -1,495 +1,202 @@
-# v1.1 Feature Research: Async Handler Patterns
+# v2.0 Feature Research: Fan-Out and Fan-In Patterns
 
-**Context**: KafPy v1.1 milestone — Rust-core, Python-logic Kafka consumer framework
-**New features**: Streaming handler patterns, handler middleware/chain, async handler timeout, async fan-in/fan-out
-**Research date**: 2026-04-29
+**Project:** KafPy
+**Context:** v2.0 milestone — Fan-Out (multi-sink parallel) and Fan-In (multi-source round-robin)
+**Research date:** 2026-04-29
+**Confidence:** MEDIUM-HIGH
 
 ---
 
 ## 1. Feature Categories
 
-### Table Stakes Features (Users Expect)
+### Fan-Out Features
 
-These are baseline capabilities users anticipate when they hear "async handler patterns." Missing them makes the framework feel incomplete.
+#### Table Stakes
 
-| Feature | Why Expected | Complexity | Dependencies |
-|---------|--------------|------------|--------------|
-| **Async handler timeout** | Long-running handlers block the poll cycle, causing heartbeats to miss and triggering rebalances. Users need a way to abort slow handlers. | Low | Existing `invoke_mode_with_timeout` wraps in `tokio::time::timeout`; already partially implemented. |
-| **Handler middleware (logging)** | Users expect request/response logging without manually wrapping every handler. A middleware chain avoids handler boilerplate. | Medium | Existing `ExecutionContext` and `TracingSink`; could add before/after hooks. |
-| **Handler middleware (metrics)** | Per-handler latency histograms, throughput counters. Users want this as a reusable layer, not per-handler instrumentation. | Medium | Existing `MetricsSink`; middleware would annotate span with handler timing. |
+| Feature | Why Expected | Complexity | Notes |
+|---------|--------------|------------|-------|
+| **Parallel async dispatch** | One message triggers N async handlers/sinks in parallel. Without this, users must manually spawn tasks and manage lifecycle. | Low | JoinSet-based; existing Tokio primitives are sufficient. |
+| **Configurable fan-out degree** | Unbounded parallel dispatch causes resource exhaustion. Users need `max_concurrent` to limit simultaneous fan-out tasks. | Low | Semaphore-based limiting per handler; already exists for concurrency limiting. |
+| **Fan-out result aggregation** | Caller needs to know overall success/failure. Aggregate N results into a single `ExecutionResult`. | Low | Simple: all ok = ok, any fail = error (configurable). |
+| **Timeout propagation** | Individual fan-out tasks timing out should not block the primary handler. Each task needs its own timeout scope. | Medium | Reuse existing `invoke_mode_with_timeout` per fan-out task. |
+| **Partial success handling** | When some fan-out sinks fail, the primary message should still be acknowledged (at-least-once) rather than retrying indefinitely. | Medium | Policy enum: `AllSucceed`, `AnySucceed`, `MajoritySucceed`. |
 
-### Differentiators (Competitive Advantage)
+#### Differentiators
 
-These set KafPy apart from generic Kafka clients (confluent-kafka-python, aiokafka).
+| Feature | Value Proposition | Complexity | Notes |
+|---------|-------------------|------------|-------|
+| **Fire-and-forget sink dispatch** | For non-critical side effects (logging, metrics), waiting for completion is wasted latency. Spawn and forget with bounded in-flight tracking. | Medium | Tasks tracked in background JoinSet, not awaited. |
+| **Cancellable fan-out** | When the primary handler succeeds but a slow fan-out task is stuck, users need a way to cancel stragglers on commit. | High | Requires structured cancellation via `AbortHandle` per fan-out task. |
+| **Per-sink error classification** | Different sinks may have different retry policies (e.g., non-retryable DB sink vs retryable HTTP sink). Error must carry per-sink classification. | Medium | Extend `ExecutionResult` with per-sink error metadata map. |
+| **Ordered fan-out (sequential)** | Some fan-out patterns require ordering (sink B depends on sink A result). Support sequential execution as a policy. | Medium | Policy: `Sequential` — await each in order before proceeding. |
+| **Fan-out metrics (per sink)** | Users want to know which sink is slow or failing, not just aggregate metrics. Per-sink latency histograms and error counters. | Medium | Sink identifier in metrics labels; existing MetricsSink extensible. |
 
-| Feature | Value Proposition | Complexity | Dependencies |
-|---------|-------------------|------------|--------------|
-| **Streaming handler patterns** (`@stream_handler`) | Persistent handler that receives a stream of messages (for WebSocket push, SSE, long-lived background tasks). Not batch (finishes) — streaming (stays alive). | High | New handler mode; requires lifecycle management (start, stop, error recovery). |
-| **Handler middleware chain (extensible)** | User-defined middleware for logging, metrics, retries, auth. Composable via decorator chaining, not hardcoded. | High | Requires a `Middleware` trait and `ChainBuilder`; must integrate with `HandlerMode`. |
-| **Async fan-out** | One message triggers multiple async handlers/sinks in parallel (e.g., process + audit + notify). | High | Requires `JoinSet` or similar for parallel async execution; must track all results. |
-| **Async fan-in** | Multiple async sources (Kafka topics, async iterables) merged into one handler. | High | Requires async merge combinator; must handle source lifecycle and backpressure. |
-
----
-
-## 2. Streaming Handler Patterns
-
-### What It Is
-
-A `@stream_handler` is a long-lived async Python function that receives an **async iterable** of messages, rather than single messages. It stays alive indefinitely (or until stopped) and processes messages as they arrive.
-
-```python
-# Streaming handler — stays alive, processes messages continuously
-@consumer.stream_handler(topic="events", mode="streaming")
-async def event_stream(stream):
-    async for msg in stream:
-        await process_event(msg)
-```
-
-**vs Batch handler**: Batch processes N messages then finishes. Streaming processes messages continuously until shutdown.
-
-**vs Regular handler**: Regular handler receives one message per invocation. Streaming handler receives a stream object.
-
-### Why Users Want It
-
-- **WebSocket/SSE push**: Push Kafka messages to connected WebSocket clients in real-time
-- **Background aggregation**: Continuously accumulate state from a stream without batch windows
-- **Live dashboards**: Stream data to monitoring/analytics endpoints
-- **Event sourcing**: Long-running processes that react to event streams
-
-### Complexity Drivers
+#### Complexity Notes
 
 | Driver | Why Complex |
 |--------|------------|
-| Lifecycle management | Handler must start (subscribe), stay alive (loop), and stop (drain + cleanup) |
-| Backpressure propagation | Stream must apply backpressure when consumer is overwhelmed |
-| Error recovery | Restart stream on errors without losing partition assignment |
-| Multiple concurrent streams | Multiple stream handlers may run simultaneously |
-
-### Integration with Existing Code
-
-The existing codebase already has:
-- `HandlerMode::SingleAsync` — async single-message handler
-- `BatchPolicy` — for batch accumulation
-- `PythonAsyncFuture` — for driving Python coroutines
-
-**Streaming extends this**: Instead of one-shot async invocation, streaming requires a persistent async loop that yields messages from a Rust async iterator.
-
-### Proposed Architecture
-
-```python
-# Python API (proposed)
-@consumer.stream_handler(topic="events", max_concurrent=5)
-async def event_stream(stream):
-    """
-    stream is an async iterable that yields message dicts.
-    Handler stays alive until consumer shutdown or error.
-    """
-    async for msg in stream:
-        await process(msg)
-```
-
-```rust
-// Rust handler mode (proposed addition to HandlerMode)
-pub enum HandlerMode {
-    // ... existing modes ...
-    StreamingAsync,
-}
-
-// PythonHandler invokes a streaming handler by:
-// 1. Creating an async iterator in Rust (AsyncMessageStream)
-// 2. Passing it to Python as an async iterable via PythonAsyncFuture
-// 3. Python's async for loop polls the iterator
-```
-
-### Feature Flag
-
-- **Complexity**: High
-- **Estimated effort**: 3-4 phases
-- **Risk**: Stream lifecycle management is nontrivial; backpressure across async boundaries needs careful design.
-
----
-
-## 3. Handler Middleware Chain
-
-### What It Is
-
-A composable chain of middleware functions that wrap handler execution. Each middleware can execute logic before and after the handler, modify arguments, or short-circuit on error.
-
-```python
-# Middleware chain — composed via decorator
-@consumer.middleware(logging=True, metrics=True, retry_on_timeout=True)
-@consumer.handler(topic="events")
-async def handle_event(msg, ctx):
-    await process(msg)
-```
-
-**Alternatives considered**:
-- Explicit wrapping: `logged_handler = with_logging(with_metrics(basic_handler))` — verbose, hard to read
-- Configuration-based: `handler(middleware=["logging", "metrics"])` — less flexible, magic strings
-
-### Why Users Want It
-
-- **Avoid boilerplate**: Logging, metrics, retry logic shouldn't be repeated in every handler
-- **Separation of concerns**: Business logic vs cross-cutting concerns are separate
-- **Reusability**: Same middleware can apply to multiple handlers
-
-### Middleware Types
-
-| Middleware | Before | After | On Error |
-|-----------|--------|-------|----------|
-| **Logging** | Log handler start with topic/partition/offset | Log handler completion with duration | Log exception with traceback |
-| **Metrics** | Record handler start timestamp | Record latency histogram + throughput counter | Record error counter |
-| **Retry** | — | — | Retry with backoff if TransientError |
-| **Auth** | Check API key / JWT validity | — | Return 401 |
-| **Validation** | Validate message schema | — | Return 400 + validation errors |
-
-### Integration with Existing Code
-
-Existing architecture already has:
-- `ExecutionContext` — passed to handlers, could carry middleware-specific data
-- `TracingSink` — already does span-based logging
-- `MetricsSink` — already has throughput/latency metrics
-
-**Middleware would wrap `PythonHandler::invoke`**: Before calling the actual handler, run middleware `before()`. After, run `after()`. On error, run `on_error()`.
-
-### Proposed Architecture
-
-```rust
-// Middleware trait (proposed)
-pub trait HandlerMiddleware: Send + Sync {
-    fn name(&self) -> &str;
-    async fn before(&self, ctx: &ExecutionContext, msg: &OwnedMessage);
-    async fn after(&self, ctx: &ExecutionContext, msg: &OwnedMessage, result: &ExecutionResult);
-    async fn on_error(&self, ctx: &ExecutionContext, msg: &OwnedMessage, error: &PyErr);
-}
-
-// Chain of middleware
-pub struct MiddlewareChain {
-    middlewares: Vec<Box<dyn HandlerMiddleware>>,
-}
-
-// Applied in PythonHandler::invoke before/after actual callback
-impl PythonHandler {
-    async fn invoke_with_middleware(&self, ctx: &ExecutionContext, msg: OwnedMessage) -> ExecutionResult {
-        for mw in &self.middlewares {
-            mw.before(ctx, &msg).await;
-        }
-        let result = self.invoke(ctx, msg).await;
-        for mw in self.middlewares.iter().rev() {
-            mw.after(ctx, &msg, &result).await;
-        }
-        result
-    }
-}
-```
-
-### Feature Flag
-
-- **Complexity**: Medium (if limited to logging/metrics) to High (if extensible user middleware)
-- **Estimated effort**: 2 phases
-- **Risk**: Middleware ordering matters; user-defined middleware must be safe (no blocking, no GIL issues).
-
----
-
-## 4. Async Handler Timeout
-
-### What It Is
-
-A mechanism to abort handler execution if it exceeds a configured time threshold. Timed-out handlers are classified as `Terminal(HandlerPanic)` and routed to DLQ.
-
-### Current State
-
-The codebase already has **partial implementation**:
-- `handler_timeout: Option<Duration>` field in `PythonHandler` (line 146)
-- `invoke_mode_with_timeout` wraps invocation in `tokio::time::timeout` (lines 273-310)
-- On timeout, returns `ExecutionResult::Error` with `Terminal(HandlerPanic)` and descriptive traceback
-
-**What's missing**:
-- No Python API to configure timeout per handler
-- No timeout metadata propagated to DLQ
-- No way to distinguish hard timeout (process killed) from expected timeout behavior
-
-### Proposed Python API
-
-```python
-@consumer.handler(topic="events", timeout=30.0)  # 30 seconds
-async def handle_event(msg, ctx):
-    await process(msg)
-
-@consumer.handler(topic="slow-ops", timeout=300.0)  # 5 minutes for slow handlers
-async def handle_slow(msg, ctx):
-    await heavy_computation(msg)
-```
-
-### Timeout Behavior Options
-
-| Option | Behavior | Use Case |
-|--------|----------|----------|
-| **Hard timeout** | Abort and DLQ immediately after threshold | Critical data — don't trust slow handlers |
-| **Graceful timeout** | Send cancellation signal, wait for cleanup, then abort | Handlers that respect cancellation |
-| **Reset timeout on activity** | Timeout only triggers if no messages processed for X seconds | Long-running but active handlers |
-
-### Integration
-
-- **DLQ metadata**: Timeout metadata should include `timeout_duration` and `last_processed_offset`
-- **Metrics**: Timeout count metric per handler
-- **Tracing**: Timeout should create a span event with `timeout` attribute
-
-### Feature Flag
-
-- **Complexity**: Low
-- **Estimated effort**: 1 phase (mostly wiring existing implementation to Python API)
-- **Risk**: Low — existing code is sound; just needs Python-facing API and DLQ metadata enrichment.
-
----
-
-## 5. Async Fan-Out
-
-### What It Is
-
-A single message triggers **multiple async handlers or sinks** in parallel. The message is processed by multiple handlers simultaneously, and the framework waits for all results before committing.
-
-```python
-# Fan-out: one message → process + audit + notify
-@consumer.handler(topic="orders", fan_out=["audit_topic", "notification_topic"])
-async def handle_order(msg, ctx):
-    await process_order(msg)
-    # Audit and notification run in parallel via fan-out
-```
-
-### Why Users Want It
-
-- **Audit trails**: Every order processed should also be logged to an audit topic
-- **Multi-target updates**: Update database + invalidate cache + send notification
-- **Parallel enrichment**: Enrich message with data from multiple async sources
-
-### Architecture Options
-
-| Pattern | Description | Trade-off |
-|---------|-------------|-----------|
-| **Fire-and-forget** | Spawn fan-out tasks, don't wait for results | Fast, but no guarantee of completion |
-| **Wait-for-all** | Fan out in parallel via `JoinSet`, commit only after all succeed | Slower but guarantees all complete |
-| **Wait-for-first** | Fan out, use first successful result, cancel others | For read-only enrichments |
-| **Partial success** | Fan out, succeed if X% complete within timeout | Best effort with SLA |
-
-### Integration with Existing Code
-
-- Existing `Arc<Semaphore>` per handler key already limits concurrency
-- `tokio::task::join_set::JoinSet` provides parallel task tracking
-- `ExecutionResult` already supports success/error classification
-
-**Proposed fan-out would use JoinSet**: Create N tasks, add to JoinSet, await all, aggregate results.
-
-### Feature Flag
-
-- **Complexity**: High
-- **Estimated effort**: 2-3 phases
-- **Risk**: 
-  - Ordering: If handler A modifies state and handler B reads state, fan-out order matters
-  - Partial failure: What if 2 of 3 fan-out targets succeed? Commit or rollback?
-  - Complexity: Fan-out with full semantics (wait-for-all, partial success, cancellation) is substantial
-
----
-
-## 6. Async Fan-In
-
-### What It Is
-
-Multiple async sources (Kafka topics, async iterables, queues) are **merged into a single handler**. The handler sees a unified stream from multiple sources.
-
-```python
-# Fan-in: merge multiple topics into one handler
-@consumer.handler(topics=["events", "alerts", "system"], fan_in=True)
-async def unified_handler(msg, ctx):
-    source = ctx.source_topic  # Know which topic msg came from
-    await process(msg)
-```
-
-### Why Users Want It
-
-- **Unified processing**: Single handler for multiple topics (e.g., a dashboard that aggregates all events)
-- **Cross-topic joins**: Combine events from multiple topics into one processing context
-- **Migration**: Slowly move from multiple handlers to one without changing semantics
-
-### Architecture Options
-
-| Pattern | Description | Trade-off |
-|---------|-------------|-----------|
-| **Round-robin** | Interleave messages from sources | Simple, preserves ordering within source |
-| **Priority** | Prefer one source over another | Use when one source is more time-sensitive |
-| **Full merge** | All sources merged into one async stream | Complex, must handle backpressure from multiple sources |
-
-### Integration with Existing Code
-
-- Existing `QueueManager` has per-handler bounded channels
-- `ConsumerRunner::next()` returns `OwnedMessage` from Kafka
-- `PythonAsyncFuture` drives async Python coroutines
-
-**Fan-in would extend QueueManager**: Instead of one source per handler, multiple sources feed one handler. Requires a merge strategy and per-source backpressure.
-
-### Feature Flag
-
-- **Complexity**: High
-- **Estimated effort**: 2-3 phases
-- **Risk**:
-  - Partition ordering across topics is not guaranteed (each topic has independent partition ordering)
-  - Backpressure from one source must not block other sources
-  - Rebalance handling becomes more complex (multiple topic subscriptions)
-
----
-
-## 7. Anti-Features
-
-Features explicitly NOT building, with rationale.
-
-| Anti-Feature | Why Avoid | Alternative |
-|--------------|-----------|-------------|
-| **Blocking middleware in async context** | GIL hold during middleware blocks Tokio event loop | Middleware must be async and release GIL on await |
-| **Fan-out with distributed transactions** | Two-phase commit across handlers is not at-least-once semantics | Use idempotent handlers + at-least-once delivery |
-| **Streaming handler with exactly-once** | Streaming + exactly-once requires checkpointing state, complexity explodes | Streaming is at-least-once; users add idempotency |
-| **Middleware that mutates messages** | Hidden mutations break debugging and predictability | Middleware can validate, reject, log — not mutate |
-| **Unbounded fan-out** | No limit on parallel handlers causes resource exhaustion | Configurable max fan-out degree with backpressure |
-
----
-
-## 8. Feature Dependencies
+| **GIL serialization across fan-out tasks** | If N fan-out tasks all call Python handlers, they serialize on the GIL anyway. Parallelism only helps if preprocessing (Rust) is CPU-intensive before Python calls. Users may expect parallelism and not understand why they're not getting it. |
+| **Cancellation safety** | When cancelling fan-out tasks mid-execution, you must ensure no partial side effects (e.g., DB committed, cache not updated). Idempotency is the user's responsibility, but we must not leave tasks in a dangling state. |
+| **Offset commit timing** | If fan-out is partial-success (some sinks fail), when do we commit the offset? Options: commit immediately on primary success, or commit after all fan-out tasks settle. The PROJECT.md says commit immediately. |
+| **Memory under high fan-out degree** | Each fan-out task holds a message copy and a future. With bounded channel capacity and high fan-out degree, memory multiplies quickly. |
+
+#### Dependencies
 
 ```
-Existing: HandlerMode, PythonHandler, invoke_mode_with_timeout
-    │
-    ├──► [1] Async Timeout ──────────► Table stakes (low complexity, wiring work)
-    │
-    ├──► [2] Streaming Handler ──────► Differentiator (high complexity, new lifecycle)
-    │
-    ├──► [3] Middleware Chain ────────► Differentiator (medium complexity, composable)
-    │         │
-    │         ├── logging middleware
-    │         ├── metrics middleware
-    │         └── retry middleware
-    │
-    ├──► [4] Fan-Out ─────────────────► Differentiator (high complexity, parallel execution)
-    │         │
-    │         └── depends on: timeout (for timeout on fan-out tasks)
-    │
-    └──► [5] Fan-In ─────────────────► Differentiator (high complexity, source merging)
-              │
-              └── depends on: streaming handler (shares async iterator infra)
+Existing: Arc<Semaphore> per handler key, JoinSet (tokio::task::join_set), ExecutionResult, invoke_mode_with_timeout
+           │
+           ├──► [Fan-Out Degree Limit] ──── Semaphore already limits concurrency; reuse
+           │
+           ├──► [Parallel Dispatch] ─────── JoinSet already in Tokio; straightforward
+           │
+           ├──► [Timeout per Task] ───────── invoke_mode_with_timeout already exists; wrap per fan-out task
+           │
+           └──► [Result Aggregation] ─────── new (simple collect + classify)
 ```
 
-**Critical path for streaming and fan-in share infrastructure**:
-- `PythonAsyncFuture` (already exists)
-- Async message iterator (new, needed for streaming)
-- Merge combinator (new, needed for fan-in)
+**Fan-Out does NOT depend on streaming handler infrastructure.** Fan-out is single-message dispatch to multiple sinks, not persistent async iterables. It can be implemented independently of fan-in.
 
 ---
 
-## 9. MVP Recommendation
+### Fan-In Features
 
-### Phase 1: Async Timeout (Table Stakes)
+#### Table Stakes
 
-**Priority**: HIGH — unblocks production safety issue (slow handlers blocking poll cycle)
+| Feature | Why Expected | Complexity | Notes |
+|---------|--------------|------------|-------|
+| **Multi-source subscription** | Single handler receives messages from N topics. Kafka consumer must subscribe to all topics simultaneously. | Low | rdkafka `client.subscribe(topics)`, already supported. |
+| **Round-robin interleaving** | Messages from multiple topics are interleaved in arrival order. Handler sees a unified stream without needing to manage N subscriptions. | Low | Merge at dispatcher level; interleave by arrival timestamp. |
+| **Source identification in context** | Handler needs to know which topic a message came from. `ExecutionContext.source_topic` field already exists conceptually; needs wiring. | Low | Add `source_topic: String` to `ExecutionContext`. |
+| **Independent per-source backpressure** | If one source is slow, it should not block other sources. Each topic/queue must have independent backpressure signaling. | Medium | Each source gets its own bounded channel; PausePartition applies per topic+partition. |
+| **Graceful handling of source imbalance** | Topic A produces 1000 msg/s, Topic B produces 1 msg/s. Slow source should not cause backlog on fast source. | Medium | Independent queue depths per source. |
 
-**Deliverables**:
-- Python API: `@handler(topic, timeout=30.0)`
-- Timeout metadata in DLQ envelope
-- Timeout metric (count per handler)
-- Timeout span event in tracing
+#### Differentiators
 
-**Dependencies**: None (uses existing `invoke_mode_with_timeout`)
+| Feature | Value Proposition | Complexity | Notes |
+|---------|-------------------|------------|-------|
+| **Priority-based source ordering** | Some sources are more important (e.g., `alerts` before `events`). Users can set priority so high-priority messages are processed first even if queue is fuller for low-priority. | High | Requires weighted round-robin or priority queue per source. |
+| **Source-aware retry policies** | Non-retryable source (malformed messages) vs retryable source (transient failures). Error classification per source. | Medium | Per-source retry config map. |
+| **Cross-source aggregation window** | For time-series or batch aggregation across sources (e.g., compute correlation between topic A and B over a window). | High | Needs buffering + window trigger logic; out of scope for basic fan-in. |
+| **Fan-In with topic partition routing** | Handler can route messages to sub-handlers based on topic. E.g., events → analytics, alerts → pager. | Medium | Fan-in as router, not just merger. |
+| **Source health monitoring** | Detect when a source topic is lagging or stalled. Per-source consumer lag metrics. | Medium | Expose per-topic lag via MetricsSink with topic label. |
 
-**Estimated effort**: 1 week
+#### Complexity Notes
 
----
+| Driver | Why Complex |
+|--------|------------|
+| **Partition ordering across topics is not guaranteed** | Topic A partition 0 and Topic B partition 0 each have their own ordering guarantees. KafPy cannot promise global ordering across topics. Users must understand this. |
+| **Rebalance complexity with multiple topics** | When a rebalance occurs, all topic subscriptions must be revoked and reassigned atomically. rdkafka handles this, but KafPy's partition tracking per topic becomes more complex. |
+| **Backpressure across sources with different rates** | Fast source filling its bounded channel while slow source drains slowly. Must pause fast producer without pausing slow producer. Requires per-source `PausePartition` signals. |
+| **Message schema differences across topics** | Fan-in handler receives a generic `msg.value()`. If Topic A and Topic B have different schemas, the handler must do runtime type checking or schema validation. Python-side concern, but worth documenting. |
+| **Consumer group metadata** | When subscribing to multiple topics, consumer group state is spread across partitions of multiple topics. Committing offset on one topic must not affect others. Offset coordinator must track per-topic offset state. |
 
-### Phase 2: Middleware Chain — Logging + Metrics (Differentiator)
+#### Dependencies
 
-**Priority**: HIGH — common request, significant boilerplate reduction
+```
+Existing: QueueManager (per handler bounded channels), ConsumerRunner::next() (OwnedMessage), PythonAsyncFuture
+           │
+           ├──► [Round-robin merge] ─────── New: Interleave multiple sources by arrival order
+           │
+           ├──► [Source identification] ──── Add source_topic to ExecutionContext
+           │
+           ├──► [Per-source backpressure] ── PausePartition already exists; apply per topic+partition
+           │
+           └──► [Multi-topic subscription] ─ rdkafka supports this; routing must extend to N topics
+```
 
-**Deliverables**:
-- `HandlerMiddleware` trait in Rust
-- Built-in logging middleware (before/after span events)
-- Built-in metrics middleware (latency histogram, throughput counter)
-- Python API to attach middleware per handler: `@handler(middleware=[Logging(), Metrics()])`
-- Chaining support: middleware applied in order, reversed on response
-
-**Dependencies**: Phase 1 (timeout middleware could reuse same pattern)
-
-**Estimated effort**: 2 weeks
-
----
-
-### Phase 3: Streaming Handler Patterns (Differentiator)
-
-**Priority**: MEDIUM — enables new use cases (WebSocket, SSE, live dashboards)
-
-**Deliverables**:
-- `HandlerMode::StreamingAsync` 
-- `PythonStreamingHandler` — wraps async iterator
-- `AsyncMessageStream` in Rust — yields messages from Kafka
-- Python API: `@stream_handler(topic)`
-- Lifecycle management: start (subscribe), run (loop), stop (drain)
-- Error recovery: restart stream on handler error without losing partition
-
-**Dependencies**: None (new mode, no existing infra)
-
-**Estimated effort**: 3-4 weeks
+**Fan-In depends on streaming handler async iterator infrastructure** for the merge combinator. The `AsyncMessageStream` from streaming handler (v1.1) is what allows multiple async sources to be merged. Fan-In and Streaming share the async iterator abstraction.
 
 ---
 
-### Phase 4: Fan-Out (Differentiator)
+## 2. Feature Dependencies Summary
 
-**Priority**: MEDIUM — enables multi-target patterns but complex
+```
+Fan-Out (independent):
+  Message → JoinSet spawn N tasks → timeout per task → aggregate results → commit
 
-**Deliverables**:
-- `FanOutPolicy` enum: FireAndForget, WaitForAll, WaitForFirst, PartialSuccess
-- Python API: `@handler(topic, fan_out=["audit", "notify"], fan_out_policy=WaitForAll)`
-- `JoinSet`-based parallel execution
-- Timeout propagation to fan-out tasks (reuse Phase 1)
-- Partial failure handling (for PartialSuccess policy)
+Fan-In (depends on streaming infra):
+  N sources → AsyncIterator merge (round-robin) → Python async for loop
+            → per-source backpressure via PausePartition
 
-**Dependencies**: Phase 1 (timeout), Phase 2 (middleware for logging fan-out)
-
-**Estimated effort**: 3 weeks
-
----
-
-### Phase 5: Fan-In (Differentiator)
-
-**Priority**: MEDIUM — enables unified stream processing
-
-**Deliverables**:
-- `MultiSourceHandler` — merges multiple sources
-- Merge strategy: RoundRobin (default), Priority, FullMerge
-- Per-source backpressure (each source queue independent)
-- Python API: `@handler(topics=["events", "alerts"], fan_in=True)`
-- Source identification in ExecutionContext (`source_topic` field)
-
-**Dependencies**: Phase 3 (streaming handler async iterator infrastructure)
-
-**Estimated effort**: 3-4 weeks
+Shared infrastructure:
+  - Semaphore-based concurrency limiting (existing)
+  - invoke_mode_with_timeout (existing)
+  - ExecutionResult (existing)
+  - PausePartition/ResumePartition (existing)
+  - AsyncMessageStream (streaming handler, v1.1) — Fan-In depends on this
+```
 
 ---
 
-## 10. Feature Prioritization Matrix
+## 3. Anti-Features
 
-| Feature | Priority | Complexity | Effort | Risk | Reason |
-|---------|----------|------------|--------|------|--------|
-| Async Timeout | **HIGH** | Low | 1 week | Low | Unblocks production issue; existing code foundation |
-| Middleware (logging + metrics) | **HIGH** | Medium | 2 weeks | Low | Common request; existing observability infra |
-| Streaming Handler | MEDIUM | High | 3-4 weeks | Medium | New lifecycle; complex but valuable |
-| Fan-Out | MEDIUM | High | 3 weeks | Medium | Complex semantics (partial failure); high value |
-| Fan-In | MEDIUM | High | 3-4 weeks | Medium | Complex backpressure; shares infra with streaming |
+Features explicitly NOT building for v2.0 fan-out/fan-in, with rationale.
+
+| Anti-Feature | Why Avoid | What to Do Instead |
+|--------------|-----------|-------------------|
+| **Distributed transactions across fan-out sinks** | Two-phase commit is incompatible with at-least-once delivery semantics and adds massive complexity. | Idempotent handlers + at-least-once delivery. Primary ACKs immediately on partial success. |
+| **Exactly-once fan-in** | Checkpointing state for exactly-once across multiple async sources is exponential complexity. | At-least-once with per-source deduplication via message keys. |
+| **Unbounded fan-out degree** | Without a configurable max, high fan-out degree exhausts memory and file descriptors. | Configurable `max_fan_out: usize` with hard cap. |
+| **Global ordering across fan-in sources** | Kafka provides ordering within a partition, not across topics. Enforcing global ordering would require a total order broadcast, which Kafka does not support. | Document that ordering is preserved per source topic+partition only. |
+| **Blocking fan-out tasks in Python** | GIL would serialize all fan-out Python calls anyway, making parallelism illusory. Fire-and-forget is acceptable for non-critical sinks. | Fan-out tasks are Tokio async tasks; Python calls still go through spawn_blocking. |
 
 ---
 
-## 11. Sources
+## 4. MVP Recommendation
 
-**Evidence basis**:
-- Existing `PythonHandler::invoke_mode_with_timeout` (src/python/handler.rs:273-310) — timeout implementation confirmed
-- `HandlerMode` enum (src/python/handler.rs:82-117) — mode classification confirmed
-- `BatchPolicy` struct (src/python/handler.rs:120-137) — batch accumulation pattern confirmed
-- `PythonAsyncFuture` (src/python/async_bridge.rs) — async Rust/Python bridge confirmed
-- PROJECT.md v1.1 Active items — milestone scope confirmed
-- PITFALLS.md Section 3 — async/sync execution model pitfalls documented
+### Fan-Out MVP (Phase 1 of v2.0)
 
-**Confidence**: MEDIUM — features are well understood from codebase inspection; architectural patterns are standard for async Rust/Python frameworks.
+**Priority features to implement first:**
+
+1. **Parallel dispatch via JoinSet** (Table stakes) — Core mechanism; straightforward with existing Tokio.
+2. **Configurable fan-out degree** (Table stakes) — Semaphore reuse; prevents resource exhaustion.
+3. **Partial success with immediate commit** (Table stakes) — PROJECT.md decision; primary ACKs on primary success regardless of sink failures.
+4. **Timeout propagation per fan-out task** (Table stakes) — Reuse existing timeout wrapper.
+5. **Per-sink timeout + error classification** (Differentiator, Medium) — Per-sink metrics and error metadata.
+
+**Explicitly defer:**
+- Cancellation of straggler fan-out tasks (can be added later)
+- Sequential ordered fan-out (rarely needed; users can chain handlers instead)
+
+---
+
+### Fan-In MVP (Phase 2 of v2.0)
+
+**Priority features to implement first:**
+
+1. **Multi-topic Kafka subscription** (Table stakes) — rdkafka supports; extend routing to N topics.
+2. **Round-robin merge at dispatcher** (Table stakes) — Interleave by arrival; simplest merge strategy.
+3. **Source identification in ExecutionContext** (Table stakes) — `source_topic` field; already designed.
+4. **Independent per-source backpressure** (Table stakes) — PausePartition per topic+partition; already exists.
+5. **Per-source consumer lag metrics** (Differentiator, Medium) — Per-topic labels on existing lag metrics.
+
+**Explicitly defer:**
+- Priority-based source ordering (rare; high complexity)
+- Cross-source aggregation windows (separate feature, out of scope for v2.0)
+
+---
+
+## 5. Key Architectural Decisions to Make
+
+| Decision | Options | Recommended | Rationale |
+|----------|---------|-------------|-----------|
+| **Fan-out offset commit timing** | Commit on primary success only, or wait for all sinks | Commit immediately on primary success | At-least-once delivery; sinks are fire-and-forget side effects |
+| **Fan-in merge strategy** | Round-robin, priority queue, full merge | Round-robin | Simplest; no head-of-line blocking; sufficient for most use cases |
+| **Fan-out sink failure visibility** | Aggregate error only, or per-sink error in result | Per-sink error metadata in ExecutionResult | Users need to know which sink failed for monitoring |
+| **Fan-in source identification** | Topic name only, or topic+partition | topic+partition | Enables fine-grained backpressure and lag metrics per partition |
+| **Fan-out degree default** | Unlimited, or N | N = 4 | Prevents resource exhaustion by default; configurable |
+
+---
+
+## 6. Sources
+
+**Evidence basis:**
+- PROJECT.md v2.0 Fan-Out/Fan-In decisions (commit on primary success, round-robin fan-in)
+- `tokio::task::join_set::JoinSet` — parallel task tracking (Tokio docs)
+- Existing `Arc<Semaphore>` per handler key for concurrency limiting (confirmed in PITFALLS.md)
+- Existing `PausePartition`/`ResumePartition` for per-partition backpressure (confirmed in v1.1)
+- Existing `invoke_mode_with_timeout` for timeout propagation (FEATURES.md v1.1)
+- Existing `ExecutionContext` structure — source_topic field needed (confirmed in v1.1 fan-in description)
+- rdkafka `client.subscribe(topics)` supports multi-topic subscription (rdkafka docs)
+
+**Confidence:** MEDIUM-HIGH — Fan-Out uses only existing primitives (JoinSet, Semaphore, timeout wrapper). Fan-In depends on streaming handler async iterator infrastructure, which is v1.1 — confirmed shipped.
