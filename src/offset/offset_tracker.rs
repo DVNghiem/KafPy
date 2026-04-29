@@ -336,6 +336,8 @@ impl OffsetCoordinator for OffsetTracker {
                     1, // attempt_count: not tracked per-offset in OffsetTracker
                     now,
                     now,
+                    None,
+                    None,
                 );
 
                 let tp = dlq_router.route(&metadata);

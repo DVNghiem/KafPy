@@ -23,6 +23,12 @@ pub struct DlqMetadata {
     pub first_failure_timestamp: DateTime<Utc>,
     /// When the most recent failure occurred (UTC).
     pub last_failure_timestamp: DateTime<Utc>,
+    /// Timeout duration in seconds when a handler timeout triggered DLQ routing.
+    /// None when routing for non-timeout reasons.
+    pub timeout_duration: Option<u64>,
+    /// Offset of the last message the handler completed before timeout fired.
+    /// None when not trackable or for non-timeout reasons.
+    pub last_processed_offset: Option<i64>,
 }
 
 impl DlqMetadata {
@@ -35,6 +41,8 @@ impl DlqMetadata {
         attempt_count: u32,
         first_failure_timestamp: DateTime<Utc>,
         last_failure_timestamp: DateTime<Utc>,
+        timeout_duration: Option<u64>,
+        last_processed_offset: Option<i64>,
     ) -> Self {
         Self {
             original_topic,
@@ -44,6 +52,8 @@ impl DlqMetadata {
             attempt_count,
             first_failure_timestamp,
             last_failure_timestamp,
+            timeout_duration,
+            last_processed_offset,
         }
     }
 }

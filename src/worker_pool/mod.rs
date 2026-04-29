@@ -69,6 +69,8 @@ pub(crate) async fn handle_execution_failure(
             retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset) as u32,
             chrono::Utc::now(),
             chrono::Utc::now(),
+            None,
+            None,
         );
 
         let dlq_span = tracing::Span::current().kafpy_dlq_route(
