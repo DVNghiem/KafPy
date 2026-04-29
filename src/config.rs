@@ -413,6 +413,12 @@ impl Clone for ProducerConfigBuilder {
     }
 }
 
+impl Default for ProducerConfigBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[pymethods]
 impl ProducerConfigBuilder {
     #[new]
@@ -509,7 +515,12 @@ impl ProducerConfigBuilder {
         make_producer_builder_clone(self)
     }
 
-    pub fn sasl_mechanism(&mut self, mechanism: String, username: String, password: String) -> Self {
+    pub fn sasl_mechanism(
+        &mut self,
+        mechanism: String,
+        username: String,
+        password: String,
+    ) -> Self {
         *self.sasl_mechanism.write().unwrap() = Some(mechanism);
         *self.sasl_username.write().unwrap() = Some(username);
         *self.sasl_password.write().unwrap() = Some(password);
@@ -564,11 +575,11 @@ fn make_consumer_builder_clone(b: &ConsumerConfigBuilder) -> ConsumerConfigBuild
         message_batch_size: b.message_batch_size,
         default_retry_policy: RwLock::new(b.default_retry_policy.read().unwrap().clone()),
         dlq_topic_prefix: RwLock::new(b.dlq_topic_prefix.read().unwrap().clone()),
-        drain_timeout_secs: RwLock::new(b.drain_timeout_secs.read().unwrap().clone()),
-        num_workers: RwLock::new(b.num_workers.read().unwrap().clone()),
-        enable_auto_offset_store: RwLock::new(b.enable_auto_offset_store.read().unwrap().clone()),
+        drain_timeout_secs: RwLock::new(*b.drain_timeout_secs.read().unwrap()),
+        num_workers: RwLock::new(*b.num_workers.read().unwrap()),
+        enable_auto_offset_store: RwLock::new(*b.enable_auto_offset_store.read().unwrap()),
         observability_config: RwLock::new(b.observability_config.read().unwrap().clone()),
-        handler_timeout_ms: RwLock::new(b.handler_timeout_ms.read().unwrap().clone()),
+        handler_timeout_ms: RwLock::new(*b.handler_timeout_ms.read().unwrap()),
     }
 }
 
@@ -604,6 +615,12 @@ pub struct ConsumerConfigBuilder {
 impl Clone for ConsumerConfigBuilder {
     fn clone(&self) -> Self {
         make_consumer_builder_clone(self)
+    }
+}
+
+impl Default for ConsumerConfigBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -690,7 +707,12 @@ impl ConsumerConfigBuilder {
         make_consumer_builder_clone(self)
     }
 
-    pub fn sasl_mechanism(&mut self, mechanism: String, username: String, password: String) -> Self {
+    pub fn sasl_mechanism(
+        &mut self,
+        mechanism: String,
+        username: String,
+        password: String,
+    ) -> Self {
         *self.sasl_mechanism.write().unwrap() = Some(mechanism);
         *self.sasl_username.write().unwrap() = Some(username);
         *self.sasl_password.write().unwrap() = Some(password);
@@ -790,11 +812,11 @@ impl ConsumerConfigBuilder {
             message_batch_size: self.message_batch_size,
             default_retry_policy: self.default_retry_policy.read().unwrap().clone(),
             dlq_topic_prefix: self.dlq_topic_prefix.read().unwrap().clone(),
-            drain_timeout_secs: self.drain_timeout_secs.read().unwrap().clone(),
-            num_workers: self.num_workers.read().unwrap().clone(),
-            enable_auto_offset_store: self.enable_auto_offset_store.read().unwrap().clone(),
+            drain_timeout_secs: *self.drain_timeout_secs.read().unwrap(),
+            num_workers: *self.num_workers.read().unwrap(),
+            enable_auto_offset_store: *self.enable_auto_offset_store.read().unwrap(),
             observability_config: self.observability_config.read().unwrap().clone(),
-            handler_timeout_ms: self.handler_timeout_ms.read().unwrap().clone(),
+            handler_timeout_ms: *self.handler_timeout_ms.read().unwrap(),
         })
     }
 }
