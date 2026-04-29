@@ -56,6 +56,8 @@ mod logging;
 // Runtime assembly — RuntimeBuilder for composing pure-Rust consumer core
 pub(crate) mod runtime;
 
+pub mod rayon_pool;
+
 use kafka_message::KafkaMessage;
 // logging::Logger removed — using Python logging
 use produce::PyProducer;
