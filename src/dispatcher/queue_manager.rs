@@ -7,12 +7,17 @@
 //! - `inflight`: messages dispatched to the handler but not yet acknowledged via `ack()`.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::observability::metrics::QueueSnapshot;
 use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
+
+/// Default buffer capacity for streaming handlers (per-partition).
+/// Tunable via config. Default: 100 messages.
+pub(crate) const STREAMING_BUFFER_CAPACITY: usize = 100;
 
 pub use crate::consumer::OwnedMessage;
 use crate::dispatcher::error::DispatchError;
@@ -137,6 +142,9 @@ impl HandlerMetadata {
 pub(crate) struct HandlerEntry {
     pub sender: mpsc::Sender<OwnedMessage>,
     pub(crate) metadata: HandlerMetadata,
+    /// Set of paused partitions for this handler (used for streaming backpressure).
+    /// When a partition is paused, Kafka consumption for that partition is temporarily stopped.
+    pub(crate) paused_partitions: std::sync::Arc<parking_lot::Mutex<HashSet<i32>>>,
 }
 
 /// Owns all handler queues and their atomic metadata counters.
@@ -178,6 +186,7 @@ impl QueueManager {
         let entry = HandlerEntry {
             sender: tx,
             metadata,
+            paused_partitions: std::sync::Arc::new(parking_lot::Mutex::new(HashSet::new())),
         };
         self.handlers.lock().insert(topic_str.clone(), entry);
         rx
@@ -227,6 +236,35 @@ impl QueueManager {
         if let Some(entry) = guard.get(topic) {
             entry.metadata.ack(count);
         }
+    }
+
+    /// Pauses Kafka consumption for a specific topic/partition.
+    /// Used for backpressure when streaming handler queue is full.
+    pub(crate) fn pause_partition(&self, topic: &str, partition: i32) {
+        let mut guard = self.handlers.lock();
+        if let Some(entry) = guard.get_mut(topic) {
+            entry.paused_partitions.lock().insert(partition);
+            tracing::debug!(topic, partition, "pausing partition due to backpressure");
+        }
+    }
+
+    /// Resumes Kafka consumption for a specific topic/partition.
+    /// Used when streaming handler queue drains below threshold.
+    pub(crate) fn resume_partition(&self, topic: &str, partition: i32) {
+        let mut guard = self.handlers.lock();
+        if let Some(entry) = guard.get_mut(topic) {
+            entry.paused_partitions.lock().remove(&partition);
+            tracing::debug!(topic, partition, "resuming partition after backpressure relief");
+        }
+    }
+
+    /// Checks if a specific topic/partition is paused.
+    pub(crate) fn is_partition_paused(&self, topic: &str, partition: i32) -> bool {
+        let guard = self.handlers.lock();
+        guard
+            .get(topic)
+            .map(|entry| entry.paused_partitions.lock().contains(&partition))
+            .unwrap_or(false)
     }
 
     /// Internal: sends `message` to the handler registered for `handler_id`.
