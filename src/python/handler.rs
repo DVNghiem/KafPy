@@ -65,6 +65,16 @@ fn ctx_to_pydict<'py>(py: Python<'py>, ctx: &ExecutionContext, msg: &OwnedMessag
     };
     let _ = py_ctx.set_item("timestamp", ts);
     let _ = py_ctx.set_item("headers", &msg.headers);
+    // Inject trace context fields if present
+    if let Some(ref tid) = ctx.trace_id {
+        let _ = py_ctx.set_item("trace_id", tid);
+    }
+    if let Some(ref sid) = ctx.span_id {
+        let _ = py_ctx.set_item("span_id", sid);
+    }
+    if let Some(ref flags) = ctx.trace_flags {
+        let _ = py_ctx.set_item("trace_flags", flags);
+    }
     py_ctx.into()
 }
 
@@ -298,9 +308,18 @@ impl PythonHandler {
         let callback = Arc::clone(&self.callback);
         let ctx_clone = ctx.clone();
 
-        // Extract W3C trace context before crossing GIL boundary
+        // Extract W3C trace context from message headers before crossing GIL boundary
+        let header_map: std::collections::HashMap<String, String> = message
+            .headers
+            .iter()
+            .filter_map(|(k, v)| {
+                v.as_ref().map(|bytes| {
+                    String::from_utf8_lossy(bytes).to_string()
+                }).map(|val| (k.clone(), val))
+            })
+            .collect();
         let mut trace_context = std::collections::HashMap::new();
-        inject_trace_context(&mut trace_context);
+        inject_trace_context(&header_map, &mut trace_context);
 
         let result = tokio::task::spawn_blocking(move || {
             Python::attach(|py| {
@@ -353,9 +372,22 @@ impl PythonHandler {
         let ctx_clone = ctx.clone();
         let worker_id = ctx.worker_id;
 
-        // Extract W3C trace context before crossing GIL boundary
+        // Extract W3C trace context from message headers before crossing GIL boundary
+        let header_map: std::collections::HashMap<String, String> = messages
+            .first()
+            .map(|msg| {
+                msg.headers
+                    .iter()
+                    .filter_map(|(k, v)| {
+                        v.as_ref().map(|bytes| {
+                            String::from_utf8_lossy(bytes).to_string()
+                        }).map(|val| (k.clone(), val))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut trace_context = std::collections::HashMap::new();
-        inject_trace_context(&mut trace_context);
+        inject_trace_context(&header_map, &mut trace_context);
 
         let result = tokio::task::spawn_blocking(move || {
             Python::attach(|py| {

@@ -61,6 +61,7 @@ pub(crate) async fn worker_loop(
     worker_id: usize,
     shutdown_token: CancellationToken,
     worker_pool_state: Arc<WorkerPoolState>,
+    handler_concurrency: crate::worker_pool::HandlerConcurrency,
 ) {
     logger::log("INFO", &format!("worker started worker_id={}", worker_id));
 
@@ -97,8 +98,28 @@ pub(crate) async fn worker_loop(
         // Process the current message if we have one
         if let WorkerState::Processing(msg) = &state {
             let msg = msg.clone();
-            let ctx =
-                ExecutionContext::new(msg.topic.clone(), msg.partition, msg.offset, worker_id);
+
+            // Extract W3C trace context from message headers before constructing ExecutionContext
+            let header_map: std::collections::HashMap<String, String> = msg
+                .headers
+                .iter()
+                .filter_map(|(k, v)| {
+                    v.as_ref().map(|bytes| {
+                        String::from_utf8_lossy(bytes).to_string()
+                    }).map(|val| (k.clone(), val))
+                })
+                .collect();
+            let mut trace_map = std::collections::HashMap::new();
+            crate::observability::tracing::inject_trace_context(&header_map, &mut trace_map);
+
+            let trace_id = trace_map.get("trace_id").cloned();
+            let span_id = trace_map.get("span_id").cloned();
+            let trace_flags = trace_map.get("trace_flags").cloned();
+
+            let ctx = ExecutionContext::with_trace(
+                msg.topic.clone(), msg.partition, msg.offset, worker_id,
+                trace_id, span_id, trace_flags,
+            );
             let handler = handler_for_topic(&handlers, &msg.topic).clone();
             let start = std::time::Instant::now();
             let invocation_labels = MetricLabels::new()
@@ -116,6 +137,8 @@ pub(crate) async fn worker_loop(
                 "handler invoke start handler_id={} topic={} partition={} offset={} mode={}",
                 ctx.topic, ctx.topic, ctx.partition, ctx.offset, handler.mode().as_str()
             ));
+            // Acquire concurrency permit — holds until end of this block
+            let _permit = handler_concurrency.acquire(&ctx.topic).await;
             let result = span.in_scope(|| async {
                 handler.invoke_mode_with_timeout(&ctx, msg.clone()).await
             }).await;
@@ -319,6 +342,7 @@ mod tests {
                 0,
                 token,
                 Arc::new(WorkerPoolState::new(1)),
+                crate::worker_pool::HandlerConcurrency::new(4),
             ),
         )
         .await;
@@ -345,6 +369,7 @@ mod tests {
             0,
             token.clone(),
             Arc::new(WorkerPoolState::new(1)),
+            crate::worker_pool::HandlerConcurrency::new(4),
         ));
 
         let _ = tx.blocking_send(make_test_msg());
