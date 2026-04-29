@@ -376,6 +376,67 @@ impl PythonHandler {
         result
     }
 
+    /// Invokes the handler with a per-invocation timeout that overrides handler_timeout.
+    ///
+    /// If `timeout` is `Some(d)`, uses `d` regardless of `handler_timeout`.
+    /// If `timeout` is `None`, falls back to `handler_timeout`.
+    pub async fn invoke_mode_with_timeout_override(
+        &self,
+        ctx: &ExecutionContext,
+        message: OwnedMessage,
+        timeout: Option<std::time::Duration>,
+    ) -> ExecutionResult {
+        use crate::middleware::python::build_middleware_chain;
+        use crate::observability::metrics::SharedPrometheusSink;
+
+        let start = std::time::Instant::now();
+        let chain = self.middleware.as_ref().map(|m| {
+            let sink = SharedPrometheusSink::new();
+            build_middleware_chain(m.clone(), sink)
+        });
+        if let Some(ref c) = chain {
+            c.before_all(ctx);
+        }
+
+        let effective_timeout = timeout.or(self.handler_timeout);
+        let result = match effective_timeout {
+            Some(t) => {
+                match tokio::time::timeout(t, self.invoke_mode(ctx, message)).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        tracing::error!(
+                            handler_id = %ctx.topic,
+                            topic = %ctx.topic,
+                            partition = ctx.partition,
+                            offset = ctx.offset,
+                            timeout_ms = t.as_millis() as u64,
+                            "handler timed out after {}ms",
+                            t.as_millis()
+                        );
+                        ExecutionResult::Timeout {
+                            info: TimeoutInfo {
+                                timeout_ms: t.as_millis() as u64,
+                                last_processed_offset: None,
+                            },
+                        }
+                    }
+                }
+            }
+            None => self.invoke_mode(ctx, message).await,
+        };
+
+        let elapsed = start.elapsed();
+        if let Some(ref c) = chain {
+            if result.is_ok() {
+                c.after_all(ctx, &result, elapsed);
+            } else {
+                c.on_error_all(ctx, &result);
+            }
+        }
+
+        result
+    }
+
     /// Invokes the Python callable with the given message.
     ///
     /// Uses `spawn_blocking` to release the Tokio thread. GIL acquired only
