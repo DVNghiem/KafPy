@@ -73,7 +73,12 @@
 4. Python API @handler(middleware=[Logging(), Metrics()]) accepts middleware list per handler
 5. Middleware executes in order: logging before -> handler -> metrics after (on success) or on_error (on failure)
 
-**Plans:** TBD
+**Plans:** 3 plans
+
+Plans:
+- [ ] 09-01-PLAN.md -- MIDW-01: HandlerMiddleware trait + MiddlewareChain
+- [ ] 09-02-PLAN.md -- MIDW-02/03: Logging + Metrics middleware
+- [ ] 09-03-PLAN.md -- MIDW-04: Python API middleware
 
 ---
 
@@ -107,10 +112,10 @@
 | 6 | v1.0 | 2/2 | Complete | 2026-04-29 |
 | 7 | v1.1 | 0/5 | Not started | - |
 | 8 | v1.1 | 0/4 | Not started | - |
-| 9 | v1.1 | 0/5 | Not started | - |
+| 9 | v1.1 | 3/3 | Planned | - |
 | 10 | v1.1 | 0/4 | Not started | - |
 
 **v1.0 MVP shipped.** Full milestone history at `.planning/milestones/`.
 
 ---
-*Last updated: 2026-04-29 after v1.1 roadmap created*
+*Last updated: 2026-04-29 after phase 09 planning*
