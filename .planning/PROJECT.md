@@ -80,5 +80,16 @@ This document evolves at phase transitions and milestone boundaries.
 3. Audit Out of Scope — reasons still valid?
 4. Update Context with current state
 
+## Current Milestone: v1.1 Lint & Hardening
+
+**Goal:** Resolve all clippy warnings and improve code quality for production readiness.
+
+**Target features:**
+- Zero clippy warnings (19→0: dead code, too_many_arguments, enum names, module inception, etc.)
+- ConsumerConfig builder pattern (24-arg constructor → fluent builder)
+- ProducerConfig builder pattern (17-arg constructor → fluent builder)
+- Better ergonomics for Python API consumers
+
 ---
-*Last updated: 2026-04-28 after initialization*
+
+*Last updated: 2026-04-29 after lint & hardening*
