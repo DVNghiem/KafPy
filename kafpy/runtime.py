@@ -87,6 +87,7 @@ class KafPy:
         batch: bool = False,
         batch_max_size: int = 100,
         batch_max_wait_ms: int = 1000,
+        middleware: list | None = None,
     ) -> Callable[[Callable], Callable]:
         """Decorator to register a handler for a topic.
 
@@ -102,6 +103,10 @@ class KafPy:
                 returns ``kafpy.HandlerResult``.
             batch_max_size: Maximum messages per batch (default 100).
             batch_max_wait_ms: Maximum time to wait before dispatching a batch (default 1000).
+            middleware: List of middleware instances (e.g., [Logging(), Metrics()]).
+                Each must implement before(), after(), on_error().
+                Built-in middleware: Logging(), Metrics().
+                Custom middleware: subclass kafpy.BaseMiddleware.
 
         Returns:
             A decorator that registers the decorated callable as a handler.
@@ -118,6 +123,12 @@ class KafPy:
             def handle_batch(messages: list[kafpy.KafkaMessage], ctx) -> kafpy.HandlerResult:
                 for msg in messages:
                     process(msg)
+                return kafpy.HandlerResult(action="ack")
+
+        Example (with middleware)::
+
+            @app.handler(topic="my-topic", middleware=[kafpy.Logging(), kafpy.Metrics()])
+            def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerResult:
                 return kafpy.HandlerResult(action="ack")
         """
 
@@ -136,6 +147,7 @@ class KafPy:
                     batch_max_wait_ms=batch_max_wait_ms,
                     timeout_ms=timeout_ms,
                     concurrency=concurrency,
+                    middleware=middleware,
                 )
             else:
                 self.register_handler(
@@ -143,6 +155,7 @@ class KafPy:
                     routing=routing,
                     timeout_ms=timeout_ms,
                     concurrency=concurrency,
+                    middleware=middleware,
                 )
             return fn
 
@@ -210,6 +223,7 @@ class KafPy:
         batch_max_wait_ms: int | None = None,
         timeout_ms: int | None = None,
         concurrency: int | None = None,
+        middleware: list | None = None,
     ) -> None:
         """Explicitly register a handler for a topic.
 
@@ -222,6 +236,7 @@ class KafPy:
             batch_max_size: Max messages per batch (batch modes only).
             batch_max_wait_ms: Max wait time per batch in ms (batch modes only).
             timeout_ms: Per-handler execution timeout in milliseconds.
+            middleware: List of middleware instances (e.g., [Logging(), Metrics()]).
 
         Example::
 
@@ -264,6 +279,7 @@ class KafPy:
             "batch_max_wait_ms": batch_max_wait_ms,
             "timeout_ms": timeout_ms,
             "concurrency": concurrency,
+            "middleware": middleware,
         }
 
         # Also register with the Rust consumer so it can dispatch messages
@@ -274,4 +290,5 @@ class KafPy:
             batch_max_wait_ms=batch_max_wait_ms,
             timeout_ms=timeout_ms,
             concurrency=concurrency,
+            middleware=middleware,
         )

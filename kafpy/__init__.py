@@ -136,6 +136,67 @@ from .exceptions import (
 # Benchmark types (Phase 43)
 from .benchmark import BenchmarkResult
 
+
+class BaseMiddleware:
+    """Base class for user-defined middleware.
+
+    Subclass and override before(), after(), on_error().
+    All methods are optional — default implementations are no-ops.
+
+    Example::
+
+        class MyMiddleware(BaseMiddleware):
+            def before(self, ctx):
+                print(f"Handling message on {ctx['topic']}")
+
+            def after(self, ctx, result, elapsed_ms):
+                print(f"Handler completed in {elapsed_ms}ms with result={result}")
+    """
+
+    def before(self, ctx: dict) -> None:
+        """Called before the handler is invoked."""
+        pass
+
+    def after(self, ctx: dict, result: str, elapsed_ms: float) -> None:
+        """Called after the handler succeeds.
+
+        Args:
+            ctx: ExecutionContext dict with topic, partition, offset, etc.
+            result: Result label (e.g., "ok", "error", "timeout")
+            elapsed_ms: Wall-clock time in milliseconds since before() was called
+        """
+        pass
+
+    def on_error(self, ctx: dict, result: str) -> None:
+        """Called when the handler invocation returns an error.
+
+        Args:
+            ctx: ExecutionContext dict with topic, partition, offset, etc.
+            result: Result label (e.g., "error", "timeout")
+        """
+        pass
+
+
+class Logging(BaseMiddleware):
+    """Built-in logging middleware.
+
+    Emits tracing span events on handler start/complete/error with trace context.
+    Uses Rust tracing/logging infrastructure for structured output.
+    """
+
+    pass
+
+
+class Metrics(BaseMiddleware):
+    """Built-in metrics middleware.
+
+    Records kafpy.handler.latency histogram and kafpy.message.throughput counter
+    per handler invocation. Uses pre-registered Prometheus metrics.
+    """
+
+    pass
+
+
 __all__ = [
     # Rust extension types (available when _kafpy is built)
     "ProducerConfig",
@@ -171,4 +232,8 @@ __all__ = [
     "ConsumerError",
     "HandlerError",
     "ConfigurationError",
+    # Middleware classes — Phase 09
+    "BaseMiddleware",
+    "Logging",
+    "Metrics",
 ]
