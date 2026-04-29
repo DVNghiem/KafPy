@@ -17,7 +17,7 @@
 - [ ] **Phase 7: Thread Pool** — Sync handlers on Rayon work-stealing pool
 - [ ] **Phase 8: Async Timeout** — @handler timeout with DLQ metadata and metrics
 - [ ] **Phase 9: Handler Middleware** — Middleware chain with logging and metrics
-- [ ] **Phase 10: Streaming Handler** — Persistent async iterable handlers
+- [x] **Phase 10: Streaming Handler** — Persistent async iterable handlers (completed 2026-04-29)
 
 ---
 
@@ -96,7 +96,13 @@ Plans:
 3. Lifecycle management: start/subscribe (connect + subscribe), run/loop (process messages until stop), stop/drain (graceful finish), error recovery (retry with backoff)
 4. Per-stream backpressure: slow consumer pauses Kafka consumption, fast producer does not overflow memory
 
-**Plans:** TBD
+**Plans:** 4/4 plans complete
+
+Plans:
+- [x] 10-01-PLAN.md -- STRM-01: HandlerMode::StreamingAsync + invoke_streaming
+- [x] 10-02-PLAN.md -- STRM-02: @stream_handler Python API
+- [x] 10-03-PLAN.md -- STRM-03: streaming_worker_loop lifecycle
+- [x] 10-04-PLAN.md -- STRM-04: backpressure propagation
 
 ---
 
@@ -113,9 +119,9 @@ Plans:
 | 7 | v1.1 | 0/5 | Not started | - |
 | 8 | v1.1 | 0/4 | Not started | - |
 | 9 | v1.1 | 3/3 | Planned | - |
-| 10 | v1.1 | 0/4 | Not started | - |
+| 10 | v1.1 | 4/4 | Complete    | 2026-04-29 |
 
 **v1.0 MVP shipped.** Full milestone history at `.planning/milestones/`.
 
 ---
-*Last updated: 2026-04-29 after phase 09 planning*
+*Last updated: 2026-04-29 after phase 10 planning*
