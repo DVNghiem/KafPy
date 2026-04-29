@@ -9,6 +9,7 @@ use crate::observability::tracing::inject_trace_context;
 use crate::python::async_bridge::PythonAsyncFuture;
 use crate::python::context::ExecutionContext;
 use crate::python::execution_result::{BatchExecutionResult, ExecutionResult};
+use crate::rayon_pool::RayonPool;
 use crate::retry::RetryPolicy;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -146,6 +147,8 @@ pub struct PythonHandler {
     handler_timeout: Option<Duration>,
     /// Human-readable handler name for observability (typically the topic).
     name: String,
+    /// Rayon pool for offloading sync handler work. None means use spawn_blocking directly.
+    rayon_pool: Option<Arc<RayonPool>>,
 }
 
 impl PythonHandler {
@@ -157,6 +160,7 @@ impl PythonHandler {
         batch_policy: Option<BatchPolicy>,
         handler_timeout: Option<Duration>,
         name: String,
+        rayon_pool: Option<Arc<RayonPool>>,
     ) -> Self {
         Self {
             callback,
@@ -165,6 +169,7 @@ impl PythonHandler {
             batch_policy,
             handler_timeout,
             name,
+            rayon_pool,
         }
     }
 
@@ -180,6 +185,7 @@ impl PythonHandler {
         batch_policy: Option<BatchPolicy>,
         handler_timeout: Option<Duration>,
         name: String,
+        rayon_pool: Option<Arc<RayonPool>>,
     ) -> Self {
         Self {
             callback,
@@ -188,6 +194,7 @@ impl PythonHandler {
             batch_policy,
             handler_timeout,
             name,
+            rayon_pool,
         }
     }
 
@@ -312,10 +319,12 @@ impl PythonHandler {
     /// Invokes the Python callable with the given message.
     ///
     /// Uses `spawn_blocking` to release the Tokio thread. GIL acquired only
-    /// inside `Python::with_gil`.
+    /// inside `Python::with_gil`. When a RayonPool is configured, dispatches
+    /// to the Rayon work-stealing pool to avoid blocking the Tokio poll cycle.
     pub async fn invoke(&self, ctx: &ExecutionContext, message: OwnedMessage) -> ExecutionResult {
         let callback = Arc::clone(&self.callback);
         let ctx_clone = ctx.clone();
+        let rayon_pool = self.rayon_pool.clone();
 
         // Extract W3C trace context from message headers before crossing GIL boundary
         let header_map: std::collections::HashMap<String, String> = message
@@ -330,41 +339,97 @@ impl PythonHandler {
         let mut trace_context = std::collections::HashMap::new();
         inject_trace_context(&header_map, &mut trace_context);
 
-        let result = tokio::task::spawn_blocking(move || {
-            Python::attach(|py| {
-                let py_msg = message_to_pydict(py, &message, Some(&trace_context));
-                let py_ctx = ctx_to_pydict(py, &ctx_clone, &message);
+        // Clone trace_context before the conditional to avoid use-after-move
+        let trace_context_for_rayon = trace_context.clone();
+        let trace_context_for_tokio = trace_context;
 
-                match callback.call(py, (py_msg, py_ctx), None) {
-                    Ok(_) => ExecutionResult::Ok,
-                    Err(py_err) => {
-                        let classifier = DefaultFailureClassifier;
-                        let reason = classifier.classify(&py_err, &ctx_clone);
-                        let exception = py_err
-                            .get_type(py)
-                            .name()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|_| "Unknown".to_string());
-                        let traceback = py_err.to_string();
-                        ExecutionResult::Error {
-                            reason,
-                            exception,
-                            traceback,
+        let result = if let Some(pool) = rayon_pool {
+            // Dispatch to Rayon pool — closure MUST NOT call any Tokio APIs
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            pool.spawn(move || {
+                // On Rayon thread — safe to do CPU preprocessing here.
+                // MUST NOT call tokio::spawn, Handle::current(), or any Tokio sync primitive.
+                // Use std::thread::spawn for Python GIL calls (no tokio runtime on Rayon threads).
+                let thread_result = std::thread::spawn(move || {
+                    Python::attach(|py| {
+                        let py_msg = message_to_pydict(py, &message, Some(&trace_context_for_rayon));
+                        let py_ctx = ctx_to_pydict(py, &ctx_clone, &message);
+                        match callback.call(py, (py_msg, py_ctx), None) {
+                            Ok(_) => ExecutionResult::Ok,
+                            Err(py_err) => {
+                                let classifier = DefaultFailureClassifier;
+                                let reason = classifier.classify(&py_err, &ctx_clone);
+                                let exception = py_err
+                                    .get_type(py)
+                                    .name()
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(|_| "Unknown".to_string());
+                                let traceback = py_err.to_string();
+                                ExecutionResult::Error {
+                                    reason,
+                                    exception,
+                                    traceback,
+                                }
+                            }
+                        }
+                    })
+                })
+                .join();
+                // Send the thread result back to Tokio via oneshot channel
+                let _ = tx.send(thread_result);
+            });
+            // Receive from Rayon pool
+            match rx.await {
+                Ok(thread_result) => match thread_result {
+                    Ok(result) => result,
+                    Err(_) => ExecutionResult::Error {
+                        reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
+                        exception: "Panic".to_string(),
+                        traceback: "python handler thread panicked".to_string(),
+                    },
+                },
+                Err(_) => ExecutionResult::Error {
+                    reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
+                    exception: "Panic".to_string(),
+                    traceback: "rayon pool task panicked (sender dropped)".to_string(),
+                },
+            }
+        } else {
+            // Fallback: use spawn_blocking directly (no Rayon pool configured)
+            tokio::task::spawn_blocking(move || {
+                Python::attach(|py| {
+                    let py_msg = message_to_pydict(py, &message, Some(&trace_context_for_tokio));
+                    let py_ctx = ctx_to_pydict(py, &ctx_clone, &message);
+                    match callback.call(py, (py_msg, py_ctx), None) {
+                        Ok(_) => ExecutionResult::Ok,
+                        Err(py_err) => {
+                            let classifier = DefaultFailureClassifier;
+                            let reason = classifier.classify(&py_err, &ctx_clone);
+                            let exception = py_err
+                                .get_type(py)
+                                .name()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|_| "Unknown".to_string());
+                            let traceback = py_err.to_string();
+                            ExecutionResult::Error {
+                                reason,
+                                exception,
+                                traceback,
+                            }
                         }
                     }
-                }
+                })
             })
-        })
-        .await;
-
-        match result {
-            Ok(r) => r,
-            Err(_) => ExecutionResult::Error {
+            .await
+            .unwrap_or_else(|_| ExecutionResult::Error {
                 reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
                 exception: "Panic".to_string(),
                 traceback: "spawn_blocking task panicked".to_string(),
-            },
-        }
+            })
+        };
+
+        // Both branches already return ExecutionResult
+        result
     }
 
     /// Invokes the Python handler with a batch of messages via spawn_blocking.
