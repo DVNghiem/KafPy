@@ -84,6 +84,9 @@ class KafPy:
         routing: object | None = None,
         timeout_ms: int | None = None,
         concurrency: int | None = None,
+        batch: bool = False,
+        batch_max_size: int = 100,
+        batch_max_wait_ms: int = 1000,
     ) -> Callable[[Callable], Callable]:
         """Decorator to register a handler for a topic.
 
@@ -94,19 +97,53 @@ class KafPy:
                 Overrides ``ConsumerConfig.handler_timeout_ms``.
             concurrency: Maximum concurrent executions of this handler.
                 None means no limit (default).
+            batch: If True, registers a batch handler that receives a list of
+                messages. The callable receives ``list[kafpy.KafkaMessage]`` and
+                returns ``kafpy.HandlerResult``.
+            batch_max_size: Maximum messages per batch (default 100).
+            batch_max_wait_ms: Maximum time to wait before dispatching a batch (default 1000).
 
         Returns:
             A decorator that registers the decorated callable as a handler.
 
-        Example::
+        Example (single-message)::
 
             @app.handler(topic="my-topic")
             def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerResult:
                 return kafpy.HandlerResult(action="ack")
+
+        Example (batch)::
+
+            @app.handler(topic="my-topic", batch=True, batch_max_size=50, batch_max_wait_ms=500)
+            def handle_batch(messages: list[kafpy.KafkaMessage], ctx) -> kafpy.HandlerResult:
+                for msg in messages:
+                    process(msg)
+                return kafpy.HandlerResult(action="ack")
         """
 
         def decorator(fn: Callable) -> Callable:
-            self.register_handler(topic, fn, routing=routing, timeout_ms=timeout_ms, concurrency=concurrency)
+            if batch:
+                # Detect sync vs async batch mode
+                if inspect.iscoroutinefunction(fn):
+                    handler_mode = "batch_async"
+                else:
+                    handler_mode = "batch_sync"
+                self.register_handler(
+                    topic, fn,
+                    routing=None,
+                    handler_mode=handler_mode,
+                    batch_max_size=batch_max_size,
+                    batch_max_wait_ms=batch_max_wait_ms,
+                    timeout_ms=timeout_ms,
+                    concurrency=concurrency,
+                )
+            else:
+                self.register_handler(
+                    topic, fn,
+                    routing=routing,
+                    timeout_ms=timeout_ms,
+                    concurrency=concurrency,
+                )
             return fn
 
         return decorator
