@@ -306,4 +306,89 @@ KafPy delivers a high-performance Kafka consumer framework where Rust owns the r
 
 ---
 
+---
+
+## Phase 5: Builder Pattern Refactor
+
+**Purpose:** Replace verbose 24-arg and 17-arg config constructors with fluent builder patterns, and audit `#[allow]` suppressions.
+
+### Requirements Covered
+
+| ID | Requirement | Category |
+|----|-------------|----------|
+| LH-01 | ConsumerConfig builder pattern | Code Quality |
+| LH-02 | ProducerConfig builder pattern | Code Quality |
+| LH-03 | Audit `#[allow]` suppressions | Code Quality |
+| LH-04 | Unit tests for config builders | Code Quality |
+
+### Deliverables
+
+1. **ConsumerConfigBuilder** — fluent builder with all current fields, `build()` returning `Result<ConsumerConfig, ConfigError>`
+2. **ProducerConfigBuilder** — fluent builder with all current fields, `build()` returning `Result<ProducerConfig, ConfigError>`
+3. **Config validation at build time** — fail fast if required fields missing
+4. **Audit and remove unnecessary `#[allow]`** where proper implementations replace workarounds
+5. **Builder unit tests** — edge cases, required field validation, defaults
+
+### Success Criteria
+
+1. `ConsumerConfigBuilder::new().brokers("x").group_id("g").topics(["t"]).build()` produces a valid config
+2. `ConsumerConfigBuilder::new().build()` returns an error with clear message about missing required fields
+3. All `#[allow]` that can be removed are removed; remaining ones have inline comments explaining why
+4. Builder has 100% test coverage on validation logic
+
+---
+
+## Phase 6: Hardening
+
+**Purpose:** Improve runtime error messages and add validation to make the framework production-ready.
+
+### Requirements Covered
+
+| ID | Requirement | Category |
+|----|-------------|----------|
+| LH-05 | Improved runtime error messages | Hardening |
+| LH-06 | Debug impls on error-context structs | Hardening |
+| LH-07 | Validate required fields at build time | Hardening |
+
+### Deliverables
+
+1. **Rich error messages** — connection failures, deserialization errors, timeout errors all include actionable context
+2. **Debug impls** — all public error-context structs implement `Debug`
+3. **Build-time validation** — required fields validated when `build()` is called
+
+### Success Criteria
+
+1. Kafka connection failure shows broker address and error details
+2. Deserialization errors show topic, partition, offset, and bytes preview
+3. Timeout errors show handler name and timeout value
+4. All public error types implement `Debug` with full field coverage
+5. Missing required fields produces a compile-time or build-time error (not runtime panic)
+
+---
+
+## Phase Summary
+
+| Phase | Focus | Requirements |
+|-------|-------|--------------|
+| Phase 5 | Builder Pattern Refactor | 4 |
+| Phase 6 | Hardening | 3 |
+
+---
+
+## Appendix: Requirement Traceability
+
+| Requirement | Phase |
+|-------------|-------|
+| LH-01 | Phase 5 |
+| LH-02 | Phase 5 |
+| LH-03 | Phase 5 |
+| LH-04 | Phase 5 |
+| LH-05 | Phase 6 |
+| LH-06 | Phase 6 |
+| LH-07 | Phase 6 |
+
+**Coverage:** 7/7 requirements mapped to phases (100%)
+
+---
+
 *Last updated: 2026-04-29*
