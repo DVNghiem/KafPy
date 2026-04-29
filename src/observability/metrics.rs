@@ -161,6 +161,7 @@ impl SharedPrometheusSink {
         sink.register_gauge("kafpy.queue.depth", "Current queue depth per handler");
         sink.register_gauge("kafpy.consumer.lag", "Consumer lag per partition");
         sink.register_counter("kafpy.dlq.messages", "Messages produced to DLQ");
+        sink.register_counter("kafpy.handler.timeout_total", "Handler timeout count");
         Self {
             inner: Arc::new(Mutex::new(sink)),
         }
@@ -324,6 +325,22 @@ impl DlqMetrics {
             .insert("dlq_topic", dlq_topic)
             .insert("original_topic", original_topic);
         sink.record_counter("kafpy.dlq.messages", &labels.as_slice());
+    }
+}
+
+// ─── Timeout Metrics (TMOUT-03) ───────────────────────────────────────────────
+
+/// Timeout metrics recorder — TMOUT-03.
+pub struct TimeoutMetrics;
+
+impl TimeoutMetrics {
+    /// kafpy.handler.timeout_total counter — increment per handler timeout.
+    /// Labels: topic, handler_name.
+    pub fn record_timeout(sink: &dyn MetricsSink, topic: &str, handler_name: &str) {
+        let labels = MetricLabels::new()
+            .insert("topic", topic)
+            .insert("handler_name", handler_name);
+        sink.record_counter("kafpy.handler.timeout_total", &labels.as_slice());
     }
 }
 
