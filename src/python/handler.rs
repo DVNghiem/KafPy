@@ -228,7 +228,7 @@ impl PythonHandler {
     ///
     /// Used for HandlerMode::StreamingAsync. Creates a coroutine inside GIL, wraps in
     /// PythonAsyncFuture, polls in a loop until StopAsyncIteration or error.
-    async fn invoke_streaming(
+    pub(crate) async fn invoke_streaming(
         &self,
         ctx: &ExecutionContext,
         initial_message: OwnedMessage,
