@@ -43,7 +43,10 @@ impl SharedDlqProducer {
     ///
     /// Creates a dedicated FutureProducer for DLQ messages using the same
     /// broker configuration as the main consumer.
-    pub fn new(config: &ConsumerConfig, prometheus_sink: SharedPrometheusSink) -> Result<Self, rdkafka::error::KafkaError> {
+    pub fn new(
+        config: &ConsumerConfig,
+        prometheus_sink: SharedPrometheusSink,
+    ) -> Result<Self, rdkafka::error::KafkaError> {
         let producer = Self::create_producer(config)?;
         let producer = Arc::new(producer);
         let (send_tx, mut send_rx) = mpsc::channel::<DLQMessage>(DLQ_CHANNEL_CAPACITY);
@@ -58,7 +61,10 @@ impl SharedDlqProducer {
             }
         });
 
-        Ok(Self { send_tx, prometheus_sink })
+        Ok(Self {
+            send_tx,
+            prometheus_sink,
+        })
     }
 
     fn create_producer(
@@ -89,7 +95,11 @@ impl SharedDlqProducer {
         cfg.create()
     }
 
-    async fn do_produce(producer: Arc<FutureProducer>, msg: DLQMessage, prometheus_sink: SharedPrometheusSink) {
+    async fn do_produce(
+        producer: Arc<FutureProducer>,
+        msg: DLQMessage,
+        prometheus_sink: SharedPrometheusSink,
+    ) {
         let mut record = FutureRecord::to(&msg.topic)
             .payload(&msg.payload)
             .partition(msg.partition)

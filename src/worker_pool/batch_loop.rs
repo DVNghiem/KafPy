@@ -5,8 +5,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::coordinator::RetryCoordinator;
 use crate::coordinator::OffsetCoordinator;
+use crate::coordinator::RetryCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
@@ -45,8 +45,7 @@ pub(crate) async fn flush_partition_batch(
         return;
     }
     let topic = batch[0].topic.clone();
-    let ctx =
-        ExecutionContext::new(topic.clone(), partition, batch[0].offset, worker_id);
+    let ctx = ExecutionContext::new(topic.clone(), partition, batch[0].offset, worker_id);
     let span = tracing::Span::current().kafpy_handler_invoke(
         topic.as_str(),
         handler.name(),
@@ -58,9 +57,7 @@ pub(crate) async fn flush_partition_batch(
     );
     worker_pool_state.set_busy(worker_id, "shared".to_string());
     let result = span
-        .in_scope(|| async {
-            handler.invoke_mode_batch(&ctx, batch.clone()).await
-        })
+        .in_scope(|| async { handler.invoke_mode_batch(&ctx, batch.clone()).await })
         .await;
     handle_batch_result_inline(
         result,
@@ -330,7 +327,10 @@ pub(crate) async fn handle_batch_result_inline(
             let mode = "BatchSync";
             for _ in offsets.iter() {
                 crate::observability::metrics::ThroughputMetrics::record_throughput(
-                    &prometheus_sink, topic, topic, mode,
+                    &prometheus_sink,
+                    topic,
+                    topic,
+                    mode,
                 );
             }
 

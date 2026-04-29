@@ -19,8 +19,7 @@ impl std::fmt::Display for RejectReason {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum RoutingDecision {
     /// Route the message to the handler identified by [`HandlerId`](crate::routing::HandlerId).
     /// The HandlerId is an internal routing key, not the Kafka topic name.
@@ -47,4 +46,3 @@ impl RoutingDecision {
         matches!(self, RoutingDecision::Defer)
     }
 }
-

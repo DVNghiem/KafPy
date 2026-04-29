@@ -1,6 +1,5 @@
 //! WorkerPool — manages N Tokio workers polling handler queues.
 
-use std::sync::Arc;
 use crate::coordinator::RetryCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
@@ -9,6 +8,7 @@ use crate::failure::FailureReason;
 use crate::observability::metrics::HandlerMetrics;
 use crate::observability::tracing::KafpySpanExt;
 use crate::python::context::ExecutionContext;
+use std::sync::Arc;
 
 pub(crate) static HANDLER_METRICS: HandlerMetrics = HandlerMetrics;
 
@@ -62,13 +62,19 @@ pub(crate) async fn handle_execution_failure(
 
     if should_dlq {
         let metadata = DlqMetadata::new(
-            ctx.topic.clone(), ctx.partition, ctx.offset, reason.to_string(),
+            ctx.topic.clone(),
+            ctx.partition,
+            ctx.offset,
+            reason.to_string(),
             retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset) as u32,
-            chrono::Utc::now(), chrono::Utc::now(),
+            chrono::Utc::now(),
+            chrono::Utc::now(),
         );
 
         let dlq_span = tracing::Span::current().kafpy_dlq_route(
-            ctx.topic.as_str(), &reason.to_string(), ctx.partition,
+            ctx.topic.as_str(),
+            &reason.to_string(),
+            ctx.partition,
         );
         let tp = dlq_span.in_scope(|| dlq_router.route(&metadata));
         tracing::error!(
@@ -79,8 +85,11 @@ pub(crate) async fn handle_execution_failure(
 
         // Fire-and-forget — don't await
         dlq_producer.produce_async(
-            tp.topic.clone(), tp.partition,
-            msg.payload.clone().unwrap_or_default(), msg.key.clone(), &metadata,
+            tp.topic.clone(),
+            tp.partition,
+            msg.payload.clone().unwrap_or_default(),
+            msg.key.clone(),
+            &metadata,
         );
 
         queue_manager.ack(&msg.topic, 1);

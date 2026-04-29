@@ -18,4 +18,3 @@ pub struct RoutingRule {
     /// Target handler ID for this rule.
     pub handler_id: crate::routing::HandlerId,
 }
-

@@ -5,10 +5,10 @@
 //! - Successful build with minimal fields
 //! - Successful build with all fields
 
+use _kafpy::config::ProducerConfigBuilder;
 use _kafpy::consumer::config::{
     AutoOffsetReset, ConsumerConfigBuilder, PartitionAssignmentStrategy,
 };
-use _kafpy::config::ProducerConfigBuilder;
 use std::time::Duration;
 
 #[test]

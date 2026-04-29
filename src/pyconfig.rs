@@ -5,8 +5,12 @@
 
 use pyo3::prelude::*;
 
-use crate::failure::reason::{FailureCategory as RustFailureCategory, FailureReason as RustFailureReason};
-use crate::observability::config::{LogFormat as RustLogFormat, ObservabilityConfig as RustObservabilityConfig};
+use crate::failure::reason::{
+    FailureCategory as RustFailureCategory, FailureReason as RustFailureReason,
+};
+use crate::observability::config::{
+    LogFormat as RustLogFormat, ObservabilityConfig as RustObservabilityConfig,
+};
 use crate::retry::policy::RetryPolicy;
 
 // ─── PyRetryPolicy ────────────────────────────────────────────────────────────
@@ -222,11 +226,18 @@ pub struct PyFailureReason {
 impl PyFailureReason {
     #[new]
     pub fn new(category: PyFailureCategory, description: String) -> Self {
-        Self { category, description }
+        Self {
+            category,
+            description,
+        }
     }
 
     pub fn __repr__(&self) -> String {
-        format!("FailureReason(category={}, description={:?})", self.category.__repr__(), self.description)
+        format!(
+            "FailureReason(category={}, description={:?})",
+            self.category.__repr__(),
+            self.description
+        )
     }
 }
 
@@ -234,6 +245,9 @@ impl From<RustFailureReason> for PyFailureReason {
     fn from(reason: RustFailureReason) -> Self {
         let category: PyFailureCategory = reason.category().into();
         let description = reason.to_string();
-        Self { category, description }
+        Self {
+            category,
+            description,
+        }
     }
 }

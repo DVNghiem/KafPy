@@ -48,7 +48,7 @@ pub struct BenchmarkResult {
     pub latency_p50_ms: f64,
     pub latency_p95_ms: f64,
     pub latency_p99_ms: f64,
-    pub error_rate: f64, // 0.0 to 1.0
+    pub error_rate: f64,         // 0.0 to 1.0
     pub memory_delta_bytes: i64, // heap_allocated delta (can be negative)
     pub percentile_buckets: PercentileBuckets,
     /// Unix timestamp in milliseconds at end of benchmark run.

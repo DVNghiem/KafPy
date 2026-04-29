@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests {
     use crate::failure::{
-        FailureCategory, FailureReason, TerminalKind, reason::{NonRetryableKind, RetryableKind},
+        reason::{NonRetryableKind, RetryableKind},
+        FailureCategory, FailureReason, TerminalKind,
     };
 
     #[test]

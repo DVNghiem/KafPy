@@ -1,7 +1,7 @@
 //! Batch accumulator for handler-mode batch execution.
 
-use std::collections::HashMap;
 use parking_lot::Mutex;
+use std::collections::HashMap;
 
 use crate::dispatcher::OwnedMessage;
 use crate::worker_pool::accumulator::PerPartitionBuffer;
@@ -42,9 +42,7 @@ impl BatchAccumulator {
     pub fn add(&self, msg: OwnedMessage) {
         let partition = msg.partition;
         let mut guard = self.partition_accumulators.lock();
-        let acc = guard
-            .entry(partition)
-            .or_default();
+        let acc = guard.entry(partition).or_default();
         acc.add(msg, self.max_batch_wait);
     }
 

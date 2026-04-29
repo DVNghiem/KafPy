@@ -20,7 +20,9 @@
 use crate::config::ConsumerConfig;
 use crate::consumer::error::ConsumerError;
 use crate::consumer::{ConsumerConfigBuilder, ConsumerRunner};
-use crate::coordinator::{CommitConfig, OffsetCommitter, OffsetTracker, RetryCoordinator, ShutdownCoordinator};
+use crate::coordinator::{
+    CommitConfig, OffsetCommitter, OffsetTracker, RetryCoordinator, ShutdownCoordinator,
+};
 use crate::dispatcher::consumer_dispatcher::ConsumerDispatcher;
 use crate::dispatcher::DefaultBackpressurePolicy;
 use crate::dlq::produce::SharedDlqProducer;
@@ -110,8 +112,10 @@ impl RuntimeBuilder {
         let prometheus_sink = SharedPrometheusSink::new();
 
         // 3. Create DLQ producer and router (needed for ConsumerRunner with CustomConsumerContext)
-        let dlq_producer: Arc<SharedDlqProducer> =
-            Arc::new(SharedDlqProducer::new(&rust_config, prometheus_sink.clone()).expect("Failed to create DLQ producer"));
+        let dlq_producer: Arc<SharedDlqProducer> = Arc::new(
+            SharedDlqProducer::new(&rust_config, prometheus_sink.clone())
+                .expect("Failed to create DLQ producer"),
+        );
         let dlq_router: Arc<dyn DlqRouter> =
             Arc::new(DefaultDlqRouter::new(rust_config.dlq_topic_prefix.clone()));
 
@@ -142,11 +146,14 @@ impl RuntimeBuilder {
                 .map(|(topic, meta)| (topic.clone(), meta.clone()))
                 .collect()
         };
-        logger::log("INFO", &format!(
-            "registering handlers count={} topics={:?}",
-            all_handlers.len(),
-            all_handlers.iter().map(|(t, _)| t).collect::<Vec<_>>()
-        ));
+        logger::log(
+            "INFO",
+            &format!(
+                "registering handlers count={} topics={:?}",
+                all_handlers.len(),
+                all_handlers.iter().map(|(t, _)| t).collect::<Vec<_>>()
+            ),
+        );
         let receivers: Vec<_> = all_handlers
             .iter()
             .map(|(topic, _)| dispatcher.register_handler(topic.clone(), 100, None))
@@ -167,12 +174,12 @@ impl RuntimeBuilder {
                         .or(default_handler_timeout);
 
                     // Resolve batch config
-                    let batch_policy = meta.batch_max_size.map(|max_size| {
-                        crate::python::handler::BatchPolicy {
-                            max_batch_size: max_size,
-                            max_batch_wait_ms: meta.batch_max_wait_ms.unwrap_or(1000),
-                        }
-                    });
+                    let batch_policy =
+                        meta.batch_max_size
+                            .map(|max_size| crate::python::handler::BatchPolicy {
+                                max_batch_size: max_size,
+                                max_batch_wait_ms: meta.batch_max_wait_ms.unwrap_or(1000),
+                            });
 
                     let handler = Arc::new(PythonHandler::new(
                         meta.callback.clone(),
@@ -244,9 +251,7 @@ impl RuntimeBuilder {
 
         // 13. Spawn dispatcher task
         let dispatcher_handle = tokio::spawn(async move {
-            dispatcher
-                .run(&DefaultBackpressurePolicy)
-                .await;
+            dispatcher.run(&DefaultBackpressurePolicy).await;
         });
 
         // 14. Return Runtime (caller must invoke run())

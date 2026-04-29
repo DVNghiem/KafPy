@@ -16,12 +16,7 @@ pub struct ExecutionContext {
 }
 
 impl ExecutionContext {
-    pub fn new(
-        topic: String,
-        partition: i32,
-        offset: i64,
-        worker_id: usize,
-    ) -> Self {
+    pub fn new(topic: String, partition: i32, offset: i64, worker_id: usize) -> Self {
         Self {
             topic,
             partition,

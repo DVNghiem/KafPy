@@ -79,8 +79,7 @@ fn ctx_to_pydict<'py>(py: Python<'py>, ctx: &ExecutionContext, msg: &OwnedMessag
 }
 
 /// Execution mode for a Python handler.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum HandlerMode {
     /// Single-message sync invocation via spawn_blocking.
     #[default]
@@ -92,7 +91,6 @@ pub enum HandlerMode {
     /// Batch async invocation via into_future with Vec<OwnedMessage> (Phase 26).
     BatchAsync,
 }
-
 
 impl HandlerMode {
     /// Returns the mode name as a string for metrics labeling.
@@ -236,9 +234,7 @@ impl PythonHandler {
                         traceback: "Batch handler failed".to_string(),
                     },
                     BatchExecutionResult::PartialFailure { .. } => ExecutionResult::Error {
-                        reason: FailureReason::Terminal(
-                            crate::failure::TerminalKind::HandlerPanic,
-                        ),
+                        reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
                         exception: "PartialFailureNotImplemented".to_string(),
                         traceback: "PartialFailure not implemented in v1.6".to_string(),
                     },
@@ -294,7 +290,9 @@ impl PythonHandler {
                             timeout.as_millis()
                         );
                         ExecutionResult::Error {
-                            reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
+                            reason: FailureReason::Terminal(
+                                crate::failure::TerminalKind::HandlerPanic,
+                            ),
                             exception: "HandlerTimeout".to_string(),
                             traceback: format!(
                                 "handler timed out after {}ms on topic {} partition {} offset {}",
@@ -324,9 +322,9 @@ impl PythonHandler {
             .headers
             .iter()
             .filter_map(|(k, v)| {
-                v.as_ref().map(|bytes| {
-                    String::from_utf8_lossy(bytes).to_string()
-                }).map(|val| (k.clone(), val))
+                v.as_ref()
+                    .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+                    .map(|val| (k.clone(), val))
             })
             .collect();
         let mut trace_context = std::collections::HashMap::new();
@@ -390,9 +388,9 @@ impl PythonHandler {
                 msg.headers
                     .iter()
                     .filter_map(|(k, v)| {
-                        v.as_ref().map(|bytes| {
-                            String::from_utf8_lossy(bytes).to_string()
-                        }).map(|val| (k.clone(), val))
+                        v.as_ref()
+                            .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+                            .map(|val| (k.clone(), val))
                     })
                     .collect()
             })
@@ -416,8 +414,12 @@ impl PythonHandler {
                     }
                     Err(py_err) => {
                         let classifier = DefaultFailureClassifier;
-                        let ctx_err_clone =
-                            ExecutionContext::new(ctx_clone.topic.clone(), ctx_clone.partition, 0, worker_id);
+                        let ctx_err_clone = ExecutionContext::new(
+                            ctx_clone.topic.clone(),
+                            ctx_clone.partition,
+                            0,
+                            worker_id,
+                        );
                         let reason = classifier.classify(&py_err, &ctx_err_clone);
                         BatchExecutionResult::AllFailure(reason)
                     }

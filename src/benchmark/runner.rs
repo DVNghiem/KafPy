@@ -8,9 +8,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::benchmark::measurement::{
-    AggregatedStatsSnapshot, BackgroundAggregator,
-};
+use crate::benchmark::measurement::{AggregatedStatsSnapshot, BackgroundAggregator};
 use crate::benchmark::results::{BenchmarkResult, ScenarioConfig};
 use crate::benchmark::scenarios::Scenario;
 use crate::observability::metrics::MetricsSink;
@@ -37,10 +35,7 @@ impl BenchmarkContext {
     ///
     /// Sets up BackgroundAggregator with warmup exclusion based on scenario's default_warmup_messages.
     /// The metrics_sink can be None (no external metrics emitted) or Some (user-provided sink).
-    pub fn new(
-        scenario: &dyn Scenario,
-        metrics_sink: Option<Arc<dyn MetricsSink>>,
-    ) -> Self {
+    pub fn new(scenario: &dyn Scenario, metrics_sink: Option<Arc<dyn MetricsSink>>) -> Self {
         let config = scenario.build_config();
         let warmup_messages = scenario.default_warmup_messages();
         let (aggregator, shutdown_token) = BackgroundAggregator::spawn(warmup_messages);
@@ -71,7 +66,9 @@ impl BenchmarkContext {
     #[allow(dead_code)]
     pub fn record_message(&self, payload_bytes: usize) {
         let sender = self.latency_sender();
-        let _ = sender.try_send(crate::benchmark::measurement::Sample::MessageRecorded(payload_bytes));
+        let _ = sender.try_send(crate::benchmark::measurement::Sample::MessageRecorded(
+            payload_bytes,
+        ));
     }
 
     /// Take a snapshot of current aggregated stats (for interim reporting or final results).
@@ -108,17 +105,13 @@ impl BenchmarkContext {
             let snapshot = self.snapshot();
             sink.record_counter(
                 "benchmark.messages.total",
-                &[
-                    ("scenario", self.config.scenario_name.as_str()),
-                ],
+                &[("scenario", self.config.scenario_name.as_str())],
             );
             // Emit measurement window duration
             sink.record_gauge(
                 "benchmark.duration_ms",
                 snapshot.throughput_meter.elapsed().as_millis() as f64,
-                &[
-                    ("scenario", self.config.scenario_name.as_str()),
-                ],
+                &[("scenario", self.config.scenario_name.as_str())],
             );
         }
 
@@ -178,7 +171,8 @@ impl BenchmarkRunner {
         let warmup_messages = scenario.default_warmup_messages();
 
         // Phase 2: Warmup — send warmup_messages (excluded from measurement)
-        self.run_warmup(scenario.as_ref(), &context, warmup_messages).await?;
+        self.run_warmup(scenario.as_ref(), &context, warmup_messages)
+            .await?;
 
         // Phase 3: Measurement window — record latency and throughput
         let start = Instant::now();
@@ -194,9 +188,7 @@ impl BenchmarkRunner {
 
         // Emit framework-level benchmark metrics to user-provided sink (RUN-03)
         if let Some(sink) = &self.metrics_sink {
-            let labels: Vec<(&str, &str)> = vec![
-                ("scenario", config.scenario_name.as_str()),
-            ];
+            let labels: Vec<(&str, &str)> = vec![("scenario", config.scenario_name.as_str())];
 
             // Emit throughput metrics
             sink.record_counter("benchmark.messages.total", &labels);
@@ -285,7 +277,7 @@ impl BenchmarkRunner {
             latency_p50_ms: p50,
             latency_p95_ms: p95,
             latency_p99_ms: p99,
-            error_rate: 0.0, // TODO: connect error tracking (Phase 41/42)
+            error_rate: 0.0,       // TODO: connect error tracking (Phase 41/42)
             memory_delta_bytes: 0, // TODO: connect RuntimeSnapshot (Phase 40-02)
             percentile_buckets: crate::benchmark::results::PercentileBuckets::default(),
             timestamp_ms: std::time::SystemTime::now()
@@ -369,7 +361,8 @@ mod pyo3_bindings {
             match result {
                 Ok(r) => {
                     let dict = pyo3::types::PyDict::new(py);
-                    dict.set_item("scenario_name", r.scenario_config.scenario_name).ok();
+                    dict.set_item("scenario_name", r.scenario_config.scenario_name)
+                        .ok();
                     dict.set_item("total_messages", r.total_messages).ok();
                     dict.set_item("duration_ms", r.duration_ms).ok();
                     dict.set_item("throughput_msg_s", r.throughput_msg_s).ok();
@@ -377,14 +370,16 @@ mod pyo3_bindings {
                     dict.set_item("latency_p95_ms", r.latency_p95_ms).ok();
                     dict.set_item("latency_p99_ms", r.latency_p99_ms).ok();
                     dict.set_item("error_rate", r.error_rate).ok();
-                    dict.set_item("memory_delta_bytes", r.memory_delta_bytes).ok();
+                    dict.set_item("memory_delta_bytes", r.memory_delta_bytes)
+                        .ok();
                     dict.set_item("timestamp_ms", r.timestamp_ms).ok();
                     dict.into_py(py)
                 }
-                Err(e) => {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!("benchmark run failed: {}", e))
-                        .into_py(py)
-                }
+                Err(e) => pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "benchmark run failed: {}",
+                    e
+                ))
+                .into_py(py),
             }
         }
     }

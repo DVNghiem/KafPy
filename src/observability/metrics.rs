@@ -38,10 +38,7 @@ impl MetricLabels {
 
     /// Returns owned Vec of borrowed pairs for metrics crate macro consumption.
     pub fn as_slice(&self) -> Vec<(&str, &str)> {
-        self.0
-            .iter()
-            .map(|(k, v)| (*k, v.as_str()))
-            .collect()
+        self.0.iter().map(|(k, v)| (*k, v.as_str())).collect()
     }
 }
 
@@ -94,7 +91,8 @@ impl PrometheusSink {
     pub fn register_histogram(&mut self, name: &'static str, help: &str) {
         if !self.histograms.contains_key(name) {
             let histogram = Histogram::new(LATENCY_BUCKETS.iter().copied());
-            self.registry_mut().register_with_unit(name, help, Unit::Seconds, histogram.clone());
+            self.registry_mut()
+                .register_with_unit(name, help, Unit::Seconds, histogram.clone());
             self.histograms.insert(name, histogram);
         }
     }
@@ -153,7 +151,10 @@ impl SharedPrometheusSink {
     pub fn new() -> Self {
         let mut sink = PrometheusSink::new();
         sink.register_counter("kafpy.message.throughput", "Messages delivered per second");
-        sink.register_histogram("kafpy.handler.latency", "Handler processing time in seconds");
+        sink.register_histogram(
+            "kafpy.handler.latency",
+            "Handler processing time in seconds",
+        );
         sink.register_histogram("kafpy.handler.batch_size", "Batch size distribution");
         sink.register_counter("kafpy.handler.invocation", "Handler invocation count");
         sink.register_counter("kafpy.handler.error", "Handler error count");
@@ -183,7 +184,10 @@ impl MetricsSink for SharedPrometheusSink {
     }
 
     fn record_histogram(&self, name: &str, value: f64, labels: &[(&str, &str)]) {
-        self.inner.lock().unwrap().record_histogram(name, value, labels);
+        self.inner
+            .lock()
+            .unwrap()
+            .record_histogram(name, value, labels);
     }
 
     fn record_gauge(&self, name: &str, value: f64, labels: &[(&str, &str)]) {
@@ -246,7 +250,11 @@ impl HandlerMetrics {
 
     /// Record latency histogram: kafpy.handler.latency (seconds)
     pub fn record_latency(&self, sink: &dyn MetricsSink, labels: &MetricLabels, elapsed: Duration) {
-        sink.record_histogram("kafpy.handler.latency", elapsed.as_secs_f64(), &labels.as_slice());
+        sink.record_histogram(
+            "kafpy.handler.latency",
+            elapsed.as_secs_f64(),
+            &labels.as_slice(),
+        );
     }
 
     /// Record error counter: kafpy.handler.error
@@ -299,8 +307,7 @@ pub struct QueueMetrics;
 impl QueueMetrics {
     /// kafpy.queue.depth gauge — reflects current queue depth per handler.
     pub fn record_queue_depth(sink: &dyn MetricsSink, handler_id: &str, depth: usize) {
-        let labels = MetricLabels::new()
-            .insert("handler_id", handler_id);
+        let labels = MetricLabels::new().insert("handler_id", handler_id);
         sink.record_gauge("kafpy.queue.depth", depth as f64, &labels.as_slice());
     }
 }

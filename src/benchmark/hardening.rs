@@ -337,19 +337,13 @@ mod tests {
             HardeningCheck::BackpressureThreshold.name(),
             "BackpressureThreshold"
         );
-        assert_eq!(
-            HardeningCheck::MemoryLeakCheck.name(),
-            "MemoryLeakCheck"
-        );
+        assert_eq!(HardeningCheck::MemoryLeakCheck.name(), "MemoryLeakCheck");
         assert_eq!(
             HardeningCheck::GracefulShutdownCheck.name(),
             "GracefulShutdownCheck"
         );
         assert_eq!(HardeningCheck::DlqDrainCheck.name(), "DlqDrainCheck");
-        assert_eq!(
-            HardeningCheck::RetryBudgetCheck.name(),
-            "RetryBudgetCheck"
-        );
+        assert_eq!(HardeningCheck::RetryBudgetCheck.name(), "RetryBudgetCheck");
     }
 
     // ── ValidationResult serialization test ──
@@ -376,8 +370,10 @@ mod tests {
 
     #[test]
     fn test_validation_result_pass_serialization() {
-        let result =
-            ValidationResult::pass("MemoryLeakCheck", "Memory delta within acceptable threshold");
+        let result = ValidationResult::pass(
+            "MemoryLeakCheck",
+            "Memory delta within acceptable threshold",
+        );
 
         let serialized = serde_json::to_string(&result).unwrap();
         let deserialized: ValidationResult = serde_json::from_str(&serialized).unwrap();

@@ -249,7 +249,9 @@ mod tests {
             })
             .with_default_handler("my-default".into());
 
-        assert!(matches!(chain.route(&ctx()), RoutingDecision::Route(id) if id.as_str() == "my-default"));
+        assert!(
+            matches!(chain.route(&ctx()), RoutingDecision::Route(id) if id.as_str() == "my-default")
+        );
     }
 
     #[test]
@@ -261,7 +263,9 @@ mod tests {
             })
             .with_default_handler("default".into());
 
-        assert!(matches!(chain.route(&ctx()), RoutingDecision::Route(id) if id.as_str() == "key-handler"));
+        assert!(
+            matches!(chain.route(&ctx()), RoutingDecision::Route(id) if id.as_str() == "key-handler")
+        );
     }
 
     #[test]

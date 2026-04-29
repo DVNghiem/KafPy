@@ -10,7 +10,7 @@
 //! use kafpy::error::{DispatchError, ConsumerError, CoordinatorError, PyError};
 //! ```
 
-pub use crate::dispatcher::error::DispatchError;
 pub use crate::consumer::error::ConsumerError;
 pub use crate::coordinator::error::CoordinatorError;
+pub use crate::dispatcher::error::DispatchError;
 pub use crate::errors::PyError;

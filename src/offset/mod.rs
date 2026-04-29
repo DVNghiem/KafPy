@@ -6,4 +6,3 @@
 pub mod commit_task;
 pub mod offset_coordinator;
 pub mod offset_tracker;
-

@@ -12,4 +12,3 @@
 
 /// Initialize logging system - no-op, Python logging is configured in Python code.
 pub fn init() {}
-

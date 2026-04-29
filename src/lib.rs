@@ -2,8 +2,8 @@ use pyo3::prelude::*;
 
 pub mod config;
 // Unified error re-exports (errors.rs remains internal as PyError)
-pub(crate) mod errors;
 pub mod error;
+pub(crate) mod errors;
 pub mod kafka_message;
 pub mod produce;
 pub mod pyconfig;
@@ -104,13 +104,21 @@ fn run_scenario_py(_py: Python<'_>, scenario_name: &str, config_json: &str) -> P
         "throughput" => {
             match serde_json::from_str::<benchmark::scenarios::ThroughputScenario>(config_json) {
                 Ok(cfg) => Box::new(cfg),
-                Err(e) => return Err(pyo3::exceptions::PyValueError::new_err(format!("invalid config for throughput scenario: {e}"))),
+                Err(e) => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "invalid config for throughput scenario: {e}"
+                    )))
+                }
             }
         }
         "latency" => {
             match serde_json::from_str::<benchmark::scenarios::LatencyScenario>(config_json) {
                 Ok(cfg) => Box::new(cfg),
-                Err(e) => return Err(pyo3::exceptions::PyValueError::new_err(format!("invalid config for latency scenario: {e}"))),
+                Err(e) => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "invalid config for latency scenario: {e}"
+                    )))
+                }
             }
         }
         _ => {
@@ -121,7 +129,9 @@ fn run_scenario_py(_py: Python<'_>, scenario_name: &str, config_json: &str) -> P
     };
 
     // Run benchmark synchronously on a tokio runtime
-    let rt = tokio::runtime::Runtime::new().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create tokio runtime: {e}")))?;
+    let rt = tokio::runtime::Runtime::new().map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create tokio runtime: {e}"))
+    })?;
     let result = rt.block_on(async {
         let runner = BenchmarkRunner::new(None);
         runner.run_scenario(scenario).await
@@ -144,7 +154,9 @@ fn run_scenario_py(_py: Python<'_>, scenario_name: &str, config_json: &str) -> P
             });
             Ok(serde_json::to_string(&json).unwrap())
         }
-        Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(format!("benchmark run failed: {e}")))
+        Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "benchmark run failed: {e}"
+        ))),
     }
 }
 
@@ -157,8 +169,9 @@ fn run_scenario_py(_py: Python<'_>, scenario_name: &str, config_json: &str) -> P
 ///     JSON array of ValidationResult objects
 #[pyfunction]
 fn run_hardening_checks_py(_py: Python<'_>, result_json: &str) -> PyResult<String> {
-    let result: BenchmarkResult = serde_json::from_str(result_json)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid result JSON: {e}")))?;
+    let result: BenchmarkResult = serde_json::from_str(result_json).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("invalid result JSON: {e}"))
+    })?;
 
     let validations = HardeningRunner::run_all(&result);
 
@@ -174,8 +187,9 @@ fn run_hardening_checks_py(_py: Python<'_>, result_json: &str) -> PyResult<Strin
         })
         .collect();
 
-    serde_json::to_string(&json_array)
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("failed to serialize results: {e}")))
+    serde_json::to_string(&json_array).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("failed to serialize results: {e}"))
+    })
 }
 
 // ─── Compile-time Send+Sync guarantees ─────────────────────────────────────────
@@ -188,7 +202,8 @@ where
     crate::routing::context::RoutingContext<'static>: Send + Sync,
     crate::routing::decision::RoutingDecision: Send + Sync,
     crate::routing::key::KeyRouter: Send + Sync,
-{}
+{
+}
 
 #[cfg(test)]
 mod send_sync_assertions {
@@ -206,7 +221,8 @@ where
     crate::dispatcher::Dispatcher: Send + Sync,
     crate::dispatcher::DispatchOutcome: Send + Sync,
     crate::dispatcher::error::DispatchError: Send + Sync,
-{}
+{
+}
 
 #[cfg(test)]
 mod dispatcher_send_sync_assertions {

@@ -121,7 +121,10 @@ mod tests {
 
     #[test]
     fn exact_bytes_match() {
-        let router = KeyRouter::new(vec![KeyRule::exact_bytes(b"order-123", HandlerId::new("h"))]);
+        let router = KeyRouter::new(vec![KeyRule::exact_bytes(
+            b"order-123",
+            HandlerId::new("h"),
+        )]);
         assert!(
             matches!(router.route(&ctx(Some(b"order-123"))), RoutingDecision::Route(id) if id == HandlerId::new("h"))
         );
@@ -129,7 +132,10 @@ mod tests {
 
     #[test]
     fn exact_bytes_no_match() {
-        let router = KeyRouter::new(vec![KeyRule::exact_bytes(b"order-123", HandlerId::new("h"))]);
+        let router = KeyRouter::new(vec![KeyRule::exact_bytes(
+            b"order-123",
+            HandlerId::new("h"),
+        )]);
         assert!(matches!(
             router.route(&ctx(Some(b"order-456"))),
             RoutingDecision::Defer
@@ -174,7 +180,10 @@ mod tests {
 
     #[test]
     fn no_key_defer() {
-        let router = KeyRouter::new(vec![KeyRule::exact_bytes(b"order-123", HandlerId::new("h"))]);
+        let router = KeyRouter::new(vec![KeyRule::exact_bytes(
+            b"order-123",
+            HandlerId::new("h"),
+        )]);
         assert!(matches!(router.route(&ctx(None)), RoutingDecision::Defer));
     }
 

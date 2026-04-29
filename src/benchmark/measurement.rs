@@ -304,7 +304,8 @@ impl ThroughputMeter {
     #[allow(dead_code)]
     pub fn record_message(&self, payload_bytes: usize) {
         self.messages.fetch_add(1, Ordering::Relaxed);
-        self.bytes.fetch_add(payload_bytes as u64, Ordering::Relaxed);
+        self.bytes
+            .fetch_add(payload_bytes as u64, Ordering::Relaxed);
     }
 
     /// Returns the total number of messages recorded.
@@ -687,7 +688,9 @@ mod tests {
     fn benchmark_labels_creation() {
         let labels = benchmark_labels("throughput_test", "burst");
         let slice = labels.as_slice();
-        assert!(slice.iter().any(|(k, v)| *k == "scenario" && *v == "throughput_test"));
+        assert!(slice
+            .iter()
+            .any(|(k, v)| *k == "scenario" && *v == "throughput_test"));
         assert!(slice.iter().any(|(k, v)| *k == "mode" && *v == "burst"));
     }
 }

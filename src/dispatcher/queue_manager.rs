@@ -155,7 +155,9 @@ impl QueueManager {
     /// Creates a new empty QueueManager.
     pub fn new() -> Self {
         Self {
-            handlers: std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+            handlers: std::sync::Arc::new(
+                parking_lot::Mutex::new(std::collections::HashMap::new()),
+            ),
         }
     }
 
@@ -242,11 +244,12 @@ impl QueueManager {
         let offset = message.offset;
 
         let guard = self.handlers.lock();
-        let entry = guard
-            .get(handler_id.as_str())
-            .ok_or_else(|| DispatchError::HandlerNotRegistered {
-                topic: handler_id.to_string(),
-            })?;
+        let entry =
+            guard
+                .get(handler_id.as_str())
+                .ok_or_else(|| DispatchError::HandlerNotRegistered {
+                    topic: handler_id.to_string(),
+                })?;
 
         tracing::info!(handler_id = %handler_id, topic = %topic, capacity = entry.metadata.capacity, "send_to_handler_by_id: attempting try_send");
         match entry.sender.try_send(message) {

@@ -1,6 +1,6 @@
 //! PythonRouter — routes messages via a Python callback callable.
 
-use crate::routing::context::{RoutingContext, HandlerId};
+use crate::routing::context::{HandlerId, RoutingContext};
 use crate::routing::decision::{RejectReason, RoutingDecision};
 use crate::routing::router::Router;
 use pyo3::prelude::*;

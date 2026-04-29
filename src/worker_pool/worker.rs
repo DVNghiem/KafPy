@@ -7,8 +7,8 @@ use tokio::select;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::coordinator::RetryCoordinator;
 use crate::coordinator::OffsetCoordinator;
+use crate::coordinator::RetryCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqRouter, SharedDlqProducer};
@@ -40,14 +40,13 @@ fn handler_for_topic<'a>(
     handlers: &'a HashMap<String, Arc<PythonHandler>>,
     topic: &str,
 ) -> &'a Arc<PythonHandler> {
-    handlers
-        .get(topic)
-        .unwrap_or_else(|| {
-            tracing::warn!(topic = %topic, "no handler registered for topic, using first available");
-            handlers.values().next().expect("handler map is empty")
-        })
+    handlers.get(topic).unwrap_or_else(|| {
+        tracing::warn!(topic = %topic, "no handler registered for topic, using first available");
+        handlers.values().next().expect("handler map is empty")
+    })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn worker_loop(
     mut rx: mpsc::Receiver<OwnedMessage>,
     handlers: Arc<HashMap<String, Arc<PythonHandler>>>,
@@ -104,9 +103,9 @@ pub(crate) async fn worker_loop(
                 .headers
                 .iter()
                 .filter_map(|(k, v)| {
-                    v.as_ref().map(|bytes| {
-                        String::from_utf8_lossy(bytes).to_string()
-                    }).map(|val| (k.clone(), val))
+                    v.as_ref()
+                        .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+                        .map(|val| (k.clone(), val))
                 })
                 .collect();
             let mut trace_map = std::collections::HashMap::new();
@@ -117,8 +116,13 @@ pub(crate) async fn worker_loop(
             let trace_flags = trace_map.get("trace_flags").cloned();
 
             let ctx = ExecutionContext::with_trace(
-                msg.topic.clone(), msg.partition, msg.offset, worker_id,
-                trace_id, span_id, trace_flags,
+                msg.topic.clone(),
+                msg.partition,
+                msg.offset,
+                worker_id,
+                trace_id,
+                span_id,
+                trace_flags,
             );
             let handler = handler_for_topic(&handlers, &msg.topic).clone();
             let start = std::time::Instant::now();
@@ -141,9 +145,9 @@ pub(crate) async fn worker_loop(
             ));
             // Acquire concurrency permit — holds until end of this block
             let _permit = handler_concurrency.acquire(&ctx.topic).await;
-            let result = span.in_scope(|| async {
-                handler.invoke_mode_with_timeout(&ctx, msg.clone()).await
-            }).await;
+            let result = span
+                .in_scope(|| async { handler.invoke_mode_with_timeout(&ctx, msg.clone()).await })
+                .await;
             let elapsed = start.elapsed();
             logger::log("INFO", &format!(
                 "handler invoke complete handler_id={} topic={} partition={} offset={} elapsed_ms={}",
@@ -186,7 +190,11 @@ pub(crate) async fn worker_loop(
                     queue_manager.ack(&msg.topic, 1);
                     offset_coordinator.record_ack(&ctx.topic, ctx.partition, ctx.offset);
                 }
-                ExecutionResult::Error { ref reason, ref exception, .. } => {
+                ExecutionResult::Error {
+                    ref reason,
+                    ref exception,
+                    ..
+                } => {
                     tracing::warn!(
                         worker_id = worker_id,
                         topic = %ctx.topic,
@@ -258,7 +266,13 @@ pub(crate) async fn worker_loop(
             }
 
             if shutdown_token.is_cancelled() {
-                logger::log("INFO", &format!("worker stopped (cancelled after message) worker_id={}", worker_id));
+                logger::log(
+                    "INFO",
+                    &format!(
+                        "worker stopped (cancelled after message) worker_id={}",
+                        worker_id
+                    ),
+                );
                 worker_pool_state.set_idle(worker_id);
                 break;
             }
@@ -277,8 +291,8 @@ mod tests {
     use crate::dispatcher::queue_manager::QueueManager;
     use crate::dispatcher::OwnedMessage;
     use crate::dlq::router::DefaultDlqRouter;
-    use crate::python::DefaultExecutor;
     use crate::observability::runtime_snapshot::WorkerPoolState;
+    use crate::python::DefaultExecutor;
     use pyo3::prelude::*;
     use std::sync::Arc;
 
@@ -322,7 +336,13 @@ mod tests {
     }
 
     fn dummy_dlq_producer() -> Arc<SharedDlqProducer> {
-        Arc::new(SharedDlqProducer::new(&test_config(), crate::observability::metrics::SharedPrometheusSink::new()).unwrap())
+        Arc::new(
+            SharedDlqProducer::new(
+                &test_config(),
+                crate::observability::metrics::SharedPrometheusSink::new(),
+            )
+            .unwrap(),
+        )
     }
 
     fn dummy_dlq_router() -> Arc<dyn DlqRouter> {

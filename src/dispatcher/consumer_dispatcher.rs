@@ -4,11 +4,9 @@
 
 use crate::consumer::runner::ConsumerRunner;
 use crate::consumer::OwnedMessage;
-use crate::dispatcher::backpressure::{
-    BackpressureAction, BackpressurePolicy,
-};
+use crate::dispatcher::backpressure::{BackpressureAction, BackpressurePolicy};
 use crate::dispatcher::error::DispatchError;
-use crate::dispatcher::{Dispatcher, DispatchOutcome, QueueManager};
+use crate::dispatcher::{DispatchOutcome, Dispatcher, QueueManager};
 use crate::observability::tracing::KafpySpanExt;
 use crate::routing::chain::RoutingChain;
 use crate::routing::context::RoutingContext;
@@ -116,7 +114,10 @@ impl ConsumerDispatcher {
                         Ok(outcome) => {
                             self.check_resume(&topic, outcome.queue_depth);
                         }
-                        Err(DispatchError::Backpressure { queue_name: _, reason: _ }) => {
+                        Err(DispatchError::Backpressure {
+                            queue_name: _,
+                            reason: _,
+                        }) => {
                             tracing::Span::current().record("routing_decision", "backpressure");
                             if let Some(BackpressureAction::FuturePausePartition(pause_topic)) =
                                 pause_signal
@@ -188,9 +189,10 @@ impl ConsumerDispatcher {
                                 .unwrap_or_else(|| panic!("handler '{}' not found", handler_id)),
                         );
                         match action {
-                            BackpressureAction::Drop | BackpressureAction::Wait => {
-                                (Err(DispatchError::Backpressure { queue_name, reason }), None)
-                            }
+                            BackpressureAction::Drop | BackpressureAction::Wait => (
+                                Err(DispatchError::Backpressure { queue_name, reason }),
+                                None,
+                            ),
                             BackpressureAction::FuturePausePartition(t) => (
                                 Err(DispatchError::Backpressure { queue_name, reason }),
                                 Some(BackpressureAction::FuturePausePartition(t)),
@@ -203,14 +205,18 @@ impl ConsumerDispatcher {
             RoutingDecision::Drop => {
                 tracing::debug!("message dropped by routing chain");
                 (
-                    Err(DispatchError::HandlerNotRegistered { topic: "routing-drop".to_string() }),
+                    Err(DispatchError::HandlerNotRegistered {
+                        topic: "routing-drop".to_string(),
+                    }),
                     None,
                 )
             }
             RoutingDecision::Reject(reason) => {
                 tracing::warn!("message rejected by routing chain: {}", reason);
                 (
-                    Err(DispatchError::HandlerNotRegistered { topic: "routing-reject".to_string() }),
+                    Err(DispatchError::HandlerNotRegistered {
+                        topic: "routing-reject".to_string(),
+                    }),
                     None,
                 )
             }
@@ -218,7 +224,9 @@ impl ConsumerDispatcher {
                 // Should not happen with properly configured chain, but handle gracefully
                 tracing::warn!("routing chain returned Defer with no fallback");
                 (
-                    Err(DispatchError::HandlerNotRegistered { topic: "routing-defer".to_string() }),
+                    Err(DispatchError::HandlerNotRegistered {
+                        topic: "routing-defer".to_string(),
+                    }),
                     None,
                 )
             }
@@ -231,26 +239,22 @@ impl ConsumerDispatcher {
             return;
         };
         let threshold = (capacity as f64 * self.resume_threshold) as usize;
-        if current_depth < threshold
-            && self.paused_topics.lock().remove(topic) {
-                if let Err(e) = self.resume_partition(topic) {
-                    tracing::error!("failed to resume topic '{}': {}", topic, e);
-                } else {
-                    tracing::info!(
-                        "resumed topic '{}' (depth {} < threshold {})",
-                        topic,
-                        current_depth,
-                        threshold
-                    );
-                }
+        if current_depth < threshold && self.paused_topics.lock().remove(topic) {
+            if let Err(e) = self.resume_partition(topic) {
+                tracing::error!("failed to resume topic '{}': {}", topic, e);
+            } else {
+                tracing::info!(
+                    "resumed topic '{}' (depth {} < threshold {})",
+                    topic,
+                    current_depth,
+                    threshold
+                );
             }
+        }
     }
 
     /// Pauses consumption for all partitions of `topic` via rdkafka pause().
-    fn pause_partition(
-        &self,
-        topic: &str,
-    ) -> Result<(), crate::consumer::error::ConsumerError> {
+    fn pause_partition(&self, topic: &str) -> Result<(), crate::consumer::error::ConsumerError> {
         let handles = self.partition_handles.lock();
         if let Some(tpl) = handles.get(topic) {
             self.runner.pause(tpl)
@@ -264,10 +268,7 @@ impl ConsumerDispatcher {
     }
 
     /// Resumes consumption for all partitions of `topic` via rdkafka resume().
-    fn resume_partition(
-        &self,
-        topic: &str,
-    ) -> Result<(), crate::consumer::error::ConsumerError> {
+    fn resume_partition(&self, topic: &str) -> Result<(), crate::consumer::error::ConsumerError> {
         let handles = self.partition_handles.lock();
         if let Some(tpl) = handles.get(topic) {
             self.runner.resume(tpl)
@@ -289,9 +290,7 @@ impl ConsumerDispatcher {
             let topic_name = elem.topic().to_string();
             let partition = elem.partition();
             let offset = elem.offset();
-            by_topic
-                .entry(topic_name.clone())
-                .or_default();
+            by_topic.entry(topic_name.clone()).or_default();
             let tpl = by_topic.get_mut(&topic_name).unwrap();
             tpl.add_partition_offset(topic_name.as_str(), partition, offset)
                 .map_err(|e| crate::consumer::error::ConsumerError::Subscription {
@@ -367,8 +366,7 @@ mod tests {
 
         // Second send should fail with backpressure (semaphore exhausted)
         let msg2 = OwnedMessage::fake("test-topic", 1, 101);
-        let (result, _) =
-            dispatcher.send_with_policy_and_signal(msg2).await;
+        let (result, _) = dispatcher.send_with_policy_and_signal(msg2).await;
         assert!(matches!(result, Err(DispatchError::Backpressure { .. })));
     }
 
@@ -381,8 +379,7 @@ mod tests {
 
         for i in 0..50 {
             let msg = OwnedMessage::fake("test-topic", i % 3, i as i64);
-            let (result, _) =
-                dispatcher.send_with_policy_and_signal(msg).await;
+            let (result, _) = dispatcher.send_with_policy_and_signal(msg).await;
             assert!(result.is_ok(), "dispatch {} should succeed", i);
         }
     }

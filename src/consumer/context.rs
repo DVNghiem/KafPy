@@ -61,9 +61,7 @@ impl CustomConsumerContext {
             offset_tracker,
             dlq_router,
             dlq_producer,
-            pause_state: Arc::new(parking_lot::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
+            pause_state: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -88,7 +86,10 @@ impl std::fmt::Debug for CustomConsumerContext {
 impl ClientContext for CustomConsumerContext {
     fn log(&self, level: RDKafkaLogLevel, fac: &str, log_message: &str) {
         match level {
-            RDKafkaLogLevel::Emerg | RDKafkaLogLevel::Alert | RDKafkaLogLevel::Critical | RDKafkaLogLevel::Error => {
+            RDKafkaLogLevel::Emerg
+            | RDKafkaLogLevel::Alert
+            | RDKafkaLogLevel::Critical
+            | RDKafkaLogLevel::Error => {
                 tracing::error!(target: "librdkafka", "{} {}", fac, log_message);
             }
             RDKafkaLogLevel::Warning => {
@@ -112,21 +113,14 @@ impl ConsumerContext for CustomConsumerContext {
     ///
     /// For revoke events, we commit offsets synchronously to ensure no
     /// messages are reprocessed after rebalance.
-    fn pre_rebalance(
-        &self,
-        consumer: &BaseConsumer<Self>,
-        rebalance: &Rebalance<'_>,
-    ) {
+    fn pre_rebalance(&self, consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
         match rebalance {
             Rebalance::Revoke(tpl) => {
                 if tpl.count() == 0 {
                     debug!("pre_rebalance: Revoke with empty list");
                     return;
                 }
-                info!(
-                    count = tpl.count(),
-                    "rebalance: partitions revoked"
-                );
+                info!(count = tpl.count(), "rebalance: partitions revoked");
                 for elem in tpl.elements() {
                     let topic = elem.topic();
                     let partition = elem.partition();
@@ -137,7 +131,9 @@ impl ConsumerContext for CustomConsumerContext {
                         let topic_owned = topic.to_string();
                         match consumer.store_offset(&topic_owned, partition, offset) {
                             Ok(()) => {
-                                match consumer.commit_consumer_state(rdkafka::consumer::CommitMode::Sync) {
+                                match consumer
+                                    .commit_consumer_state(rdkafka::consumer::CommitMode::Sync)
+                                {
                                     Ok(()) => {
                                         info!(
                                             topic = %topic,
@@ -202,11 +198,7 @@ impl ConsumerContext for CustomConsumerContext {
     /// Post-rebalance callback — called AFTER partition assignment/revocation.
     ///
     /// For assign events, we seek to the last committed offset + 1.
-    fn post_rebalance(
-        &self,
-        consumer: &BaseConsumer<Self>,
-        rebalance: &Rebalance<'_>,
-    ) {
+    fn post_rebalance(&self, consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
         match rebalance {
             Rebalance::Assign(tpl) => {
                 if tpl.count() == 0 {
@@ -229,7 +221,12 @@ impl ConsumerContext for CustomConsumerContext {
 
                     let topic_owned = topic.to_string();
                     let offset = rdkafka::Offset::Offset(seek_offset);
-                    match consumer.seek(&topic_owned, partition, offset, std::time::Duration::from_secs(5)) {
+                    match consumer.seek(
+                        &topic_owned,
+                        partition,
+                        offset,
+                        std::time::Duration::from_secs(5),
+                    ) {
                         Ok(_) => {
                             info!(
                                 topic = %topic,
@@ -271,14 +268,18 @@ mod tests {
         let ctx = CustomConsumerContext::new(
             Arc::new(OffsetTracker::new()),
             Arc::new(crate::dlq::router::DefaultDlqRouter::with_default_prefix()),
-            Arc::new(crate::dlq::produce::SharedDlqProducer::new(
-                &crate::consumer::ConsumerConfigBuilder::new()
-                    .brokers("localhost:9092")
-                    .group_id("test-group")
-                    .topics(["test"])
-                    .build()
-                    .unwrap(),
-            ).unwrap()),
+            Arc::new(
+                crate::dlq::produce::SharedDlqProducer::new(
+                    &crate::consumer::ConsumerConfigBuilder::new()
+                        .brokers("localhost:9092")
+                        .group_id("test-group")
+                        .topics(["test"])
+                        .build()
+                        .unwrap(),
+                    crate::observability::metrics::SharedPrometheusSink::new(),
+                )
+                .unwrap(),
+            ),
         );
         let debug_str = format!("{:?}", ctx);
         assert!(debug_str.contains("CustomConsumerContext"));

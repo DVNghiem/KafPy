@@ -95,11 +95,7 @@ impl ShutdownCoordinator {
     /// # Panics
     ///
     /// Panics if the current phase is not `Running`.
-    pub fn begin_draining(&self) -> (
-        CancellationToken,
-        CancellationToken,
-        CancellationToken,
-    ) {
+    pub fn begin_draining(&self) -> (CancellationToken, CancellationToken, CancellationToken) {
         {
             let mut phase = self.phase.lock();
             assert_eq!(

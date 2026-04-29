@@ -7,7 +7,7 @@
 use tracing::Span;
 
 /// Span extension trait for KafPy spans.
-/// 
+///
 /// Creates spans that will be visible through Python logging configuration.
 pub trait KafpySpanExt {
     /// Creates a `kafpy.handler.invoke` span.
@@ -116,4 +116,3 @@ pub fn inject_trace_context(
         out.insert("tracestate".to_string(), tracestate.clone());
     }
 }
-

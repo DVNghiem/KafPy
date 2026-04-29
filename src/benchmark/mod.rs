@@ -11,7 +11,6 @@ pub(crate) mod hardening;
 
 pub mod measurement;
 
-
 // Re-export MetricLabels from observability for benchmark label construction
 
 // re-export result types and CsvSerializable trait for convenience
@@ -20,7 +19,6 @@ pub mod measurement;
 
 // Scenario definitions — WHAT to benchmark (consumed by BenchmarkRunner in Phase 40)
 pub(crate) mod scenarios;
-
 
 // BenchmarkRunner — orchestrates scenario setup, warmup, measurement, teardown (Phase 40)
 pub(crate) mod runner;

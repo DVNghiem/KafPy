@@ -254,7 +254,8 @@ mod tests {
     fn retryable_failure_triggers_retry() {
         let policy = RetryPolicy::default();
         let coordinator = RetryCoordinator::with_policy(policy);
-        let reason = FailureReason::Retryable(crate::failure::reason::RetryableKind::NetworkTimeout);
+        let reason =
+            FailureReason::Retryable(crate::failure::reason::RetryableKind::NetworkTimeout);
 
         let (should_retry, should_dlq, delay) =
             coordinator.record_failure("topic", 0, 100, &reason);
@@ -282,7 +283,8 @@ mod tests {
     fn max_attempts_exceeded_returns_no_retry() {
         let policy = RetryPolicy::new(2, Duration::from_millis(100), Duration::from_secs(30), 0.1);
         let coordinator = RetryCoordinator::with_policy(policy);
-        let reason = FailureReason::Retryable(crate::failure::reason::RetryableKind::NetworkTimeout);
+        let reason =
+            FailureReason::Retryable(crate::failure::reason::RetryableKind::NetworkTimeout);
 
         // First attempt
         let (should_retry, should_dlq, _) = coordinator.record_failure("topic", 0, 100, &reason);
@@ -305,7 +307,8 @@ mod tests {
     #[test]
     fn success_clears_retry_state() {
         let coordinator = RetryCoordinator::with_policy(RetryPolicy::default());
-        let reason = FailureReason::Retryable(crate::failure::reason::RetryableKind::NetworkTimeout);
+        let reason =
+            FailureReason::Retryable(crate::failure::reason::RetryableKind::NetworkTimeout);
 
         coordinator.record_failure("topic", 0, 100, &reason);
         assert_eq!(coordinator.attempt_count("topic", 0, 100), 1);

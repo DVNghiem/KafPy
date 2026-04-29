@@ -8,7 +8,6 @@ use pyo3::types::PyDict;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-
 use crate::config::ConsumerConfig;
 use crate::python::handler::HandlerMode;
 use crate::runtime::RuntimeBuilder;
@@ -27,7 +26,7 @@ pub struct HandlerMetadata {
 
 /// Python-callable consumer. Use `add_handler` to register a topic → callback
 /// mapping, then `start()` to begin consumption.
-#[pyclass(name="Consumer")]
+#[pyclass(name = "Consumer")]
 pub struct PyConsumer {
     config: ConsumerConfig,
     /// Stores handler metadata per topic.
@@ -94,9 +93,10 @@ impl PyConsumer {
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let builder = RuntimeBuilder::new(config, handlers, shutdown_token);
-            let runtime = builder.build().await.map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
-            })?;
+            let runtime = builder
+                .build()
+                .await
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
             runtime.run_with_sigterm().await;
             Ok(())
         })
@@ -132,8 +132,7 @@ impl PyConsumer {
 // ─── Runtime Snapshot FFI ─────────────────────────────────────────────────────
 
 use crate::observability::runtime_snapshot::{
-    get_current_snapshot, get_callback_registry, RuntimeSnapshot,
-    WorkerState as ObsWorkerState,
+    get_callback_registry, get_current_snapshot, RuntimeSnapshot, WorkerState as ObsWorkerState,
 };
 
 /// Returns the current runtime snapshot as a Python dict.

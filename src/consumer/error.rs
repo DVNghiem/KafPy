@@ -13,7 +13,11 @@ pub enum ConsumerError {
     Subscription { broker: String, message: String },
 
     #[error("message receive error for handler '{handler}' after {timeout_ms}ms: {message}")]
-    Receive { handler: String, timeout_ms: u64, message: String },
+    Receive {
+        handler: String,
+        timeout_ms: u64,
+        message: String,
+    },
 
     #[error("deserialization failed for message at {topic}:{partition}@{offset}; bytes preview: {bytes_preview:?} — {source}")]
     Serialization {

@@ -2,7 +2,7 @@ use crate::failure::{FailureCategory, FailureReason};
 use crate::python::ExecutionContext;
 
 /// Log a failure with structured context through Python's logging module.
-/// 
+///
 /// Level is determined by failure category:
 /// - Retryable: WARNING
 /// - Terminal: ERROR
@@ -36,6 +36,6 @@ pub fn log_failure(
             ),
         ),
     };
-    
+
     crate::python::logger::log(level, &msg);
 }

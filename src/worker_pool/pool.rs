@@ -7,9 +7,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+use crate::coordinator::OffsetCoordinator;
 use crate::coordinator::RetryCoordinator;
 use crate::coordinator::ShutdownCoordinator;
-use crate::coordinator::OffsetCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqRouter, SharedDlqProducer};
@@ -18,8 +18,8 @@ use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::python::executor::Executor;
 use crate::python::handler::PythonHandler;
 use crate::python::logger;
-use crate::worker_pool::concurrency::HandlerConcurrency;
 use crate::worker_pool::batch_loop::batch_worker_loop;
+use crate::worker_pool::concurrency::HandlerConcurrency;
 use crate::worker_pool::worker::worker_loop;
 
 /// WorkerPool — manages N Tokio workers via `JoinSet`.
@@ -141,7 +141,10 @@ impl WorkerPool {
             }
         }
 
-        logger::log("INFO", &format!("WorkerPool created n_workers={}", n_workers));
+        logger::log(
+            "INFO",
+            &format!("WorkerPool created n_workers={}", n_workers),
+        );
         Self {
             join_set,
             shutdown_token,
@@ -158,10 +161,8 @@ impl WorkerPool {
     /// Returns current worker states for RuntimeSnapshot (OBS-31).
     pub fn worker_states(
         &self,
-    ) -> std::collections::HashMap<
-        usize,
-        crate::observability::runtime_snapshot::WorkerStatus,
-    > {
+    ) -> std::collections::HashMap<usize, crate::observability::runtime_snapshot::WorkerStatus>
+    {
         self.worker_pool_state.get_states()
     }
 
@@ -257,7 +258,13 @@ mod tests {
     }
 
     fn dummy_dlq_producer() -> Arc<SharedDlqProducer> {
-        Arc::new(SharedDlqProducer::new(&test_config(), crate::observability::metrics::SharedPrometheusSink::new()).unwrap())
+        Arc::new(
+            SharedDlqProducer::new(
+                &test_config(),
+                crate::observability::metrics::SharedPrometheusSink::new(),
+            )
+            .unwrap(),
+        )
     }
 
     fn dummy_dlq_router() -> Arc<dyn DlqRouter> {

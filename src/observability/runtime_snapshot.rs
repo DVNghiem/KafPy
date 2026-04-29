@@ -17,8 +17,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use parking_lot::RwLock;
 use crate::observability::metrics::{ConsumerLagMetrics, QueueMetrics, SharedPrometheusSink};
+use parking_lot::RwLock;
 use pyo3::{Py, PyAny};
 use tokio_util::sync::CancellationToken;
 
@@ -125,9 +125,7 @@ pub enum WorkerStatus {
 impl WorkerPoolState {
     /// Create a new WorkerPoolState with `n_workers` entries, all initially Idle.
     pub fn new(n_workers: usize) -> Self {
-        let states = (0..n_workers)
-            .map(|id| (id, WorkerStatus::Idle))
-            .collect();
+        let states = (0..n_workers).map(|id| (id, WorkerStatus::Idle)).collect();
         Self {
             states: RwLock::new(states),
         }
@@ -365,31 +363,32 @@ impl RuntimeSnapshotTask {
         };
 
         // 2. Poll worker states from WorkerPoolState
-        let worker_states: HashMap<usize, WorkerState> = if let Some(ref wps) = self.worker_pool_state {
-            wps.get_states()
-                .into_iter()
-                .map(|(id, status)| {
-                    let state = match status {
-                        WorkerStatus::Idle => WorkerState::Idle,
-                        WorkerStatus::Active {
-                            handler_id,
-                            topic,
-                            partition,
-                            offset,
-                        } => WorkerState::Active {
-                            handler_id,
-                            topic,
-                            partition,
-                            offset,
-                        },
-                        WorkerStatus::Busy { handler_id } => WorkerState::Busy { handler_id },
-                    };
-                    (id, state)
-                })
-                .collect()
-        } else {
-            HashMap::new()
-        };
+        let worker_states: HashMap<usize, WorkerState> =
+            if let Some(ref wps) = self.worker_pool_state {
+                wps.get_states()
+                    .into_iter()
+                    .map(|(id, status)| {
+                        let state = match status {
+                            WorkerStatus::Idle => WorkerState::Idle,
+                            WorkerStatus::Active {
+                                handler_id,
+                                topic,
+                                partition,
+                                offset,
+                            } => WorkerState::Active {
+                                handler_id,
+                                topic,
+                                partition,
+                                offset,
+                            },
+                            WorkerStatus::Busy { handler_id } => WorkerState::Busy { handler_id },
+                        };
+                        (id, state)
+                    })
+                    .collect()
+            } else {
+                HashMap::new()
+            };
 
         // 3. Accumulator info — currently not tracked without handler reference
         // Will be populated once BatchAccumulator state is accessible
