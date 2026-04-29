@@ -149,6 +149,9 @@ pub struct PythonHandler {
     name: String,
     /// Rayon pool for offloading sync handler work. None means use spawn_blocking directly.
     rayon_pool: Option<Arc<RayonPool>>,
+    /// Middleware class objects to be executed around handler invocation.
+    /// Arc-wrapped for GIL-safe access. Chain is built at invocation time.
+    middleware: Option<Vec<Arc<Py<PyAny>>>>,
 }
 
 impl PythonHandler {
@@ -161,6 +164,7 @@ impl PythonHandler {
         handler_timeout: Option<Duration>,
         name: String,
         rayon_pool: Option<Arc<RayonPool>>,
+        middleware: Option<Vec<Arc<Py<PyAny>>>>,
     ) -> Self {
         Self {
             callback,
@@ -170,6 +174,7 @@ impl PythonHandler {
             handler_timeout,
             name,
             rayon_pool,
+            middleware,
         }
     }
 
@@ -186,6 +191,7 @@ impl PythonHandler {
         handler_timeout: Option<Duration>,
         name: String,
         rayon_pool: Option<Arc<RayonPool>>,
+        middleware: Option<Vec<Arc<Py<PyAny>>>>,
     ) -> Self {
         Self {
             callback,
@@ -195,6 +201,7 @@ impl PythonHandler {
             handler_timeout,
             name,
             rayon_pool,
+            middleware,
         }
     }
 
@@ -282,7 +289,19 @@ impl PythonHandler {
         ctx: &ExecutionContext,
         message: OwnedMessage,
     ) -> ExecutionResult {
-        match self.handler_timeout {
+        use crate::middleware::python::build_middleware_chain;
+        use crate::observability::metrics::SharedPrometheusSink;
+
+        let start = std::time::Instant::now();
+        let chain = self.middleware.as_ref().map(|m| {
+            let sink = SharedPrometheusSink::new();
+            build_middleware_chain(m.clone(), sink)
+        });
+        if let Some(ref c) = chain {
+            c.before_all(ctx);
+        }
+
+        let result = match self.handler_timeout {
             Some(timeout) => {
                 match tokio::time::timeout(timeout, self.invoke_mode(ctx, message)).await {
                     Ok(result) => result,
@@ -306,7 +325,18 @@ impl PythonHandler {
                 }
             }
             None => self.invoke_mode(ctx, message).await,
+        };
+
+        let elapsed = start.elapsed();
+        if let Some(ref c) = chain {
+            if result.is_ok() {
+                c.after_all(ctx, &result, elapsed);
+            } else {
+                c.on_error_all(ctx, &result);
+            }
         }
+
+        result
     }
 
     /// Invokes the Python callable with the given message.

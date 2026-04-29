@@ -196,6 +196,7 @@ impl RuntimeBuilder {
                         timeout,
                         topic.clone(),
                         Some(Arc::clone(&rayon_pool)),
+                        meta.middleware.clone(),
                     ));
                     (topic.clone(), handler)
                 })
