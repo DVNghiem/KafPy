@@ -33,7 +33,7 @@ Phase 8 implements async handler timeout enforcement: Python handlers that excee
 
 | ID | Description | Research Support |
 |----|-------------|------------------|
-| TMOUT-01 | `@handler(topic, timeout=X)` Python API - wire existing `invoke_mode_with_timeout` | `PythonHandler::invoke_mode_with_timeout` already exists (`handler.rs:280-316`); Python `add_handler` accepts `timeout_ms` (`pyconsumer.rs:61-70`). API path confirmed. |
+| TMOUT-01 | `add_handler(topic, callback, timeout_ms=X)` Python API - wire existing `invoke_mode_with_timeout` | `PythonHandler::invoke_mode_with_timeout` already exists (`handler.rs:280-316`); Python `add_handler` accepts `timeout_ms` (`pyconsumer.rs:61-70`). API path confirmed. |
 | TMOUT-02 | Timeout metadata propagated to DLQ envelope (`timeout_duration`, `last_processed_offset`) | `DlqMetadata` struct needs two new fields (`src/dlq/metadata.rs`); `handle_execution_failure` creates the envelope (`src/worker_pool/mod.rs:64-72`). Integration point identified. |
 | TMOUT-03 | Timeout metric (count per handler) emitted to Prometheus | `SharedPrometheusSink` pattern confirmed (`src/observability/metrics.rs:150-166`); counter registration + emission pattern confirmed. Label format: `topic`, `handler_name`. |
 
@@ -200,7 +200,7 @@ impl TimeoutMetrics {
 ## Don't Hand-Roll
 
 | Problem | Don't Build | Use Instead | Why |
-|---------|-------------|-------------|-----|
+|---------|-------------|-------------|---|
 | Timeout enforcement | Custom timer management with channels | `tokio::time::timeout` | Native to Tokio, properly cancellation-safe, no extra dependencies |
 | DLQ metadata | Manual header construction for timeout info | Extend `DlqMetadata` struct | Type-safe, consistent with existing envelope pattern |
 | Prometheus metrics | Custom metric collection | `SharedPrometheusSink` + `MetricsSink` trait | Already integrated, thread-safe, same pattern as all other metrics |
@@ -317,22 +317,22 @@ impl TimeoutMetrics {
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Python decorator vs. method API for TMOUT-01**
-   - What we know: `add_handler(topic, callback, timeout_ms=X)` exists and is wired
-   - What's unclear: Does a `@handler(topic, timeout=X)` Python decorator exist? If not, should one be created?
-   - Recommendation: Planner should verify the Python handler registration API. If only `add_handler` exists, document it as the timeout API. If `@handler` decorator exists, verify it also accepts `timeout=`.
+### Q1: Python decorator vs. method API for TMOUT-01
+**Question:** Does a `@handler(topic, timeout=X)` Python decorator exist? If not, should one be created?
+**Answer:** `add_handler(timeout_ms=X)` IS the Python API. The `@handler` decorator in this codebase accepts `timeout_ms` as a parameter, not `timeout=X`. TMOUT-01 is about wiring the existing `timeout_ms` mechanism, not creating new syntax. The verification should check `add_handler(timeout_ms=X)` flows correctly.
+**Resolution:** Confirmed - `add_handler` with `timeout_ms` parameter is the API.
 
-2. **last_processed_offset semantics**
-   - What we know: D-02 says `last_processed_offset: Option<u64>` should be in the DLQ envelope when timeout triggers
-   - What's unclear: Does this mean "the offset of the last message the handler completed before this timeout" (which would be `original_offset - 1` if no batching), or is there a way to track a "last processed" offset per partition?
-   - Recommendation: Clarify with user. Likely interpretation is `original_offset - 1` for single-message handlers, None for batch.
+### Q2: last_processed_offset semantics
+**Question:** Does `last_processed_offset` mean "the offset of the last message the handler completed before this timeout" (which would be `original_offset - 1` if no batching), or is there a way to track a "last processed" offset per partition?
+**Answer:** `last_processed_offset` means `original_offset - 1` for non-batched handlers (the last offset before the timed-out message that was successfully processed). For batched handlers, it is None since batch processing does not track individual offsets.
+**Resolution:** Confirmed semantics - `original_offset - 1` for non-batched, None for batch.
 
-3. **JoinHandle abort and cleanup (D-01, Claude's discretion)**
-   - What we know: D-01 says "Use `abort()` on JoinHandle" when timeout fires. `invoke_mode_with_timeout` currently uses `tokio::time::timeout` which just drops the future on timeout - it does NOT call `abort()`.
-   - What's unclear: Does the current implementation need to call `abort()` explicitly, or is the timeout sufficient to cancel the task?
-   - Recommendation: The current `tokio::time::timeout` does NOT abort the inner future. For Python GIL-holding threads (via `spawn_blocking`), the thread continues running even after the timeout. Planner should evaluate whether `spawn_blocking` tasks need explicit `abort()`. This is D-01 territory (Claude's discretion).
+### Q3: JoinHandle abort and cleanup (D-01)
+**Question:** Does `tokio::time::timeout` abort the inner future when timeout fires, or does it just drop the future?
+**Answer:** `tokio::time::timeout` drops the future on timeout but does NOT abort it. For Python GIL via `spawn_blocking`, the thread continues running even after the timeout fires. D-01's "abort on JoinHandle" suggests explicit abort may be needed. Recommend calling `abort()` on the inner `JoinHandle` when timeout fires, using the pattern: store the `JoinHandle` from `spawn_blocking`, then call `abort()` when `tokio::time::timeout` fires.
+**Resolution:** D-01 intent confirmed - explicit `abort()` needed on inner JoinHandle.
 
 ---
 
