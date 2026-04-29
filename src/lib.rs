@@ -58,6 +58,8 @@ pub(crate) mod runtime;
 
 pub mod rayon_pool;
 
+pub mod middleware;
+
 use kafka_message::KafkaMessage;
 // logging::Logger removed — using Python logging
 use produce::PyProducer;
