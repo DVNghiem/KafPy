@@ -11,7 +11,6 @@ use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
 use crate::observability::metrics::MetricLabels;
-use crate::observability::NoopSink;
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
 use crate::python::batch::BatchAccumulator;
@@ -39,6 +38,7 @@ pub(crate) async fn flush_partition_batch(
     retry_coordinator: Arc<RetryCoordinator>,
     dlq_producer: Arc<SharedDlqProducer>,
     dlq_router: Arc<dyn DlqRouter>,
+    prometheus_sink: crate::observability::SharedPrometheusSink,
 ) {
     if batch.is_empty() {
         return;
@@ -73,6 +73,7 @@ pub(crate) async fn flush_partition_batch(
         retry_coordinator,
         dlq_producer,
         dlq_router,
+        prometheus_sink,
     )
     .await;
     worker_pool_state.set_idle(worker_id);
@@ -103,6 +104,7 @@ pub(crate) async fn batch_worker_loop(
     worker_id: usize,
     shutdown_token: CancellationToken,
     worker_pool_state: Arc<WorkerPoolState>,
+    prometheus_sink: crate::observability::SharedPrometheusSink,
 ) {
     tracing::info!(worker_id = worker_id, "batch worker started");
 
@@ -145,6 +147,7 @@ pub(crate) async fn batch_worker_loop(
                             Arc::clone(&retry_coordinator),
                             Arc::clone(&dlq_producer),
                             Arc::clone(&dlq_router),
+                            prometheus_sink.clone(),
                         )
                         .await;
                     }
@@ -176,6 +179,7 @@ pub(crate) async fn batch_worker_loop(
                                                 Arc::clone(&retry_coordinator),
                                                 Arc::clone(&dlq_producer),
                                                 Arc::clone(&dlq_router),
+                                                prometheus_sink.clone(),
                                             )
                                             .await;
                                         }
@@ -199,6 +203,7 @@ pub(crate) async fn batch_worker_loop(
                                     Arc::clone(&retry_coordinator),
                                     Arc::clone(&dlq_producer),
                                     Arc::clone(&dlq_router),
+                                    prometheus_sink.clone(),
                                 )
                                 .await;
                             }
@@ -223,6 +228,7 @@ pub(crate) async fn batch_worker_loop(
                                     Arc::clone(&retry_coordinator),
                                     Arc::clone(&dlq_producer),
                                     Arc::clone(&dlq_router),
+                                    prometheus_sink.clone(),
                                 )
                                 .await;
                             }
@@ -248,6 +254,7 @@ pub(crate) async fn batch_worker_loop(
                                 Arc::clone(&retry_coordinator),
                                 Arc::clone(&dlq_producer),
                                 Arc::clone(&dlq_router),
+                                prometheus_sink.clone(),
                             )
                             .await;
                         }
@@ -276,6 +283,7 @@ pub(crate) async fn batch_worker_loop(
                         Arc::clone(&retry_coordinator),
                         Arc::clone(&dlq_producer),
                         Arc::clone(&dlq_router),
+                        prometheus_sink.clone(),
                     )
                     .await;
                 }
@@ -304,6 +312,7 @@ pub(crate) async fn handle_batch_result_inline(
     retry_coordinator: Arc<RetryCoordinator>,
     _dlq_producer: Arc<SharedDlqProducer>,
     _dlq_router: Arc<dyn DlqRouter>,
+    prometheus_sink: crate::observability::SharedPrometheusSink,
 ) {
     match result {
         BatchExecutionResult::AllSuccess(offsets) => {
@@ -312,7 +321,15 @@ pub(crate) async fn handle_batch_result_inline(
                 .insert("handler_id", topic)
                 .insert("topic", topic)
                 .insert("partition", partition.to_string());
-            HANDLER_METRICS.record_batch_size(&NoopSink, &batch_size_labels, batch.len());
+            HANDLER_METRICS.record_batch_size(&prometheus_sink, &batch_size_labels, batch.len());
+
+            // Record throughput for each message in the batch
+            let mode = "BatchSync";
+            for _ in offsets.iter() {
+                crate::observability::metrics::ThroughputMetrics::record_throughput(
+                    &prometheus_sink, topic, topic, mode,
+                );
+            }
 
             // EXEC-10: Each message calls record_ack individually
             for offset in offsets {
@@ -333,7 +350,7 @@ pub(crate) async fn handle_batch_result_inline(
                 .insert("handler_id", topic)
                 .insert("topic", topic)
                 .insert("partition", partition.to_string());
-            HANDLER_METRICS.record_batch_size(&NoopSink, &batch_size_labels, batch.len());
+            HANDLER_METRICS.record_batch_size(&prometheus_sink, &batch_size_labels, batch.len());
 
             // EXEC-10: All messages in batch flow to RetryCoordinator
             // We have access to the original batch messages here for routing
@@ -421,7 +438,7 @@ pub(crate) async fn handle_batch_result_inline(
                 .insert("handler_id", topic)
                 .insert("topic", topic)
                 .insert("partition", partition.to_string());
-            HANDLER_METRICS.record_batch_size(&NoopSink, &batch_size_labels, batch.len());
+            HANDLER_METRICS.record_batch_size(&prometheus_sink, &batch_size_labels, batch.len());
 
             tracing::warn!(
                 topic = %topic,
