@@ -13,16 +13,17 @@ use crate::observability::metrics::SharedPrometheusSink;
 use crate::python::context::ExecutionContext;
 use crate::python::execution_result::ExecutionResult;
 use pyo3::prelude::*;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Wraps a Python object implementing before/after/on_error as a HandlerMiddleware.
-/// The Python object is stored as Py<PyAny> (Send+Sync when GIL not held).
+/// The Python object is stored as Arc<Py<PyAny>> (Send+Sync, GIL-safe).
 pub struct PythonMiddleware {
-    instance: Py<PyAny>,
+    instance: Arc<Py<PyAny>>,
 }
 
 impl PythonMiddleware {
-    pub fn new(instance: Py<PyAny>) -> Self {
+    pub fn new(instance: Arc<Py<PyAny>>) -> Self {
         Self { instance }
     }
 }
@@ -79,10 +80,10 @@ fn ctx_to_pydict<'py>(py: Python<'py>, ctx: &ExecutionContext) -> Py<PyAny> {
     dict.into()
 }
 
-/// Attempts to convert a Python middleware instance (middleware: Vec<Py<PyAny>>)
+/// Attempts to convert a Python middleware instance (middleware: Vec<Arc<Py<PyAny>>>)
 /// into a MiddlewareChain. Checks type name to detect built-in vs custom Python middleware.
 pub fn build_middleware_chain(
-    middleware: Vec<Py<PyAny>>,
+    middleware: Vec<Arc<Py<PyAny>>>,
     metrics_sink: SharedPrometheusSink,
 ) -> MiddlewareChain {
     let mut chain = MiddlewareChain::new();
@@ -107,7 +108,7 @@ pub fn build_middleware_chain(
             }
             _ => {
                 // Custom Python middleware — wrap in PythonMiddleware
-                chain = chain.add(Box::new(PythonMiddleware::new(inst)));
+                chain = chain.add(Box::new(PythonMiddleware::new(Arc::clone(&inst))));
             }
         }
     }

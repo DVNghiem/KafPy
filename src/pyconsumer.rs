@@ -22,6 +22,33 @@ pub struct HandlerMetadata {
     pub timeout_ms: Option<u64>,
     /// Maximum concurrent executions for this handler. None = use default.
     pub concurrency: Option<usize>,
+    /// Middleware class objects to be executed around handler invocation.
+    /// Stored as Arc-wrapped Py objects for Clone derivability and GIL-safe access.
+    /// Chain is built at invocation time when the metrics sink is available.
+    pub middleware: Option<Vec<Arc<Py<PyAny>>>>,
+}
+
+impl HandlerMetadata {
+    /// Creates a HandlerMetadata with middleware objects wrapped in Arc.
+    pub fn new(
+        callback: Arc<Py<PyAny>>,
+        mode: HandlerMode,
+        batch_max_size: Option<usize>,
+        batch_max_wait_ms: Option<u64>,
+        timeout_ms: Option<u64>,
+        concurrency: Option<usize>,
+        middleware: Option<Vec<Py<PyAny>>>,
+    ) -> Self {
+        Self {
+            callback,
+            mode,
+            batch_max_size,
+            batch_max_wait_ms,
+            timeout_ms,
+            concurrency,
+            middleware: middleware.map(|v| v.into_iter().map(Arc::new).collect()),
+        }
+    }
 }
 
 /// Python-callable consumer. Use `add_handler` to register a topic → callback
@@ -58,7 +85,7 @@ impl PyConsumer {
     ///     batch_max_wait_ms: Max wait time per batch in ms (batch modes only). Defaults to 1000.
     ///     timeout_ms: Per-handler execution timeout in ms. None uses ConsumerConfig.handler_timeout_ms.
     ///     concurrency: Maximum concurrent executions for this handler. None = no limit.
-    #[pyo3(signature = (topic, callback, mode=None, batch_max_size=None, batch_max_wait_ms=None, timeout_ms=None, concurrency=None))]
+    #[pyo3(signature = (topic, callback, mode=None, batch_max_size=None, batch_max_wait_ms=None, timeout_ms=None, concurrency=None, middleware=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn add_handler(
         &mut self,
@@ -69,16 +96,18 @@ impl PyConsumer {
         batch_max_wait_ms: Option<u64>,
         timeout_ms: Option<u64>,
         concurrency: Option<usize>,
+        middleware: Option<Vec<Py<PyAny>>>,
     ) {
         let mode = HandlerMode::from_opt_str(mode.as_deref());
-        let meta = HandlerMetadata {
-            callback: Arc::new(callback.unbind()),
+        let meta = HandlerMetadata::new(
+            Arc::new(callback.unbind()),
             mode,
             batch_max_size,
             batch_max_wait_ms,
             timeout_ms,
             concurrency,
-        };
+            middleware,
+        );
         if let Ok(mut handlers) = self.handlers.lock() {
             handlers.insert(topic, meta);
         }
