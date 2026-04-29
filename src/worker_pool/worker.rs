@@ -12,7 +12,7 @@ use crate::coordinator::OffsetCoordinator;
 use crate::coordinator::RetryCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
-use crate::dlq::{DlqRouter, SharedDlqProducer};
+use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
 use crate::observability::metrics::{MetricLabels, TimeoutMetrics, ThroughputMetrics};
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
@@ -117,15 +117,18 @@ pub(crate) async fn worker_loop(
             let trace_id = trace_map.get("trace_id").cloned();
             let span_id = trace_map.get("span_id").cloned();
             let trace_flags = trace_map.get("trace_flags").cloned();
+            let trace_id_for_ctx = trace_id.clone();
+            let span_id_for_ctx = span_id.clone();
+            let trace_flags_for_ctx = trace_flags.clone();
 
             let ctx = ExecutionContext::with_trace(
                 msg.topic.clone(),
                 msg.partition,
                 msg.offset,
                 worker_id,
-                trace_id,
-                span_id,
-                trace_flags,
+                trace_id_for_ctx,
+                span_id_for_ctx,
+                trace_flags_for_ctx,
                 None,
                 None,
             );
@@ -341,35 +344,49 @@ pub(crate) async fn worker_loop(
                     continue;
                 }
 
+                // FANOUT-04/05: Generate fan_out_id and await wait_all() before offset commit.
+                use std::sync::atomic::AtomicU64;
+                static FAN_OUT_COUNTER: AtomicU64 = AtomicU64::new(1);
+                let fan_out_id = FAN_OUT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
                 // FANOUT-03: Primary ACKed immediately above (ACK happened in match block
                 // for Ok, or via handle_execution_failure for Error/Rejected/Timeout).
                 // Now spawn sink futures in parallel via JoinSet.
 
                 let fan_tracker = Arc::new(FanOutTracker::new(fan_out_config.max_fan_out));
                 let mut sink_join_set = JoinSet::new();
+                let sink_topics: Vec<String> = fan_out_config.sinks.iter().map(|s| s.topic.clone()).collect();
+                let ctx_trace_id = trace_id.clone();
+                let ctx_span_id = span_id.clone();
+                let ctx_trace_flags = trace_flags.clone();
 
                 for sink in &fan_out_config.sinks {
                     let tracker = Arc::clone(&fan_tracker);
                     let sink_handler = Arc::clone(&sink.handler);
                     let sink_topic = sink.topic.clone();
+                    let sink_timeout = sink.timeout;
                     let msg_clone = msg.clone();
-                    let ctx_clone = ExecutionContext::with_trace(
-                        sink_topic.clone(),
-                        ctx.partition,
-                        ctx.offset,
-                        worker_id,
-                        ctx.trace_id.clone(),
-                        ctx.span_id.clone(),
-                        ctx.trace_flags.clone(),
-                        None,
-                        None,
-                    );
+                    let fan_out_id_clone = fan_out_id;
+                    let sink_trace_id = ctx_trace_id.clone();
+                    let sink_span_id = ctx_span_id.clone();
+                    let sink_trace_flags = ctx_trace_flags.clone();
 
                     sink_join_set.spawn(async move {
-                        let branch_id = tracker.on_sink_complete(move |result| {
-                            tracing::debug!(topic = %sink_topic, "fan-out sink completed: {:?}", result);
-                        });
-                        let result = sink_handler.invoke_mode_with_timeout(&ctx_clone, msg_clone).await;
+                        let branch_id = tracker.register_branch();
+                        let ctx_clone = ExecutionContext::with_trace(
+                            sink_topic.clone(),
+                            ctx.partition,
+                            ctx.offset,
+                            worker_id,
+                            sink_trace_id,
+                            sink_span_id,
+                            sink_trace_flags,
+                            Some(branch_id),
+                            Some(fan_out_id_clone),
+                        );
+                        let result = sink_handler
+                            .invoke_mode_with_timeout_override(&ctx_clone, msg_clone, sink_timeout)
+                            .await;
                         let branch_result = match result {
                             ExecutionResult::Ok => BranchResult::Ok,
                             ExecutionResult::Error { reason, exception, .. } => {
@@ -385,17 +402,70 @@ pub(crate) async fn worker_loop(
                                 exception: "Rejected".to_string(),
                             },
                         };
-                        tracker.emit_completion(branch_id, branch_result);
+                        tracker.record_branch_result(branch_id, branch_result.clone());
                         tracker.release_slot();
+                        branch_result
                     });
                 }
 
-                // Drive JoinSet to completion in a spawned task (non-blocking for worker).
-                // Worker continues to Idle state while sinks complete in background.
+                // FANOUT-04: Await all branches to complete before offset commit gating.
+                // Spawn a task to drive the JoinSet and collect results.
+                let dlq_producer_clone = Arc::clone(&dlq_producer);
+                let dlq_router_clone = Arc::clone(&dlq_router);
+                let msg_topic = msg.topic.clone();
+                let msg_partition = msg.partition;
+                let msg_offset = msg.offset;
+                let msg_clone_for_dlq = msg.clone();
                 tokio::spawn(async move {
+                    let branch_results = fan_tracker.wait_all().await;
+                    tracing::debug!(
+                        fan_out_id = fan_out_id,
+                        branch_count = branch_results.results.len(),
+                        "all fan-out branches completed"
+                    );
+
+                    // FANOUT-05: Route Error/Timeout branches to DLQ with branch metadata.
+                    for (branch_result, sink_topic) in branch_results.results.iter().zip(sink_topics.iter()) {
+                        let branch_id = branch_result.0;
+                        if !matches!(branch_result.1, BranchResult::Ok) {
+                            let (exception, is_timeout, timeout_val) = match &branch_result.1 {
+                                BranchResult::Error { exception, .. } => {
+                                    (exception.clone(), false, None)
+                                }
+                                BranchResult::Timeout { timeout_ms } => {
+                                    (format!("sink timeout after {}ms", timeout_ms), true, Some(*timeout_ms))
+                                }
+                                BranchResult::Ok => continue,
+                            };
+                            let dlq_meta = DlqMetadata::new(
+                                sink_topic.clone(),
+                                msg_partition,
+                                msg_offset,
+                                exception,
+                                1,
+                                chrono::Utc::now(),
+                                chrono::Utc::now(),
+                                timeout_val,
+                                None,
+                                Some(branch_id),
+                                Some(fan_out_id),
+                            );
+                            let tp = dlq_router_clone.route(&dlq_meta);
+                            let payload = msg_clone_for_dlq.payload.clone().unwrap_or_default();
+                            let key = msg_clone_for_dlq.key.clone();
+                            dlq_producer_clone.produce_async(
+                                tp.topic,
+                                tp.partition,
+                                payload,
+                                key,
+                                &dlq_meta,
+                            );
+                        }
+                    }
+
                     while let Some(result) = sink_join_set.join_next().await {
                         match result {
-                            Ok(()) => {}
+                            Ok(_) => {}
                             Err(e) => {
                                 tracing::error!(error = ?e, "fan-out sink task panicked");
                             }
