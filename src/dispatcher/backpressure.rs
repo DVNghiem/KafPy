@@ -15,16 +15,19 @@ pub enum BackpressureAction {
     /// Currently maps to returning Backpressure error (non-blocking per DISP-08).
     Wait,
     /// Signal to pause the partition for this topic.
-    /// The topic name is carried as a signal for future pause/resume implementation.
-    /// DISP-18 (Phase 8) will implement actual rdkafka pause/resume.
-    FuturePausePartition(String),
+    /// Carries topic and partition for targeted pause.
+    PausePartition { topic: String, partition: i32 },
+    /// Signal to resume the partition for this topic.
+    /// Carries topic and partition for targeted resume.
+    ResumePartition { topic: String, partition: i32 },
 }
 
 impl BackpressureAction {
-    /// Returns the topic name if this action is [`FuturePausePartition`].
+    /// Returns the topic name if this action carries one.
     pub fn topic(&self) -> Option<&str> {
         match self {
-            BackpressureAction::FuturePausePartition(t) => Some(t),
+            BackpressureAction::PausePartition { topic, .. } => Some(topic),
+            BackpressureAction::ResumePartition { topic, .. } => Some(topic),
             _ => None,
         }
     }
@@ -60,6 +63,9 @@ pub struct PauseOnFullPolicy;
 
 impl BackpressurePolicy for PauseOnFullPolicy {
     fn on_queue_full(&self, topic: &str, _handler: &HandlerMetadata) -> BackpressureAction {
-        BackpressureAction::FuturePausePartition(topic.to_string())
+        BackpressureAction::PausePartition {
+            topic: topic.to_string(),
+            partition: -1, // -1 indicates all partitions (consumer-level pause)
+        }
     }
 }

@@ -119,7 +119,7 @@ impl ConsumerDispatcher {
                             reason: _,
                         }) => {
                             tracing::Span::current().record("routing_decision", "backpressure");
-                            if let Some(BackpressureAction::FuturePausePartition(pause_topic)) =
+                            if let Some(BackpressureAction::PausePartition { topic: pause_topic, .. }) =
                                 pause_signal
                             {
                                 match self.pause_partition(&pause_topic) {
@@ -193,9 +193,13 @@ impl ConsumerDispatcher {
                                 Err(DispatchError::Backpressure { queue_name, reason }),
                                 None,
                             ),
-                            BackpressureAction::FuturePausePartition(t) => (
+                            BackpressureAction::PausePartition { topic: t, .. } => (
                                 Err(DispatchError::Backpressure { queue_name, reason }),
-                                Some(BackpressureAction::FuturePausePartition(t)),
+                                Some(BackpressureAction::PausePartition { topic: t.clone(), partition: -1 }),
+                            ),
+                            BackpressureAction::ResumePartition { .. } => (
+                                Err(DispatchError::Backpressure { queue_name, reason }),
+                                None,
                             ),
                         }
                     }
@@ -336,10 +340,10 @@ mod tests {
         assert_owned::<DispatchOutcome>();
     }
 
-    // DISP-18: FuturePausePartition action carries topic for pause signal
+    // DISP-18: PausePartition action carries topic for pause signal
     #[test]
-    fn future_pause_partition_carries_topic_name() {
-        let action = BackpressureAction::FuturePausePartition("my-topic".to_string());
+    fn pause_partition_carries_topic_name() {
+        let action = BackpressureAction::PausePartition { topic: "my-topic".to_string(), partition: 0 };
         assert_eq!(action.topic(), Some("my-topic"));
     }
 
@@ -410,7 +414,7 @@ mod tests {
     // DISP-18: BackpressureAction variant testing
     #[test]
     fn backpressure_action_clone_eq() {
-        let a1 = BackpressureAction::FuturePausePartition("topic".to_string());
+        let a1 = BackpressureAction::PausePartition { topic: "topic".to_string(), partition: 0 };
         let a2 = a1.clone();
         assert_eq!(a1, a2);
         assert_eq!(a1.topic(), a2.topic());
