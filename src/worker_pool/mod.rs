@@ -99,6 +99,8 @@ pub(crate) async fn handle_execution_failure(
             chrono::Utc::now(),
             timeout_duration,
             last_processed_offset,
+            None,
+            None,
         );
 
         let dlq_span = tracing::Span::current().kafpy_dlq_route(

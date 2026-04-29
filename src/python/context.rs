@@ -13,6 +13,10 @@ pub struct ExecutionContext {
     pub span_id: Option<String>,
     /// W3C trace flags (e.g., "01")
     pub trace_flags: Option<String>,
+    /// Fan-out branch ID. None when not a fan-out branch.
+    pub branch_id: Option<u64>,
+    /// Fan-out dispatch ID (unique per primary message). None when not a fan-out dispatch.
+    pub fan_out_id: Option<u64>,
 }
 
 impl ExecutionContext {
@@ -25,6 +29,8 @@ impl ExecutionContext {
             trace_id: None,
             span_id: None,
             trace_flags: None,
+            branch_id: None,
+            fan_out_id: None,
         }
     }
 
@@ -37,6 +43,8 @@ impl ExecutionContext {
         trace_id: Option<String>,
         span_id: Option<String>,
         trace_flags: Option<String>,
+        branch_id: Option<u64>,
+        fan_out_id: Option<u64>,
     ) -> Self {
         Self {
             topic,
@@ -46,6 +54,8 @@ impl ExecutionContext {
             trace_id,
             span_id,
             trace_flags,
+            branch_id,
+            fan_out_id,
         }
     }
 }

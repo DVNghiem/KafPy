@@ -400,6 +400,8 @@ pub(crate) async fn handle_batch_result_inline(
                         chrono::Utc::now(),
                         None,
                         None,
+                        None,
+                        None,
                     );
 
                     let dlq_span = tracing::Span::current().kafpy_dlq_route(

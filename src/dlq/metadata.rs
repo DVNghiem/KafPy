@@ -29,6 +29,10 @@ pub struct DlqMetadata {
     /// Offset of the last message the handler completed before timeout fired.
     /// None when not trackable or for non-timeout reasons.
     pub last_processed_offset: Option<i64>,
+    /// Fan-out branch ID that produced this DLQ message. None when not from fan-out.
+    pub branch_id: Option<u64>,
+    /// Fan-out dispatch ID (unique per primary message). None when not from fan-out.
+    pub fan_out_id: Option<u64>,
 }
 
 impl DlqMetadata {
@@ -43,6 +47,8 @@ impl DlqMetadata {
         last_failure_timestamp: DateTime<Utc>,
         timeout_duration: Option<u64>,
         last_processed_offset: Option<i64>,
+        branch_id: Option<u64>,
+        fan_out_id: Option<u64>,
     ) -> Self {
         Self {
             original_topic,
@@ -54,6 +60,8 @@ impl DlqMetadata {
             last_failure_timestamp,
             timeout_duration,
             last_processed_offset,
+            branch_id,
+            fan_out_id,
         }
     }
 }

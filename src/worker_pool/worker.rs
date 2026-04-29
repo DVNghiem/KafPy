@@ -126,6 +126,8 @@ pub(crate) async fn worker_loop(
                 trace_id,
                 span_id,
                 trace_flags,
+                None,
+                None,
             );
             let handler = handler_for_topic(&handlers, &msg.topic).clone();
             let start = std::time::Instant::now();
@@ -359,6 +361,8 @@ pub(crate) async fn worker_loop(
                         ctx.trace_id.clone(),
                         ctx.span_id.clone(),
                         ctx.trace_flags.clone(),
+                        None,
+                        None,
                     );
 
                     sink_join_set.spawn(async move {

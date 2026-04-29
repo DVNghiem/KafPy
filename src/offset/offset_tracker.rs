@@ -338,6 +338,8 @@ impl OffsetCoordinator for OffsetTracker {
                     now,
                     None,
                     None,
+                    None,
+                    None,
                 );
 
                 let tp = dlq_router.route(&metadata);
