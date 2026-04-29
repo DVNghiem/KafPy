@@ -76,9 +76,9 @@
 **Plans:** 3 plans
 
 Plans:
-- [ ] 09-01-PLAN.md -- MIDW-01: HandlerMiddleware trait + MiddlewareChain
-- [ ] 09-02-PLAN.md -- MIDW-02/03: Logging + Metrics middleware
-- [ ] 09-03-PLAN.md -- MIDW-04: Python API middleware
+- [x] 09-01-PLAN.md -- MIDW-01: HandlerMiddleware trait + MiddlewareChain
+- [x] 09-02-PLAN.md -- MIDW-02/03: Logging + Metrics middleware
+- [x] 09-03-PLAN.md -- MIDW-04: Python API middleware
 
 ---
 
