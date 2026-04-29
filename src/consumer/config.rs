@@ -41,7 +41,7 @@ pub struct ConsumerConfig {
     pub routing_rules: Vec<RoutingRule>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum AutoOffsetReset {
     Earliest,
     #[default]
@@ -57,7 +57,7 @@ impl AutoOffsetReset {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum PartitionAssignmentStrategy {
     #[default]
     RoundRobin,
