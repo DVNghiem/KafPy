@@ -7,93 +7,91 @@
 ## Milestones
 
 - ✅ **v1.0 MVP** — Phases 1-6 (shipped 2026-04-29)
-- 📋 **Next** — TBD
+- 🔄 **v1.1** — Phases 7-10 (in progress)
+- ⬜ **v2.0** — Fan-out, Fan-in (future)
 
 ---
 
-## Phase 1: Core Consumer Engine & Configuration (brownfield)
+## Phases
 
-<details>
-<summary>✅ Phase 1: Core Consumer Engine & Configuration — COMPLETED</summary>
-
-- [x] Phase 1: Core Consumer Engine & Configuration (brownfield) — verified via 01-VERIFICATION.md
-
-</details>
+- [ ] **Phase 7: Thread Pool** — Sync handlers on Rayon work-stealing pool
+- [ ] **Phase 8: Async Timeout** — @handler timeout with DLQ metadata and metrics
+- [ ] **Phase 9: Handler Middleware** — Middleware chain with logging and metrics
+- [ ] **Phase 10: Streaming Handler** — Persistent async iterable handlers
 
 ---
 
-## Phase 2: Rebalance, Failure Handling & Lifecycle
+## Phase 7: Thread Pool
 
-<details>
-<summary>✅ Phase 2: Rebalance, Failure Handling & Lifecycle — SHIPPED 2026-04-29</summary>
+**Goal:** Sync handlers execute on Rayon work-stealing pool instead of blocking Tokio's poll cycle, preventing heartbeat misses and rebalances.
 
-- [x] Phase 2: Rebalance, Failure Handling & Lifecycle (7/7 tasks) — completed 02-SUMMARY.md
-  - CustomConsumerContext with rebalance callbacks (24dc1ba)
-  - Failure classification integration
-  - Graceful shutdown with SIGTERM (fa44f15)
-  - Pause/resume and terminal blocking
-  - DLQ routing and key-based routing
-  - RetryConfig mapping
+**Depends on:** Phase 6 (Hardening)
 
-</details>
+**Requirements:** SYNC-01, SYNC-02, SYNC-03
 
----
+**Success Criteria** (what must be TRUE):
+1. Sync handlers execute on Rayon pool — Tokio poll cycle never blocks on sync work
+2. Poll cycle not blocked for more than 100ms even with long-running sync handlers
+3. ConsumerConfigBuilder::rayon_pool_size(u32) accepts valid pool size (1-256)
+4. Default pool size defaults to num_cpus::get() with at least 2 threads for Tokio
+5. Graceful shutdown drains Rayon pool within 30s timeout before exit
 
-## Phase 3: Python Handler API
-
-<details>
-<summary>✅ Phase 3: Python Handler API — SHIPPED 2026-04-29</summary>
-
-- [x] Phase 3: Python Handler API (1/1 task) — completed 03-SUMMARY.md
-  - W3C trace context injection (38ff9b2)
-  - Per-handler concurrency via Arc<Semaphore> (58fdc0d)
-  - Handler decorator with concurrency param (4329b2)
-  - Context manager (__enter__/__exit__) support
-
-</details>
+**Plans:** TBD
 
 ---
 
-## Phase 4: Observability
+## Phase 8: Async Timeout
 
-<details>
-<summary>✅ Phase 4: Observability — SHIPPED 2026-04-29</summary>
+**Goal:** Async handlers can be aborted after a configured timeout, with timeout metadata in DLQ and timeout metrics in Prometheus.
 
-- [x] Phase 4: Observability (2/2 tasks) — completed 04-SUMMARY.md + 04-01-SUMMARY.md
-  - Tracing spans with handler_name and attempt attributes (faa7c0b)
-  - PrometheusSink + PrometheusExporter infrastructure (adc15af)
-  - Throughput, latency, consumer lag, queue depth, DLQ metrics (OBS-03 through OBS-07)
-  - Batch handler support with batch=True decorator (e5228bd)
+**Depends on:** Phase 7 (Thread Pool)
 
-</details>
+**Requirements:** TMOUT-01, TMOUT-02, TMOUT-03
 
----
+**Success Criteria** (what must be TRUE):
+1. @handler(topic, timeout=X) Python API sets handler-specific timeout
+2. Timeout fires after X seconds, handler is aborted and returns Timeout error
+3. DLQ envelope includes timeout_duration and last_processed_offset metadata
+4. Prometheus metric kafpy_handler_timeout_total (counter, labels: handler_name) increments on timeout
 
-## Phase 5: Builder Pattern Refactor
-
-<details>
-<summary>✅ Phase 5: Builder Pattern Refactor — SHIPPED 2026-04-29</summary>
-
-- [x] Phase 5: Builder Pattern Refactor (2/2 tasks) — completed 05-SUMMARY.md + 05-01-SUMMARY.md
-  - ConsumerConfigBuilder and ProducerConfigBuilder pyclass (7f7b304)
-  - BuildError enum with missing-field validation
-  - `#[allow]` suppressions audited with explanations
-
-</details>
+**Plans:** TBD
 
 ---
 
-## Phase 6: Hardening
+## Phase 9: Handler Middleware
 
-<details>
-<summary>✅ Phase 6: Hardening — SHIPPED 2026-04-29</summary>
+**Goal:** Handler middleware chain enables before/after/on_error hooks for cross-cutting concerns (logging, metrics) without duplicating handler code.
 
-- [x] Phase 6: Hardening (2/2 tasks) — completed 06-SUMMARY.md + 06-01-SUMMARY.md
-  - ConsumerError and DispatchError with structured fields (18e1961)
-  - Actionable context: topic, partition, offset, broker, bytes_preview
-  - Debug impls on error-context structs
+**Depends on:** Phase 8 (Async Timeout)
 
-</details>
+**Requirements:** MIDW-01, MIDW-02, MIDW-03, MIDW-04
+
+**Success Criteria** (what must be TRUE):
+1. HandlerMiddleware trait exists with before(message) -> Message, after(message, result), on_error(message, error) hooks
+2. Built-in Logging middleware emits span events on handler start/complete/error with trace context
+3. Built-in Metrics middleware records latency histogram and throughput counter per handler
+4. Python API @handler(middleware=[Logging(), Metrics()]) accepts middleware list per handler
+5. Middleware executes in order: logging before -> handler -> metrics after (on success) or on_error (on failure)
+
+**Plans:** TBD
+
+---
+
+## Phase 10: Streaming Handler
+
+**Goal:** Persistent async iterable handlers maintain long-lived connections (WebSocket, SSE, live dashboard feeds) with proper lifecycle and backpressure.
+
+**Depends on:** Phase 9 (Handler Middleware)
+
+**Requirements:** STRM-01, STRM-02, STRM-03, STRM-04
+
+**Success Criteria** (what must be TRUE):
+1. HandlerMode::StreamingAsync variant exists for persistent async iterable handlers
+2. @stream_handler(topic) Python API registers long-lived handler that loops on async iterator
+3. Lifecycle management: start/subscribe (connect + subscribe), run/loop (process messages until stop), stop/drain (graceful finish), error recovery (retry with backoff)
+4. Per-stream backpressure: slow consumer pauses Kafka consumption, fast producer does not overflow memory
+
+**Plans:** TBD
 
 ---
 
@@ -107,8 +105,12 @@
 | 4 | v1.0 | 2/2 | Complete | 2026-04-29 |
 | 5 | v1.0 | 2/2 | Complete | 2026-04-29 |
 | 6 | v1.0 | 2/2 | Complete | 2026-04-29 |
+| 7 | v1.1 | 0/5 | Not started | - |
+| 8 | v1.1 | 0/4 | Not started | - |
+| 9 | v1.1 | 0/5 | Not started | - |
+| 10 | v1.1 | 0/4 | Not started | - |
 
 **v1.0 MVP shipped.** Full milestone history at `.planning/milestones/`.
 
 ---
-*Last updated: 2026-04-29 after v1.0 milestone completion*
+*Last updated: 2026-04-29 after v1.1 roadmap created*
