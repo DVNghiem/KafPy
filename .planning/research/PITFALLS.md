@@ -1,420 +1,272 @@
-# Pitfalls: Rust/Python Hybrid Kafka Consumer Framework
+# Pitfalls: Work-Stealing Thread Pool (Rayon) Integration for Tokio Kafka Consumer
 
-This document catalogs domain-specific pitfalls when building a framework that combines Rust runtime performance with Python developer ergonomics for Kafka consumption.
-
----
-
-## 1. Calling Python from Rust: GIL and Async Blocking
-
-### Pitfall 1.1: Blocking the Tokio Event Loop with GIL Acquisition
-
-**Warning signs (detect early):**
-- Non-Python async tasks (HTTP clients, database operations) start timing out unexpectedly
-- Log messages show "cannot run the event loop while another loop is running"
-- CPU usage spikes but throughput drops
-- `tokio::spawn` tasks that call Python via `Python::with_gil` or `Python::attach` block entire worker threads
-
-**Prevention strategy:**
-- Use `Python::allow_threads` to release the GIL before performing any async await in Rust
-- Move Python GIL calls into `tokio::task::spawn_blocking` — not `spawn` — so they don't block the async executor
-- Never call `Python::attach` or `Python::with_gil` inside a `tokio::spawn` task; extract the Python call outside the spawn
-- Profile with `py-spy` or `PyO3` GIL metrics to detect GIL contention
-
-**Which phase should address it:**
-- Architecture phase: decide on async bridge design
-- Implementation phase: enforce GIL-release patterns via code review
-
-### Pitfall 1.2: Deadlocking Between GIL and Rust Mutexes
-
-**Warning signs:**
-- Application freezes under load with no exception thrown
-- Deadlock detected when one thread holds GIL and waits for a Rust mutex another thread holds while it waits for GIL
-- `Python::with_gil` closures that also call `async fn` or lock Rust mutexes
-
-**Prevention strategy:**
-- Always release GIL via `Python::allow_threads` before locking a Rust mutex or awaiting
-- Structure the async bridge so Python calls are short and release GIL immediately
-- Use `PyMutex` from `pyo3::sync` when Rust mutex must be held during Python code
-
-**Which phase should address it:**
-- Implementation phase: static analysis rules + code review checklist
-
-### Pitfall 1.3: GIL Lifetime mismatches with Python Objects Across Threads
-
-**Warning signs:**
-- `PyErr` exceptions in Python callbacks get dropped or produce wrong values
-- Segmentation faults when a Python object is used after its originating thread's GIL pool was released
-- `Python::with_gil` closure captures a `Py<T>` that was created on a different thread
-
-**Prevention strategy:**
-- Understand that `Py<T>` references are bound to a specific `Python<'py>` lifetime and GIL pool
-- Clone `Py<T>` references with `.clone_ref(py)` before passing to other threads
-- Use `pyo3-asyncio` only with its documented `scope` and `scope_local` APIs for contextvar propagation
-
-**Which phase should address it:**
-- Implementation phase
+**Domain:** Adding Rayon work-stealing thread pool to an existing Tokio-based Kafka consumer with PyO3 Python handlers
+**Researched:** 2026-04-29
+**Confidence:** MEDIUM-HIGH (based on Rust concurrency fundamentals + documented PyO3/Tokio/Rayon behavior)
 
 ---
 
-## 2. Backpressure and Memory Management
+## Executive Summary
 
-### Pitfall 2.1: Unbounded Internal Queue Growth
+KafPy v1.0 uses `spawn_blocking` for sync Python handlers, which works but treats all blocking work as fire-and-forget from Tokio's perspective. Adding Rayon (a work-stealing thread pool) enables true parallelism for CPU-intensive Rust preprocessing and parallel sync handler execution, but introduces threading complexity that does not exist with `spawn_blocking` alone.
 
-**Warning signs:**
-- RSS memory grows linearly with consumer lag
-- Pod memory limits hit on startup when backlog exists (e.g., 20K messages x 175KB each causes 1GB+ RSS)
+**The core tension:** Tokio owns the async event loop threads; Rayon owns a separate pool of blocking threads. When the two intersect incorrectly, you get deadlocks, GIL corruption, or event-loop starvation.
+
+---
+
+## 1. Critical Pitfalls
+
+### Pitfall 1.1: Rayon Callback Blocking the Tokio Event Loop
+
+**What goes wrong:** A Rayon worker calls a function that synchronously invokes a Tokio primitive (e.g., sends to a `mpsc::Sender`, acquires a lock protected by a Tokio-watched Mutex, or awaits a future). This blocks the Rayon thread, but Tokio cannot steal work from that thread. If the blocked operation requires Tokio to make progress on another thread (e.g., the receiver is waiting on that same channel), you get a **deadlock**.
+
+**Why it happens:** Tokio uses work-stealing on its own worker threads. Rayon has its own thread pool. These are separate pools. Tokio's scheduler cannot schedule work onto Rayon threads, and Rayon's scheduler does not understand Tokio tasks. When a Rayon worker blocks on a Tokio-watched primitive, the blocked operation may never complete because Tokio cannot run the receiver on a Rayon thread.
+
+**Consequences:**
+- Application deadlocks under load (no exception thrown, just frozen)
+- `spawn_blocking` futures never complete
+- Kafka consumer stops processing messages — heartbeat misses trigger rebalance
+
+**Prevention:**
+- **Isolate Rayon work from Tokio primitives.** All Tokio channels, mutexes, and futures must remain on Tokio threads. Rayon work communicates back to Tokio via the existing `spawn_blocking` boundary, not by directly invoking Tokio APIs.
+- **Never call `tokio::spawn`, `mpsc::Sender::send`, or Tokio mutexes from within a Rayon `spawn` closure.** Use `spawn_blocking` to cross back to Tokio.
+- Design: After Rayon processes a batch, return results via a channel owned by Tokio. Rayon pushes; Tokio polls.
+
+**Detection:**
+- Application freezes; `top` or `htop` shows Rayon threads at 100% CPU but no message throughput
+- No new offsets committed; Kafka broker logs show consumer silence
+
+**Phase:** Architecture + Implementation
+
+---
+
+### Pitfall 1.2: PyO3 GIL Acquisition on Rayon Threads (Wrong Python Thread State)
+
+**What goes wrong:** When Python is called from a Rayon worker, the call succeeds initially but subsequent Python operations fail with `RuntimeError: Python is not initialized on this thread` or cause segmentation faults. This is the GIL pool / thread state mismatch.
+
+**Why it happens:** PyO3's GIL is tied to a specific Python thread state (`PyThreadState`). PyO3 API calls like `Python::attach` acquire the GIL by attaching to the current thread's Python thread state. When called from a Rayon worker thread:
+- The thread has no Python thread state
+- `Python::attach` creates a temporary one, but Python's interpreter-level state (imports, sys.modules, GIL holder) may be inconsistent
+- If `spawn_blocking` was used correctly, GIL acquisition happened on a Tokio blocking thread with proper Python state
+
+**Consequences:**
+- `PyErr` exceptions silently dropped or produce wrong values
+- Segmentation faults when Python objects cross thread boundaries
+- `Python::with_gil` closures capturing `Py<T>` created on different threads
+
+**Prevention:**
+- **Always call Python from `spawn_blocking`, never directly from Rayon `spawn`.** `spawn_blocking` runs closures on Tokio's dedicated blocking thread pool, which has proper Python thread state initialized by PyO3.
+- If you need Rayon to parallelize Python handler calls, use `spawn_blocking` inside the Rayon closure:
+  ```rust
+  // Rayon scope calls Python handlers in parallel via spawn_blocking
+  rayon::spawn(|| {
+      // Each spawn_blocking call acquires GIL on a Tokio blocking thread
+      futures::future::join_all(handlers.iter().map(|h| {
+          h.invoke_async()  // internally uses spawn_blocking
+      })).await;
+  });
+  ```
+- **Never** call `Python::attach` directly inside `rayon::spawn`.
+
+**Detection:**
+- `RuntimeError: Python is not initialized on this thread` in logs
+- Segmentation faults during parallel Python handler execution
+- GIL metrics show inconsistent acquisition patterns
+
+**Phase:** Implementation + Testing
+
+---
+
+### Pitfall 1.3: Memory Pressure from Oversized Rayon Pool Under Kafka Load
+
+**What goes wrong:** Rayon is sized based on CPU cores (the default). Under high Kafka message throughput with concurrent handler execution, the combined memory footprint of Tokio threads + PyO3 GIL pools + Rayon threads + in-flight messages exceeds available RAM. OOM kills or swap thrashing results.
+
+**Why it happens:** KafPy already has bounded `mpsc::channel` queues per handler. Adding Rayon for parallel sync handler execution multiplies concurrent Python handler invocations. Each Python call holds the GIL and some memory (Python objects, numpy arrays, etc.). If Rayon spawns parallel work equal to the bounded channel capacity (e.g., 1000 messages), and each holds Python memory, the RAM pressure is 1000x handler memory.
+
+**Consequences:**
 - OOM kills in Kubernetes with default memory limits
-- No backpressure applied to incoming poll batches
+- RSS grows linearly with message backlog
+- Swap thrashing causes massive latency spikes
 
-**Prevention strategy:**
-- Set `queued.max.messages.kbytes` (default 1GB per partition) to a fraction of available memory
-- Set `max.poll.records` to a small multiple of expected concurrent processing capacity
-- Monitor `consumerLag` metric and alert on growth rate
-- Implement bounded work queues in the Rust worker pool with explicit `poll()` pause when full
+**Prevention:**
+- **Set Rayon thread pool size explicitly, not to CPU count.** The correct size is: `min(num_cpu, max_concurrent_python_handlers)`. Since Python handlers are GIL-bound, more Rayon threads than Python handlers provides no benefit.
+- **Use a semaphore on Python handler concurrency** (existing in v1.0 via `Arc<Semaphore>`) even when Rayon is processing in parallel. Rayon's parallelism should mirror the semaphore-gated concurrency, not exceed it.
+- **Configure bounded channels smaller than available memory budget.** If `max.poll.records` = 500 and each message = 10KB Python dict, 500 messages = 5MB per poll cycle. With 3 Rayon workers, 15MB. With unbounded Rayon, multiply by queue depth.
+- Monitor `consumerLag` and `queue_depth` metrics; alert on growth rate.
 
-**Which phase should address it:**
-- Configuration phase: define Kafka client configuration defaults
-- Architecture phase: design worker pool with bounded channels
+**Detection:**
+- RSS memory grows linearly with consumer lag
+- OOM kills correlate with high throughput bursts
+- `mem_usage` metric on Kubernetes shows memory pressure
 
-### Pitfall 2.2: Backpressure Reset on Rebalance
-
-**Warning signs:**
-- OOM occurring precisely at rebalance events
-- Reactor-Kafka issue: when Flux is paused and rebalance occurs, `pausedByUs` flag is reset to `false`, consumer polls unbounded data
-- Consumer lag spikes after deployments or scaling events
-
-**Prevention strategy:**
-- After rebalance callback, explicitly re-pause partitions if downstream is slow
-- Use `consumer.pause(partitions)` per-partition (not global pause) when processing is congested
-- Verify that your library re-applies backpressure state after `onPartitionsAssigned` / incremental assign
-
-**Which phase should address it:**
-- Architecture phase: rebalance handler design
-- Testing phase: chaos testing with partition revocation under load
-
-### Pitfall 2.3: GIL-Enabled Python Blocking the Rust Event Loop
-
-**Warning signs:**
-- Python code (e.g., `pyarrow`, NumPy operations) holds GIL for 5ms+ and blocks async progress
-- Network timeouts in non-Python async code while Python code runs
-- "Task frozen" symptoms in Tokio tasks that do not interact with Python
-
-**Prevention strategy:**
-- Move CPU-intensive or blocking Python calls to `spawn_blocking` or dedicated thread pool
-- Use free-threaded Python (3.13+) where GIL contention is reduced
-- Monitor GIL hold times; warn if any Python call exceeds 1ms in async context
-
-**Which phase should address it:**
-- Performance testing phase
+**Phase:** Architecture (pool sizing) + Configuration
 
 ---
 
-## 3. Async Rust + Sync Python Execution Model
+### Pitfall 1.4: Tokio `enter` Guard Violation — Nested Runtime Initialization
 
-### Pitfall 3.1: Mismatched Event Loop Context
+**What goes wrong:** A `#[tokio::test]` or some debugging/initialization code creates a Tokio runtime inside a context where a `enter` guard is already active (from the application already running). This causes a panic: "cannot start a runtime from within a context where the runtime is already running."
 
-**Warning signs:**
-- `asyncio.get_running_loop()` fails inside Rust threads
-- Python `RuntimeError: Cannot run the event loop while another loop is running` in pyo3-asyncio
-- Context variables (`contextvars`) not propagated across async boundaries
+**Why it happens:** When adding Rayon alongside Tokio, initialization code that creates a Tokio runtime for testing or setup may accidentally run on a Rayon thread or within an existing Tokio context. Tokio's `enter` guard is a thread-local mechanism that tracks whether a runtime is active.
 
-**Prevention strategy:**
-- Use `pyo3_asyncio::scope` / `pyo3_asyncio::scope_local` to attach Python event loop to Rust tasks
-- Do not assume Python async code runs on the same thread as Rust async code
-- Use `pyo3_asyncio::get_current_locals` to retrieve task-local context from Python
+**Consequences:**
+- Panic on startup or during tests
+- Confusing error message about "event loop already running"
 
-**Which phase should address it:**
-- Architecture phase: async bridge design
-- Integration testing phase
+**Prevention:**
+- **Avoid creating Tokio runtimes inside Rayon closures.** Initialization and setup should happen before Tokio starts or on Tokio threads via `spawn_blocking`.
+- Use `tokio::runtime::Handle::current()` to access the existing runtime from any thread rather than creating a new one.
 
-### Pitfall 3.2: Sync Python Handler Blocking the Async Rust Pipeline
+**Detection:**
+- Panic message: "cannot start a runtime"
+- Stack trace shows `tokio::runtime::EnterGuard` failure
 
-**Warning signs:**
-- Python handler is defined as `sync fn` but framework expects `async fn`
-- Entire async pipeline stalls when Python handler acquires GIL
-- High latency spikes correlated with Python handler execution
-
-**Prevention strategy:**
-- Define Python handler interface as `async fn` explicitly
-- Wrap sync Python handlers in `asyncio.to_thread` or `run_in_executor` at the Python boundary
-- Use `pyo3_asyncio` to convert Rust async futures to Python awaitables rather than blocking Rust on sync Python
-
-**Which phase should address it:**
-- Interface design phase
-
-### Pitfall 3.3: Signal Handling (SIGINT) Not Propagated to Python
-
-**Warning signs:**
-- `KeyboardInterrupt` not caught in Python handler on Ctrl+C
-- `pyo3` initializes Python with `Py_InitializeEx(0)` which disables signal handlers
-- Python asyncio event loop does not shut down gracefully on SIGINT
-
-**Prevention strategy:**
-- Register signal handlers in Rust that propagate to Python `asyncio.loop.add_signal_handler`
-- Test SIGINT lifecycle: send Ctrl+C to a running consumer and verify graceful shutdown
-- Consider `pyo3_asyncio::tokio::run` with proper signal handling setup
-
-**Which phase should address it:**
-- Shutdown design phase
+**Phase:** Implementation
 
 ---
 
-## 4. Offset Tracking Bugs
+## 2. Warning Signs (How to Detect Early)
 
-### Pitfall 4.1: Off-by-One Error on Seek After Cache Expiration
-
-**Warning signs:**
-- Exactly 1 duplicate message per rebalance or cache expiration event
-- Commit log shows `clearCacheAndResetPositions` seeks to `lastConsumedOffsets.offset` instead of `offset + 1`
-- Reproduction: block longer than `max.poll.interval.ms` triggers cache expiration
-
-**Prevention strategy:**
-- When seeking to stored offset after rebalance, always seek to `lastConsumedOffset + 1` to avoid reprocessing last successfully processed message
-- Add integration test: process N messages, block past `max.poll.interval.ms`, verify no duplicates on resume
-- Document that offset commit must happen AFTER processing completes, not just after poll
-
-**Which phase should address it:**
-- Unit testing phase + integration testing phase
-
-### Pitfall 4.2: Reordering of Offset Commit Requests Across Partitions
-
-**Warning signs:**
-- Committed offset for one partition moves "backwards" in time (e.g., from 12 to 11)
-- Race condition between goroutines committing for different partitions
-- More likely with high-frequency manual commits and multi-partition consumption
-
-**Prevention strategy:**
-- Serialize all offset commits through a single dedicated task/thread
-- Use atomic batch commits: commit offsets for all partitions in one call rather than per-partition
-- Add a mutex or channel between the commit caller and the commit execution task
-- In librdkafka: avoid calling `rd_kafka_commit` from multiple threads concurrently
-
-**Which phase should address it:**
-- Architecture phase: commit coordination design
-
-### Pitfall 4.3: Rebalance-in-progress Offset Commit Causes ILLEGAL_GENERATION
-
-**Warning signs:**
-- `ILLEGAL_GENERATION` error returned from offset commit during rebalance
-- Consumer loses assignment after commit attempt
-- Happens when using EAGER rebalance strategy with manual commits
-
-**Prevention strategy:**
-- Do NOT call commit from within rebalance callback for EAGER strategies
-- For cooperative-sticky: use `incremental_unassign` and do NOT commit before unassign
-- Only commit offsets when a message or partition EOF is returned from `poll()`
-- Handle `RebalanceInProgressException` by retrying commit after rebalance completes
-
-**Which phase should address it:**
-- Rebalance handler implementation
-
-### Pitfall 4.4: Consumer Resumes from Paused Offset Instead of Committed Offset
-
-**Warning signs:**
-- After rebalance, consumer resumes from internal (paused) offset, ignoring committed offset
-- Another consumer processed messages in the meantime, but first consumer replays them
-- Observed when consumer was paused at time of rebalance
-
-**Prevention strategy:**
-- On `onPartitionsAssigned`, call `consumer.seek(partition, committedOffset)` for each assigned partition
-- Always compare incoming message offsets with committed offsets; skip messages older than committed
-- Use `consumer.committed(partitions)` to retrieve committed offsets post-assignment
-
-**Which phase should address it:**
-- Rebalance handler implementation + testing phase
-
-### Pitfall 4.5: Using Stale In-Memory Cache After Rebalance
-
-**Warning signs:**
-- Consumer takes back a partition it previously lost and replays messages based on in-memory cache
-- Application uses a cache of N messages (e.g., sliding window of 5) and cache is not cleared on revoke
-- Observing offset going backwards after redeploy
-
-**Prevention strategy:**
-- Clear all in-memory per-partition caches in `onPartitionsRevoked` callback
-- Treat partition revocation as cache invalidation event
-- Architecture should not rely on in-memory offsets; always use broker-committed offsets for recovery
-
-**Which phase should address it:**
-- Rebalance handler implementation + architecture phase
+| Symptom | Likely Cause | Investigation |
+|---------|-------------|---------------|
+| Application freezes under load; CPU at 100% but no throughput | Rayon deadlock on Tokio channel | `pstack` or `py-spy` to see where threads are blocked |
+| `RuntimeError: Python is not initialized on this thread` | Python called from Rayon thread without proper GIL setup | Search logs for PyO3 thread state errors |
+| Memory grows linearly with backlog; OOM kills | Rayon pool too large relative to memory budget | Monitor RSS vs `consumerLag` correlation |
+| Duplicate messages or offset corruption under load | Offset commit racing with Rayon parallel handler completion | Check commit ordering in logs |
+| `ILLEGAL_GENERATION` errors spike | Rebalance during Rayon-in-flight processing | Correlate rebalance events with throughput spikes |
+| Latency spikes (P99) | GIL held too long in parallel Python calls | Profile GIL hold times via `py-spy --gil` |
+| Tokio tasks timing out unexpectedly | Tokio worker threads blocked by PyO3 GIL or Rayon | Check `tokio::spawn` task wait times |
 
 ---
 
-## 5. Retry / DLQ Implementation Mistakes
+## 3. Prevention Strategies
 
-### Pitfall 5.1: Infinite Retries Blocking Consumer and Triggering Rebalances
+### Strategy 1: Thread Pool Isolation Architecture
 
-**Warning signs:**
-- Consumer lag continuously grows
-- Kafka broker interprets slow consumer, triggering rebalances
-- `max.poll.interval.ms` exceeded repeatedly
-- "Failing OffsetCommit request since the consumer is not part of an active group" in logs
+**Design a clear boundary between Tokio and Rayon:**
 
-**Prevention strategy:**
-- Distinguish recoverable (transient) vs non-recoverable (deterministic) errors
-- For transient errors: use capped exponential backoff (e.g., 3-5 retries with 1s, 2s, 4s backoff)
-- For non-recoverable errors (schema mismatch, bad data): route directly to DLQ after 1-2 attempts
-- Monitor retry count and alert on DLQ growth rate
+```
+Tokio Runtime (async)
+  ├── Kafka fetch loop (rdkafka, blocking on dedicated thread)
+  ├── Async worker tasks (message dispatch, offset tracking)
+  └── Tokio blocking pool (Python handler GIL calls via spawn_blocking)
+       │
+       └── One-shot channel ──► Rayon thread pool
+                                   └── Parallel CPU preprocessing
+                                       (no Python, no Tokio primitives)
+```
 
-**Which phase should address it:**
-- Error handling design phase
+**Rules:**
+1. Rayon work never calls Tokio APIs, futures, or channels directly
+2. Rayon communicates results back to Tokio via `mpsc::Sender` from a `spawn_blocking` task
+3. Python calls always go through `spawn_blocking` (not Rayon threads directly)
+4. Tokio blocking threads are sized to Python handler concurrency; Rayon threads are sized to CPU preprocessing parallelism
 
-### Pitfall 5.2: DLQ Without Redrive Path (Graveyard Pattern)
+### Strategy 2: Explicit Pool Configuration
 
-**Warning signs:**
-- DLQ accumulates messages that are never reprocessed
-- No alerting on DLQ message volume
-- Failed messages are "parked" indefinitely with no way to recover
+```rust
+// Tokio blocking pool — sized to Python concurrency (GIL serializes Python calls)
+let blocking_pool = TokioCpuPool::new(num_python_handlers);
 
-**Prevention strategy:**
-- Implement a redrive mechanism: humans can pull messages from DLQ, repair, and republish
-- Common patterns: dedicated DLQ consumer that replays, parking-lot topic, or manual replay tooling
-- Monitor DLQ depth as a first-class metric alongside consumer lag
-- Set TTL/expiration on DLQ messages to avoid unbounded accumulation
+// Rayon thread pool — sized to CPU cores, NOT Python concurrency
+// Keep this separate from the Tokio blocking pool
+rayon::ThreadPoolBuilder::new()
+    .num_threads(num_cpus::get())
+    .build_global();
 
-**Which phase should address it:**
-- Architecture phase + operations setup
+// Communication: Rayon pushes results to a channel
+// Tokio worker receives via spawn_blocking
+```
 
-### Pitfall 5.3: Strict Ordering Broken by DLQ Routing
+### Strategy 3: GIL-Aware Python Invocation from Rayon
 
-**Warning signs:**
-- Downstream logic expects FIFO per partition but DLQ reprocesses out of order
-- Event sourcing application with out-of-sequence events after DLQ reprocessing
-- "Parking lot" retry strategy creates temporal disorder
+If Rayon needs to invoke Python handlers in parallel, the pattern is:
 
-**Prevention strategy:**
-- Do not use DLQ for partitioned topics where ordering within partition is critical
-- If DLQ is needed: replay DLQ messages back to original partition key to maintain ordering
-- Consider per-message retry with delay headers rather than DLQ for ordering-sensitive flows
+```rust
+// WRONG — will cause GIL thread state errors
+rayon::spawn(|| {
+    python_handler.invoke(); // Direct Python call on Rayon thread
+});
 
-**Which phase should address it:**
-- Architecture phase: determine ordering requirements per topic
+// CORRECT — spawn_blocking bridges Rayon to Python thread state
+rayon::spawn(|| {
+    let handle = tokio::runtime::Handle::current();
+    handle.spawn_blocking(|| {
+        Python::attach(|py| {
+            python_handler.invoke_py(py)
+        })
+    });
+});
+```
 
-### Pitfall 5.4: Retrying Non-Retryable Errors (Deterministic Failures)
+But this effectively serializes Python calls back through Tokio, negating Rayon's parallelism. **Alternative:** Accept that Python handlers are inherently single-threaded (GIL) and use Tokio's blocking pool for them, not Rayon. Use Rayon only for CPU-intensive Rust preprocessing that does not call Python.
 
-**Warning signs:**
-- Same message repeatedly fails with same error (e.g., `InvalidFormatException`, `SchemaViolation`)
-- Retry count header keeps incrementing but never reaches DLQ
-- DLQ is not reached because retries are infinite for all error types
+### Strategy 4: Bounded Memory Budget
 
-**Prevention strategy:**
-- Classify exceptions at message processing time: retryable vs non-retryable
-- Apply retry only to transient errors (timeout, temporary DB unavailability)
-- Non-retryable errors should skip retries and go directly to DLQ
-- Set `maxAttempts` per exception type in error handler configuration
+Calculate the maximum concurrent memory:
+```
+max_concurrent_messages * avg_message_size * handler_memory_multiplier
+```
 
-**Which phase should address it:**
-- Error handling design phase
-
----
-
-## 6. Shutdown and Rebalance Handling: Data Loss or Duplication
-
-### Pitfall 6.1: Not Committing Pending Offsets Before Revocation
-
-**Warning signs:**
-- Messages processed but not committed are lost on rebalance
-- `onPartitionsRevoked` only calls rollback, not commit
-- Later attempts to commit receive `RebalanceInProgressException`
-- Downstream sees duplicate processing from OTHER consumer (the one that picked up the partitions)
-
-**Prevention strategy:**
-- In `onPartitionsRevoked`, commit all pending offsets for revoked partitions before calling `assign(NULL)`
-- NiFi issue: `ConsumerLease.onPartitionsRevoked` must track uncommitted offsets and commit them
-- Manual commit must be inside the revoke callback, before the revoke completes
-- For cooperative rebalancing: commit pending offsets for partitions being revoked, then call `incremental_unassign`
-
-**Which phase should address it:**
-- Rebalance handler implementation
-
-### Pitfall 6.2: Closing Consumer Triggers Racing Offset Commit
-
-**Warning signs:**
-- During graceful shutdown, consumer unsubscribes, then another consumer picks up partitions before offsets committed
-- Offsets are committed "out of range" or "backwards"
-- Rolling restart causes message duplication across partitions
-
-**Prevention strategy:**
-- Use coordinated shutdown: stop consuming NEW messages, finish processing pending, commit all, THEN close
-- Set `enable.auto.commit=false` and `auto.offset.reset=none` for manual commit mode
-- In librdkafka: do NOT call `rd_kafka_commit` during close; instead rely on revoke callback
-- Test rolling restart scenarios in staging with representative traffic
-
-**Which phase should address it:**
-- Shutdown design phase + staging testing
-
-### Pitfall 6.3: Cooperative Rebalance with Manual Commit Causes Duplicate Messages
-
-**Warning signs:**
-- Partition revocation/assignment cycles 7-8 times before stabilizing
-- Messages consumed during rebalance process are received as duplicates
-- Manual commit on each message causes `ILLEGAL_GENERATION` errors
-
-**Prevention strategy:**
-- Do NOT call manual commit between `ERR__REVOKE_PARTITIONS` and `ERR__ASSIGN_PARTITIONS` callbacks in cooperative rebalancing
-- Let the consumer commit automatically or commit only in the consume loop (on message or EOF)
-- See Karafka fix: remove manual commit from rebalance callback path
-
-**Which phase should address it:**
-- Rebalance handler implementation + integration testing
-
-### Pitfall 6.4: Resume After Rebalance Continues from Wrong Offset (Paused Consumer)
-
-**Warning signs:**
-- Consumer paused via `consumer.pause(partitions)` gets reassigned same partition during scaling
-- On reassignment, continues from where it left off (its own internal offset) rather than committed offset
-- Another consumer has processed messages in the meantime
-
-**Prevention strategy:**
-- On partition reassignment, always compare `consumer.position(partition)` against `consumer.committed(partition)`
-- If `position > committed`, seek back to `committed`
-- Use the workaround pattern: log warning and skip if incoming offset < committed offset
-
-**Which phase should address it:**
-- Rebalance handler implementation
-
-### Pitfall 6.5: Interrupted Shutdown (SIGTERM) Causes Message Loss
-
-**Warning signs:**
-- Kubernetes pod termination: messages in-flight are dropped
-- No graceful drain period before container is killed
-- `session.timeout.ms` expires before consumer can commit on shutdown
-
-**Prevention strategy:**
-- Implement graceful SIGTERM handling: drain for bounded time, commit offsets, then exit
-- Set `internal.leave.group.on.close=true` for controlled shutdown
-- Configure `connection.max.idle.ms` lower than drain timeout to force reconnect if needed
-- Test SIGTERM under load in Kubernetes environment
-
-**Which phase should address it:**
-- Shutdown design phase + operations setup
+Set `max.poll.records` and channel capacity so that worst-case memory usage < available RAM * 0.7.
 
 ---
 
-## Cross-Cutting Patterns
+## 4. Phase Mapping
 
-### Phase Mapping Summary
+| Pitfall | Phase | Tasks |
+|---------|-------|-------|
+| 1.1 Tokio/Rayon deadlock | Architecture | Design Tokio-Rayon boundary; no Tokio primitives in Rayon closures |
+| 1.2 GIL on Rayon threads | Implementation | Enforce `spawn_blocking` for all Python calls; code review checklist |
+| 1.3 Memory pressure | Configuration | Set pool sizes; configure `max.poll.records` and channel capacity to memory budget |
+| 1.4 Nested runtime | Implementation | Never create Tokio runtime from Rayon; use `Handle::current()` |
+| Warning signs detection | Testing | Add integration tests with `py-spy`, memory profiling, deadlock detection |
+| Rayon pool sizing | Architecture | Benchmark-driven sizing for CPU preprocessing vs Python concurrency |
 
-| Phase | Pitfalls to Address |
-|-------|-------------------|
-| Architecture | 2.2, 3.1, 4.2, 4.5, 5.2, 5.3, 6.1 |
-| Interface Design | 3.2 |
-| Rebalance Handler | 4.3, 4.4, 6.1, 6.3, 6.4 |
-| Error Handling | 5.1, 5.2, 5.4 |
-| Shutdown Design | 6.2, 6.5 |
-| Configuration | 2.1 |
-| Unit Testing | 4.1 |
-| Integration Testing | 4.1, 4.4, 6.3, 6.5 |
-| Chaos / Load Testing | 2.2, 6.3 |
-| Operations Setup | 5.2, 6.5 |
+---
 
-### Detection Checklist
+## 5. Interaction with Existing v1.0 Architecture
 
-- [ ] GIL metrics instrumented and alerted
-- [ ] Memory growth rate monitored per partition backlog
-- [ ] Consumer lag metric with alerting threshold
-- [ ] DLQ depth as first-class metric
-- [ ] Rebalance count and duplicate message rate in test harnesses
-- [ ] Offset commit ordering verified across partitions
-- [ ] SIGTERM graceful shutdown tested under load
-- [ ] Integration test: process-then-block-past-max_poll_interval-resume verifies no duplicates
+The v1.0 architecture already has:
+- `spawn_blocking` for Python handlers (works correctly with PyO3)
+- Bounded `mpsc::channel` per handler
+- `Arc<Semaphore>` per handler for concurrency limiting
+
+**What changes with Rayon:**
+- CPU-intensive Rust preprocessing can happen in parallel before Python handlers run
+- Multiple sync Python handlers can execute concurrently (limited by Semaphore, not by channel)
+- New deadlock surfaces because Rayon threads are not Tokio threads
+
+**What stays the same:**
+- Python GIL acquisition must still go through `spawn_blocking`
+- Semaphore-bounded concurrency remains the backpressure mechanism
+- Offset tracking and commit ordering remain single-threaded (no change needed)
+
+---
+
+## 6. Confidence Assessment
+
+| Area | Confidence | Notes |
+|------|------------|-------|
+| Tokio/Rayon deadlock risk | MEDIUM-HIGH | Documented in Tokio and Rayon communities; well-understood pattern |
+| GIL on Rayon threads | MEDIUM-HIGH | PyO3 GIL behavior is documented; Rayon thread state issue is specific |
+| Memory pressure analysis | MEDIUM | Depends on message size distribution; formula is correct but numbers are project-specific |
+| Nested runtime pitfall | HIGH | Tokio runtime contract is well-documented |
+| Pool sizing strategy | MEDIUM | Principle is sound; exact numbers need benchmarking |
+
+---
+
+## 7. Key References
+
+- [Tokio spawn_blocking docs](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html) — blocking thread pool semantics
+- [PyO3 GitHub issue #58](https://github.com/PyO3/pyo3-async-runtimes) — GIL + async runtime interaction
+- [Rayon thread pool configuration](https://docs.rs/rayon/latest/rayon/struct.ThreadPoolBuilder.html) — global pool sizing
+- [Tokio runtime enter guard](https://docs.rs/tokio/latest/tokio/runtime/struct.EnterGuard.html) — nested runtime prevention
+
+---
+
+## 8. Open Questions for Phase-1 Research
+
+1. **Rayon pool granularity:** Global pool vs per-handler pool — is global pool safe when different handlers have different CPU/Rust ratios?
+2. **Batch mode + Rayon interaction:** If batch handlers use Rayon to parallelize preprocessing, does the existing `invoke_batch` architecture still hold?
+3. **Graceful shutdown with Rayon:** When Tokio shuts down, does Rayon drain gracefully? Or does it need explicit shutdown coordination?

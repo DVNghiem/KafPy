@@ -1,236 +1,211 @@
-# Rust + Python Kafka Consumer Framework: Standard Stack Research
+# Stack Research: Work-Stealing Thread Pool for Blocking Sync Handlers
 
-**Date**: 2026-04-28
-**Purpose**: Foundation architecture for KafPy — a hybrid Rust/Python Kafka consumer framework where Rust owns the runtime (Kafka ingestion, Tokio concurrency, bounded channels, backpressure) and Python owns business logic (PyO3 bindings, `@handler` decorator API).
+**Project:** KafPy
+**Context:** v1.1 milestone — add non-blocking execution for long-running sync Python handlers
+**Researched:** 2026-04-29
+**Confidence:** HIGH
 
----
+## Executive Summary
 
-## 1. Key Crate Versions (Current Stable)
-
-| Crate | Latest Stable | MSRV | Confidence |
-|-------|--------------|------|------------|
-| `rdkafka` | **0.39.0** (2026-01-25) | Rust 1.70+ | HIGH |
-| `tokio` | **1.52.1** (2026-04-16) | Rust 1.71+ | HIGH |
-| `pyo3` | **0.28.3** (2026-04-02) | Rust 1.83+ | HIGH |
-| `pyo3-async-runtimes` | **0.28.0** (2026-02-03) | Rust 1.83+ | HIGH |
-| `tracing` | **0.1.44** (2025-12-18) | Rust 1.65+ | HIGH |
-| `tracing-opentelemetry` | **0.29.0** (2026-03) | Rust 1.75+ | HIGH |
-| `opentelemetry-sdk` | **0.31.0** (2025-09-25) | Rust 1.75+ | MEDIUM |
-| `rskafka` | **0.6.0** (2025-03-20) | Rust 1.85+ | MEDIUM |
-
-### Why These Versions
-
-**rdkafka 0.39.0**: The battle-tested choice. Built on librdkafka (C), supports all Kafka features (consumer groups, transactions, SASL, SSL, compression). The README still shows `0.25` in docs but crates.io shows `0.39.0`. Compatible with librdkafka v1.9.2+. **Confirmed via docs.rs changelog and GitHub releases**.
-
-**tokio 1.52.1**: The de facto standard async runtime. LTS releases available (1.47.x until Sep 2026, 1.51.x until Mar 2027). Multi-threaded runtime with work-stealing is the default and correct choice for Kafka ingestion. **Confirmed via GitHub releases tokio-1.52.1 (2026-04-16)**.
-
-**pyo3 0.28.3**: The standard Rust-Python binding crate. MSRV 1.83 as of 0.28.x. Supports `async fn` in `#[pyfunction]` with `experimental-async` feature. GIL API renamed: `Python::with_gil` → `Python::attach`, `Python::allow_threads` → `Python::detach`. **Confirmed via GitHub v0.28.3 (2026-04-02)**.
-
-**pyo3-async-runtimes 0.28.0**: Bridges Python asyncio and Rust async runtimes (Tokio, async-std). Required for proper `#[pyfunction] async fn` → Python `asyncio` interoperability. **Confirmed via GitHub**.
-
-**tracing 0.1.44**: The standard instrumentation crate from the Tokio project. MSRV 1.65. Works with `tracing-subscriber` for output formatting and `tracing-opentelemetry` for distributed tracing. **Confirmed via crates.io**.
-
-**opentelemetry-rust 0.29.0**: Logs-SDK and Logs-Appender-Tracing are now stable in 0.29.0. Prometheus exporter is **deprecated** in favor of OTLP exporter. **Confirmed via GitHub opentelemetry-0.29.0 release**.
+Long-running sync Python handlers block the Tokio poll cycle, causing heartbeat misses and potential rebalances. The solution is a dedicated Rayon work-stealing thread pool that runs blocking sync work alongside the Tokio async runtime. Tokio continues processing Kafka heartbeats and async events while Rayon handles Python handler execution. No changes to existing Tokio configuration, no migration of message routing to async — just a bounded Rayon pool that receives work from Tokio via oneshot channels and notifies completion back.
 
 ---
 
-## 2. Async Runtime Patterns for High-Throughput Kafka Consumption
+## Recommended Stack Addition
 
-### Recommended Pattern: Dedicated Kafka Thread + Bounded MPSC Channel
+### Rayon
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Tokio Multi-Thread Runtime                       │
-│                                                                      │
-│  ┌──────────────────┐         ┌──────────────────────────────────┐ │
-│  │  Kafka Fetch Loop │──mpsc──▶│  Worker Pool (N tasks)           │ │
-│  │  (spawn_blocking) │ channel │  ┌──────┐ ┌──────┐ ┌──────┐     │ │
-│  │                   │ bounded │  │ Task │ │ Task │ │ Task │     │ │
-│  │  [rdkafka consumer] │ (CHAN- │  │  0   │ │  1   │ │  2   │     │ │
-│  │                   │ CAPACITY)│  └──────┘ └──────┘ └──────┘     │ │
-│  └──────────────────┘         │        ↓ GIL release              │ │
-│                                │  [Python handler via PyO3]        │ │
-│                                └──────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────┘
-```
+| Property | Value | Rationale |
+|----------|-------|-----------|
+| Version | `1.12.0` | Current crates.io latest. Stable API, well-maintained, widely adopted. |
+| Purpose | Work-stealing thread pool for blocking sync handlers | NUMA-aware work-stealing with zero-cost fork-join abstraction. Guarantees data-race freedom. |
+| Integration | Pool-per-consumer-instance, not global | Clean isolation; each consumer can have independent pool size. |
 
-**Why this pattern**:
-- **Bounded channel = backpressure**: When `CHANNEL_CAPACITY` is full, the fetch loop blocks naturally, slowing Kafka consumption without unbounded memory growth. This is the core insight from production Kafka consumer patterns.
-- **Dedicated thread for Kafka**: rdkafka's consumer loop is blocking by nature. Running it in `spawn_blocking` (Tokio's blocking thread pool) avoids blocking the async worker threads.
-- **Worker pool with pre-spawned tasks**: Instead of spawning tasks per message (spawn storms), pre-spawn a fixed number of workers that pull from the shared channel. Overhead stays constant regardless of throughput.
-
-**Key configurations from research**:
-- `CHANNEL_CAPACITY`: 100–1000 based on memory budget and processing latency
-- `WORKER_COUNT`: `num_cpus::get()` or benchmark-tuned (typically 4–16)
-- Use `tokio::sync::mpsc::channel::<Result<KafkaMessage>>` (bounded)
-
-**Reference**: The pattern is validated across multiple blog posts (OneUptime, 2026-01-25) and the official `rust-rdkafka` `asynchronous_processing.rs` example.
-
-### Tokio Runtime Configuration
-
-```rust
-#[tokio::main(flavor = "multi_thread", worker_threads = N)]
-async fn main() {
-    // worker_threads: match to partition count or benchmark
-}
-```
-
-**For extreme throughput**: Consider `Builder::enable_eager_driver_handoff` (added in 1.52.0 unstable) for faster I/O driver handoff before polling tasks.
-
----
-
-## 3. PyO3 Python Bindings with Async Rust
-
-### Recommended Approach: `pyo3-async-runtimes` + `spawn_blocking`
-
-**The critical insight from GitHub issue #58 (pyo3-async-runtimes)**:
-
-> Calling `Python::attach` inside a `tokio::spawn` task can freeze non-Python-related tasks because Tokio does not allow work-stealing while a task is blocked on GIL.
-
-**Correct pattern**:
-1. Python handlers should be **synchronous** (`#[pyfunction]`) or, if async, **leaf async** (not calling back into Tokio from Python)
-2. Heavy Python work should run in **`spawn_blocking`** (dedicated blocking thread pool, not the async worker threads)
-3. For `async fn` Python functions, use `pyo3-async-runtimes` which handles the GIL correctly:
-   - In 0.27.0+, `future_into_py` finalizes futures **without holding GIL** inside the async runtime
-   - The `Runtime` trait now requires `spawn_blocking` function
-
-**Anti-pattern to avoid**: Calling `Python::attach` inside `tokio::spawn` for heavy Python code. This blocks the Tokio event loop thread, starving other tasks.
-
-**Correct async PyO3 usage**:
-```rust
-#[pyfunction]
-async fn process_message(msg: String) -> PyResult<String> {
-    // Python::attach is called by pyo3-async-runtimes automatically
-    // but the GIL is released during await points
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    Ok(format!("processed: {}", msg))
-}
-```
-
-**For the `@handler` decorator pattern**: Python registers handlers via a PyO3-exposed function. Each handler call should be:
-- Fast-path: Release GIL via `Python::detach` for CPU-bound Rust work
-- Slow-path: Use `spawn_blocking` when calling Python business logic
-
----
-
-## 4. Logging/Tracing Crates
-
-### Recommended Stack
-
-| Layer | Crate | Version | Purpose |
-|-------|-------|---------|---------|
-| Core instrumentation | `tracing` | 0.1.44 | Span/event creation |
-| Output formatting | `tracing-subscriber` + `FmtSubscriber` | latest | Console output |
-| Distributed tracing | `tracing-opentelemetry` | 0.29.0 | OTLP export |
-| OpenTelemetry SDK | `opentelemetry-sdk` | 0.31.0 | Collector pipeline |
-| OTLP exporter | `opentelemetry-otlp` | 0.31.1 | Protocol encoding |
-
-### Standard Setup Pattern
-
-```rust
-use tracing_subscriber::{layer::SubscriberExt, Registry, FmtSubscriber};
-use tracing_opentelemetry::OpenTelemetryLayer;
-
-let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-let subscriber = Registry::default()
-    .with(FmtSubscriber::builder().with_max_level(Level::INFO).finish())
-    .with(telemetry);
-
-tracing::subscriber::set_global_default(subscriber).expect("failed");
-```
-
-**Why `tracing` over `log`/`env_logger`**: `tracing` has first-class span semantics — you can correlate log events to specific execution phases. For Kafka consumers processing millions of messages, span-based tracing is essential for distributed observability.
-
-**Why `tracing-opentelemetry` over raw OpenTelemetry**: Integrates directly with `tracing`'s span model rather than requiring separate instrumentation.
-
-**Prometheus exporter deprecated**: Use OTLP exporter and an OpenTelemetry Collector + Prometheus backend instead.
-
----
-
-## 5. NOT Recommended and Why
-
-### Kafka Client Alternatives
-
-| Crate | Why NOT Recommended |
-|-------|---------------------|
-| `rskafka` | **Not a general-purpose Kafka client**. Explicitly designed for "simple workloads" and "low number of high-throughput partitions". No consumer groups, no offset tracking, no transactions, no built-in buffering/aggregation/linger timeouts. OK for InfluxDB-style use cases, but unsuitable for a general framework. MSRV 1.85 is also a burden. |
-
-### Anti-Patterns
-
-| Anti-Pattern | Why NOT Recommended |
-|--------------|---------------------|
-| **Unbounded channels** | Will cause OOM under load. Always use bounded `mpsc::channel` for backpressure. |
-| **`tokio::spawn` per message** | Spawn storms create unbounded coordination overhead. Use a fixed worker pool. |
-| **Calling `Python::attach` (GIL acquire) inside `tokio::spawn`** | GIL blocking stalls the Tokio event loop, affecting all tasks on that thread. Use `spawn_blocking` for Python calls. |
-| **`async-std` instead of Tokio** | Tokio is the dominant runtime with better ecosystem support for Kafka (rdkafka tokio integration), observability (tracing is Tokio project), and community size. |
-| **`log` + `env_logger`** | Old logging API with no span semantics. `tracing` provides structured, span-aware logging with ecosystem support. |
-| **Raw `pthread` threads for Kafka** | Using `spawn_blocking` integrates with Tokio's blocking thread pool and enables graceful shutdown. Raw threads bypass this. |
-| **`tracing` 0.2.x (pre-release)** | Pre-release documentation shows MSRV 1.65+. The stable ecosystem is 0.1.x. Stay on 0.1.x until 0.2 is stable. |
-
-### GIL + Tokio Gotcha (Critical for PyO3)
-
-The **most important** PyO3+Tokio insight from research:
-
-> `Python::attach` (GIL acquire) called inside `tokio::spawn` can block all tasks on that Tokio worker thread. Tokio does not allow work-stealing while a task is blocked on GIL.
-
-**Fix**: Use `spawn_blocking` (or `#[pyfunction] async fn` via `pyo3-async-runtimes`) to ensure Python code runs on the blocking thread pool, not the async worker threads. This is a fundamental architectural constraint.
-
----
-
-## 6. Confidence Summary
-
-| Category | Recommendation | Confidence |
-|----------|---------------|------------|
-| Kafka client | `rdkafka` 0.39.0 | **HIGH** |
-| Async runtime | `tokio` 1.52.1 | **HIGH** |
-| Python bindings | `pyo3` 0.28.3 | **HIGH** |
-| Async bridge | `pyo3-async-runtimes` 0.28.0 | **HIGH** |
-| Observability | `tracing` 0.1.44 + `tracing-opentelemetry` 0.29.0 | **HIGH** |
-| Worker pool pattern | Bounded mpsc + fixed workers | **HIGH** |
-| PyO3+Tokio GIL | Use `spawn_blocking` for Python calls | **HIGH** |
-| rskafka vs rdkafka | Use rdkafka (rskafka too limited) | **HIGH** |
-| OpenTelemetry SDK | `opentelemetry-sdk` 0.31.0 | **MEDIUM** (version overlap with tracing-otel) |
-| Logging over log | `tracing` over `log`/`env_logger` | **HIGH** |
-
----
-
-## 7. Example Cargo.toml Dependencies
+**Cargo.toml addition:**
 
 ```toml
 [dependencies]
-# Kafka
-rdkafka = { version = "0.39", features = ["cmake-build", "ssl"] }
-
-# Async runtime
-tokio = { version = "1.52", features = ["full"] }
-
-# Python bindings
-pyo3 = { version = "0.28", features = ["auto-initialize"] }
-pyo3-async-runtimes = "0.28"
-
-# Observability
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-opentelemetry = "0.29"
-opentelemetry-sdk = { version = "0.31", features = ["rt-tokio"] }
-opentelemetry-otlp = "0.31"
-
-# Utilities
-thiserror = "2"
-anyhow = "1"
+rayon = "1.12"
 ```
+
+### Version Verification
+
+| Crate | Current in Cargo.toml | Recommended | Status |
+|-------|----------------------|--------------|--------|
+| `rayon` | Not present | `1.12.0` | New addition |
+| `tokio` | `1.40` | `1.40` or `1.52.1` | Keep existing |
+| `pyo3-async-runtimes` | `0.27.0` | `0.28.0` | Upgrade path noted, not blocking |
 
 ---
 
-## 8. Sources
+## Integration Architecture
 
-- [rdkafka GitHub](https://github.com/fede1024/rust-rdkafka) — changelog, README
-- [tokio GitHub releases](https://github.com/tokio-rs/tokio/releases) — tokio-1.52.1, tokio-1.52.0
-- [pyo3 GitHub](https://github.com/pyo3/pyo3) — v0.28.3, v0.28.0 releases
-- [pyo3-async-runtimes GitHub](https://github.com/PyO3/pyo3-async-runtimes) — v0.28.0, issue #58
-- [tracing crates.io](https://crates.io/crates/tracing/versions) — v0.1.44
-- [tracing-opentelemetry docs.rs](https://docs.rs/tracing-opentelemetry/latest) — v0.29.0
-- [opentelemetry-rust releases](https://github.com/open-telemetry/opentelemetry-rust/releases) — opentelemetry-0.29.0
-- [rskafka docs.rs](https://docs.rs/rskafka) — v0.6.0, limitations
-- [OneUptime: Kafka Consumers with Backpressure in Rust](https://oneuptime.com/blog/post/2026-01-25-kafka-consumers-backpressure-rust/view) — production pattern validation
-- [Rust Forum: High performance kafka consumer](https://users.rust-lang.org/t/high-performance-kafka-consumer-service/53161) — spawn storms warning
+### Data Flow
+
+```
+Tokio (async event loop)
+  ├── poll loop → message → bounded channel (per handler, already exists)
+  │                      └── dispatch work to Rayon via pool.spawn()
+  │                      └── Python sync handler runs on Rayon thread
+  │                      └── oneshot sender → completion flag
+  │                      └── poll oneshot receiver (non-blocking try_recv)
+  │                      └── if ready: advance offset, commit if batch-ready
+  └── Kafka heartbeat / offset commit / channel ops (continues uninterrupted)
+```
+
+**Key property:** Tokio never blocks on sync Python work. The poll cycle stays responsive because blocking work lives exclusively on Rayon threads.
+
+### Why Rayon Over Alternatives
+
+| Option | Verdict | Reason |
+|--------|---------|--------|
+| `tokio::task::spawn_blocking` | Not recommended | Shared blocking pool; cannot cancel individual long-running tasks; designed for brief CPU work (< 10ms) |
+| `std::thread::spawn` manual pool | Not recommended | No work-stealing, no graceful shutdown, significant implementation/maintenance burden |
+| `async-std` runtime | Out of scope | Migration would rewrite entire async layer; Tokio already integrated and working |
+| `threadpool` crate | Not recommended | Unmaintained, no work-stealing |
+
+Rayon is the correct choice because:
+1. Work-stealing handles uneven workloads without manual load balancing
+2. `spawn()` returns immediately (fire-and-forget with work-tracking for shutdown)
+3. `shutdown_timeout()` enables graceful drain of in-flight handlers
+4. No shared state with Tokio — clean separation of concerns
+
+---
+
+## Integration Points with Existing Tokio Stack
+
+### Components Used as-Is
+
+| Component | Role | Integration |
+|-----------|------|-------------|
+| `tokio::sync::bounded` channel | Per-handler message queue | Already exists; upstream dispatches to this queue |
+| `tokio::sync::oneshot` | Completion notification | Send from Rayon thread, receive on Tokio task |
+| `Arc<Semaphore>` per handler | Concurrency limiting | Already exists; continues to govern both sync and async |
+| `ConsumerConfigBuilder` | Config API | Add `rayon_pool_size(u32)` to builder |
+| Prometheus metrics + W3C tracing | Observability | Unchanged |
+
+### No Changes To
+
+- Tokio runtime configuration (`tokio = { version = "1.40", features = ["full"] }`)
+- Async handler signatures or dispatch paths
+- Bounded channel backpressure behavior
+- Message routing architecture
+- Offset tracking or commit logic
+
+### New Integration Points
+
+1. **Pool initialization**: `rayon::ThreadPoolBuilder::new().num_threads(n).build()?` at consumer startup
+2. **Work dispatch**: `pool.spawn(move || { /* Python handler via PyO3 */ })`
+3. **Completion polling**: `oneshot_receiver.try_recv()` on each poll cycle iteration
+4. **Graceful shutdown**: `pool.shutdown_timeout(Duration::from_secs(30))` joined with consumer drain sequence
+
+---
+
+## Specific Configuration Recommendations
+
+### Thread Pool Size
+
+```rust
+let rayon_threads = std::cmp::max(2, num_cpus::get() - 2);
+```
+
+**Rationale:** Tokio needs at least 1-2 threads for its own async operations (Kafka client, channel sends). Over-subscribing the CPU causes context-switching overhead. Rayon's work-stealing handles load imbalance, so exact thread count is less critical than having a sensible default that does not starve Tokio.
+
+**User-configurable:** Add `ConsumerConfigBuilder::rayon_pool_size(u32)` so users can tune for their workload. Default can be `num_cpus::get()` if they want full CPU allocation.
+
+### Handler Result Routing
+
+Sync handler results must route back through the same offset-commit path as async handlers:
+
+```rust
+// On Rayon thread: compute result, send via oneshot
+oneshot_sender.send(handler_result)?;
+
+// On Tokio task: non-blocking check
+if let Ok(result) = oneshot_receiver.try_recv() {
+    // advance offset, DLQ routing, retry logic — identical to async path
+}
+```
+
+This ensures retry/DLQ/backoff logic works identically for both handler types.
+
+### Graceful Shutdown Sequence
+
+```rust
+// 1. Consumer stops polling new messages
+// 2. Wait for in-flight messages to complete or timeout
+pool.shutdown_timeout(std::time::Duration::from_secs(30));
+// 3. Drain remaining Tokio tasks (offset commits, metrics flush)
+```
+
+Do not simply drop the pool — in-flight sync handlers may be mid-processing (database transaction, HTTP call). The timeout-based drain sets user expectations.
+
+### Memory Considerations
+
+Each Rayon thread holds stack memory. Default stack size is usually 2MB on Linux. A 4-thread pool adds ~8MB resident memory. This is acceptable for a consumer framework. If memory is tight, `ThreadPoolBuilder::stack_size()` can reduce per-thread allocation at the cost of less headroom for deep Python call stacks.
+
+---
+
+## Alternatives Considered
+
+### `tokio::task::spawn_blocking`
+
+**Verdict:** Not recommended for long-running Python handlers.
+
+`spawn_blocking` is designed for short-lived CPU-bound work. Python sync handlers may run for seconds (database calls, HTTP requests, file I/O). Long-running blocking tasks on Tokio's blocking thread pool:
+- Consume slots from the shared blocking thread pool (exhaustion causes deadlocks)
+- Cannot be individually cancelled (no per-task cancellation token)
+- No work-stealing — tasks queue serially on the blocking pool
+
+**Trade-off:** Simpler to integrate (no new dependency), but breaks under long-running handlers and provides no isolation, tunability, or graceful shutdown.
+
+---
+
+### Manual `std::thread::spawn` Pool
+
+**Verdict:** Not recommended.
+
+Rolling your own thread pool requires implementing:
+- Lock-free work queue to avoid contention
+- Thread lifecycle management (start, stop, join)
+- Graceful shutdown with in-flight task completion
+- Task cancellation
+
+Rayon provides all of this with battle-tested correctness. The implementation burden and ongoing maintenance risk are not worth zero dependencies.
+
+**Trade-off:** Zero new dependencies at the cost of significant implementation risk.
+
+---
+
+### `crossbeam-channel` for Message Passing
+
+**Verdict:** Not needed.
+
+Existing `tokio::sync::bounded` channels already handle inter-thread communication via their sender side. The message routing from Kafka to handler channels is already working. We only need Rayon for parallel execution, not for replacing the message-passing infrastructure.
+
+**Trade-off:** Adding `crossbeam-channel` would increase dependency surface without solving the actual problem (blocking sync handlers).
+
+---
+
+## What NOT to Add
+
+1. **Do not replace Tokio runtime with Rayon** — Tokio owns async I/O, Kafka polling, and channel operations. Rayon only handles sync Python handler execution.
+
+2. **Do not use `spawn_blocking` for all sync work** — Designed for brief CPU work, not long-running Python handlers. Use the dedicated Rayon pool instead.
+
+3. **Do not make the Rayon pool global** — Pool-per-consumer-instance is cleaner. Global pool prevents independent consumer instances from having different pool sizes.
+
+4. **Do not add `crossbeam-channel` or other queue implementations** — Existing `tokio::sync::bounded` channels handle all message passing. Rayon only provides the execution venue.
+
+5. **Do not add `threadpool` crate (old/unmaintained)** — `threadpool` lacks work-stealing and is unmaintained. Rayon is the standard for work-stealing parallelism in Rust.
+
+6. **Do not change PyO3 binding signatures** — The existing `#[pyfunction]` pattern works for sync handlers on Rayon. No changes needed to the Python-callable interface.
+
+---
+
+## Sources
+
+- [Rayon crate — crates.io](https://crates.io/crates/rayon) — version 1.12.0
+- [Rayon documentation — Context7](https://context7.com/rayon-rs/rayon)
+- [Tokio spawn_blocking limitations — docs.rs](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html)
+- Current `Cargo.toml` — confirmed existing dependency versions
