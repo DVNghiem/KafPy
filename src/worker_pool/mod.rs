@@ -8,6 +8,7 @@ use crate::failure::FailureReason;
 use crate::observability::metrics::HandlerMetrics;
 use crate::observability::tracing::KafpySpanExt;
 use crate::python::context::ExecutionContext;
+use crate::python::execution_result::ExecutionResult;
 use std::sync::Arc;
 
 pub(crate) static HANDLER_METRICS: HandlerMetrics = HandlerMetrics;
@@ -40,14 +41,22 @@ pub enum ExecutionAction {
 pub(crate) async fn handle_execution_failure(
     ctx: &ExecutionContext,
     msg: &OwnedMessage,
-    reason: &FailureReason,
+    result: &ExecutionResult,
     retry_coordinator: Arc<RetryCoordinator>,
     dlq_producer: Arc<SharedDlqProducer>,
     dlq_router: Arc<dyn DlqRouter>,
     queue_manager: Arc<QueueManager>,
 ) -> ExecutionAction {
+    // Extract FailureReason from ExecutionResult
+    let reason = match result {
+        ExecutionResult::Error { reason, .. } => reason.clone(),
+        ExecutionResult::Rejected { reason, .. } => reason.clone(),
+        ExecutionResult::Timeout { .. } => FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
+        ExecutionResult::Ok => unreachable!("handle_execution_failure called with Ok result"),
+    };
+
     let (should_retry, should_dlq, delay) =
-        retry_coordinator.record_failure(&ctx.topic, ctx.partition, ctx.offset, reason);
+        retry_coordinator.record_failure(&ctx.topic, ctx.partition, ctx.offset, &reason);
 
     if should_retry {
         if let Some(d) = delay {
@@ -61,6 +70,23 @@ pub(crate) async fn handle_execution_failure(
     }
 
     if should_dlq {
+        // Extract timeout metadata if this is a Timeout result
+        let timeout_duration = if result.is_timeout() {
+            if let ExecutionResult::Timeout { info } = result {
+                Some(info.timeout_ms / 1000) // convert ms to seconds per D-02
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let last_processed_offset = if let ExecutionResult::Timeout { info } = result {
+            info.last_processed_offset
+        } else {
+            None
+        };
+
         let metadata = DlqMetadata::new(
             ctx.topic.clone(),
             ctx.partition,
@@ -69,8 +95,8 @@ pub(crate) async fn handle_execution_failure(
             retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset) as u32,
             chrono::Utc::now(),
             chrono::Utc::now(),
-            None,
-            None,
+            timeout_duration,
+            last_processed_offset,
         );
 
         let dlq_span = tracing::Span::current().kafpy_dlq_route(

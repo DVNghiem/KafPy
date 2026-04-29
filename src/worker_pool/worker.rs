@@ -12,7 +12,7 @@ use crate::coordinator::RetryCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqRouter, SharedDlqProducer};
-use crate::observability::metrics::{MetricLabels, ThroughputMetrics};
+use crate::observability::metrics::{MetricLabels, TimeoutMetrics, ThroughputMetrics};
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
 use crate::python::context::ExecutionContext;
@@ -176,6 +176,14 @@ pub(crate) async fn worker_loop(
                     .insert("error_type", result.error_type_label());
                 HANDLER_METRICS.record_error(&prometheus_sink, &error_labels);
             }
+            // TMOUT-03: Emit timeout-specific metric
+            if result.is_timeout() {
+                TimeoutMetrics::record_timeout(
+                    &prometheus_sink,
+                    ctx.topic.as_str(),
+                    handler.name(),
+                );
+            }
             let _outcome = executor.execute(&ctx, &msg, &result);
 
             match result {
@@ -211,7 +219,7 @@ pub(crate) async fn worker_loop(
                     let action = handle_execution_failure(
                         &ctx,
                         &msg,
-                        reason,
+                        &result,
                         Arc::clone(&retry_coordinator),
                         Arc::clone(&dlq_producer),
                         Arc::clone(&dlq_router),
@@ -246,7 +254,7 @@ pub(crate) async fn worker_loop(
                     let action = handle_execution_failure(
                         &ctx,
                         &msg,
-                        reason,
+                        &result,
                         Arc::clone(&retry_coordinator),
                         Arc::clone(&dlq_producer),
                         Arc::clone(&dlq_router),
@@ -281,7 +289,7 @@ pub(crate) async fn worker_loop(
                     let action = handle_execution_failure(
                         &ctx,
                         &msg,
-                        &reason,
+                        &result,
                         Arc::clone(&retry_coordinator),
                         Arc::clone(&dlq_producer),
                         Arc::clone(&dlq_router),
