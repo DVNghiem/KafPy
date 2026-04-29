@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: ready_to_plan
-last_updated: "2026-04-28T17:38:22.883Z"
+status: unknown
+last_updated: "2026-04-28T18:23:34.966Z"
 progress:
   total_phases: 4
-  completed_phases: 1
-  total_plans: 1
+  completed_phases: 0
+  total_plans: 2
   completed_plans: 0
-  percent: 25
+  percent: 0
 ---
 
 # KafPy Project State
@@ -171,4 +171,4 @@ These are deferred to a future release and do not block v1.
 
 *Last updated: 2026-04-28*
 
-**Planned Phase:** 1 (Core Consumer Engine & Configuration) — 1 plans — 2026-04-28T17:31:59.092Z
+**Planned Phase:** 2 (Rebalance Handling, Failure Handling & Lifecycle) — 6 plans — 2026-04-28T18:23:34.865Z
