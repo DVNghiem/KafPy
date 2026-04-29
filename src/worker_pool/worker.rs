@@ -12,8 +12,7 @@ use crate::coordinator::OffsetCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqRouter, SharedDlqProducer};
-use crate::observability::metrics::MetricLabels;
-use crate::observability::NoopSink;
+use crate::observability::metrics::{MetricLabels, ThroughputMetrics};
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
 use crate::python::context::ExecutionContext;
@@ -61,6 +60,7 @@ pub(crate) async fn worker_loop(
     worker_id: usize,
     shutdown_token: CancellationToken,
     worker_pool_state: Arc<WorkerPoolState>,
+    prometheus_sink: crate::observability::SharedPrometheusSink,
     handler_concurrency: crate::worker_pool::HandlerConcurrency,
 ) {
     logger::log("INFO", &format!("worker started worker_id={}", worker_id));
@@ -149,8 +149,14 @@ pub(crate) async fn worker_loop(
                 "handler invoke complete handler_id={} topic={} partition={} offset={} elapsed_ms={}",
                 ctx.topic, ctx.topic, ctx.partition, ctx.offset, elapsed.as_millis() as u64
             ));
-            HANDLER_METRICS.record_invocation(&NoopSink, &invocation_labels);
-            HANDLER_METRICS.record_latency(&NoopSink, &invocation_labels, elapsed);
+            HANDLER_METRICS.record_invocation(&prometheus_sink, &invocation_labels);
+            HANDLER_METRICS.record_latency(&prometheus_sink, &invocation_labels, elapsed);
+            ThroughputMetrics::record_throughput(
+                &prometheus_sink,
+                ctx.topic.as_str(),
+                handler.name(),
+                handler.mode().as_str(),
+            );
             if !result.is_ok() {
                 tracing::error!(
                     handler_id = %ctx.topic,
@@ -163,7 +169,7 @@ pub(crate) async fn worker_loop(
                 let error_labels = MetricLabels::new()
                     .insert("handler_id", ctx.topic.as_str())
                     .insert("error_type", result.error_type_label());
-                HANDLER_METRICS.record_error(&NoopSink, &error_labels);
+                HANDLER_METRICS.record_error(&prometheus_sink, &error_labels);
             }
             let _outcome = executor.execute(&ctx, &msg, &result);
 
@@ -316,7 +322,7 @@ mod tests {
     }
 
     fn dummy_dlq_producer() -> Arc<SharedDlqProducer> {
-        Arc::new(SharedDlqProducer::new(&test_config()).unwrap())
+        Arc::new(SharedDlqProducer::new(&test_config(), crate::observability::metrics::SharedPrometheusSink::new()).unwrap())
     }
 
     fn dummy_dlq_router() -> Arc<dyn DlqRouter> {
@@ -345,6 +351,7 @@ mod tests {
                 0,
                 token,
                 Arc::new(WorkerPoolState::new(1)),
+                crate::observability::metrics::SharedPrometheusSink::new(),
                 crate::worker_pool::HandlerConcurrency::new(4),
             ),
         )
@@ -372,6 +379,7 @@ mod tests {
             0,
             token.clone(),
             Arc::new(WorkerPoolState::new(1)),
+            crate::observability::metrics::SharedPrometheusSink::new(),
             crate::worker_pool::HandlerConcurrency::new(4),
         ));
 
