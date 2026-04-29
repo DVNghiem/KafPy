@@ -17,6 +17,7 @@ use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::python::executor::Executor;
 use crate::python::handler::PythonHandler;
 use crate::python::logger;
+use crate::worker_pool::concurrency::HandlerConcurrency;
 use crate::worker_pool::batch_loop::batch_worker_loop;
 use crate::worker_pool::worker::worker_loop;
 
@@ -36,6 +37,8 @@ pub struct WorkerPool {
     pub(crate) worker_pool_state: Arc<WorkerPoolState>,
     /// Shutdown coordinator for accessing drain timeout.
     coordinator: Arc<ShutdownCoordinator>,
+    /// Per-handler concurrency control via Arc<Semaphore>.
+    handler_concurrency: HandlerConcurrency,
 }
 
 impl WorkerPool {
@@ -57,6 +60,7 @@ impl WorkerPool {
         dlq_router: Arc<dyn DlqRouter>,
         shutdown_token: CancellationToken,
         coordinator: Arc<ShutdownCoordinator>,
+        handler_concurrency: HandlerConcurrency,
     ) -> Self {
         let mut join_set = JoinSet::new();
 
@@ -121,6 +125,7 @@ impl WorkerPool {
                     worker_id,
                     token,
                     worker_pool_state,
+                    handler_concurrency.clone(),
                 ));
             }
         }
@@ -134,6 +139,7 @@ impl WorkerPool {
             dlq_router,
             worker_pool_state,
             coordinator,
+            handler_concurrency,
         }
     }
 
@@ -262,6 +268,7 @@ mod tests {
             dummy_dlq_router(),
             CancellationToken::new(),
             std::sync::Arc::new(crate::coordinator::ShutdownCoordinator::new(30)),
+            crate::worker_pool::HandlerConcurrency::new(4),
         );
         let _ = tx;
     }

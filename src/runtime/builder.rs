@@ -31,6 +31,7 @@ use crate::pyconsumer::HandlerMetadata;
 use crate::python::handler::PythonHandler;
 use crate::python::logger;
 use crate::python::{DefaultExecutor, Executor};
+use crate::worker_pool::concurrency::HandlerConcurrency;
 use crate::worker_pool::pool::WorkerPool;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -194,6 +195,9 @@ impl RuntimeBuilder {
         let coordinator: Arc<ShutdownCoordinator> =
             Arc::new(ShutdownCoordinator::new(rust_config.drain_timeout_secs));
 
+        // Create HandlerConcurrency with default limit of 4 per handler
+        let handler_concurrency = HandlerConcurrency::new(4);
+
         // 10. Create WorkerPool with per-topic handler map
         let pool = WorkerPool::new(
             n_workers,
@@ -207,6 +211,7 @@ impl RuntimeBuilder {
             dlq_router,
             self.shutdown_token.clone(),
             Arc::clone(&coordinator),
+            handler_concurrency,
         );
 
         // 11. Spawn RuntimeSnapshotTask for introspection

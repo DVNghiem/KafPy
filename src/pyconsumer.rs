@@ -21,6 +21,8 @@ pub struct HandlerMetadata {
     pub batch_max_size: Option<usize>,
     pub batch_max_wait_ms: Option<u64>,
     pub timeout_ms: Option<u64>,
+    /// Maximum concurrent executions for this handler. None = use default.
+    pub concurrency: Option<usize>,
 }
 
 /// Python-callable consumer. Use `add_handler` to register a topic → callback
@@ -56,7 +58,8 @@ impl PyConsumer {
     ///     batch_max_size: Max messages per batch (batch modes only). Defaults to 100.
     ///     batch_max_wait_ms: Max wait time per batch in ms (batch modes only). Defaults to 1000.
     ///     timeout_ms: Per-handler execution timeout in ms. None uses ConsumerConfig.handler_timeout_ms.
-    #[pyo3(signature = (topic, callback, mode=None, batch_max_size=None, batch_max_wait_ms=None, timeout_ms=None))]
+    ///     concurrency: Maximum concurrent executions for this handler. None = no limit.
+    #[pyo3(signature = (topic, callback, mode=None, batch_max_size=None, batch_max_wait_ms=None, timeout_ms=None, concurrency=None))]
     pub fn add_handler(
         &mut self,
         topic: String,
@@ -65,6 +68,7 @@ impl PyConsumer {
         batch_max_size: Option<usize>,
         batch_max_wait_ms: Option<u64>,
         timeout_ms: Option<u64>,
+        concurrency: Option<usize>,
     ) {
         let mode = HandlerMode::from_opt_str(mode.as_deref());
         let meta = HandlerMetadata {
@@ -73,6 +77,7 @@ impl PyConsumer {
             batch_max_size,
             batch_max_wait_ms,
             timeout_ms,
+            concurrency,
         };
         if let Ok(mut handlers) = self.handlers.lock() {
             handlers.insert(topic, meta);
@@ -99,6 +104,22 @@ impl PyConsumer {
 
     pub fn stop(&self) {
         self.shutdown_token.cancel();
+    }
+
+    /// Enter the context manager — returns self.
+    fn __enter__(slf: pyo3::PyRefMut<'_, Self>) -> pyo3::PyResult<pyo3::PyRefMut<'_, Self>> {
+        Ok(slf)
+    }
+
+    /// Exit the context manager — calls stop() to trigger graceful shutdown.
+    fn __exit__(
+        &mut self,
+        _exc_type: &pyo3::Bound<'_, pyo3::PyAny>,
+        _exc_val: &pyo3::Bound<'_, pyo3::PyAny>,
+        _traceback: &pyo3::Bound<'_, pyo3::PyAny>,
+    ) -> pyo3::PyResult<bool> {
+        self.stop();
+        Ok(false) // don't suppress exceptions
     }
 
     /// Returns the current runtime status as a Python dict.
