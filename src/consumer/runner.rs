@@ -60,7 +60,10 @@ impl ConsumerRunner {
 
         consumer
             .subscribe(&config.topics.iter().map(|s| s.as_str()).collect::<Vec<_>>())
-            .map_err(|e| ConsumerError::Subscription(e.to_string()))?;
+            .map_err(|e| ConsumerError::Subscription {
+                broker: config.brokers.clone(),
+                message: e.to_string(),
+            })?;
 
         info!(
             topics = ?config.topics,
@@ -184,7 +187,11 @@ impl ConsumerRunner {
                 .map_err(ConsumerError::from)
         })
         .await
-        .map_err(|e| ConsumerError::Receive(format!("store_offset task failed: {e}")))?
+        .map_err(|e| ConsumerError::Receive {
+            handler: "store_offset".to_string(),
+            timeout_ms: 0,
+            message: format!("store_offset task failed: {e}"),
+        })?
     }
 
     /// Returns the current partition assignment.
@@ -206,7 +213,10 @@ impl ConsumerRunner {
     pub fn pause_partition(&self, topic: &str, partition: i32) -> Result<(), ConsumerError> {
         let mut tpl = rdkafka::TopicPartitionList::new();
         tpl.add_partition_offset(topic, partition, rdkafka::Offset::Beginning)
-            .map_err(|e| ConsumerError::Subscription(e.to_string()))?;
+            .map_err(|e| ConsumerError::Subscription {
+                broker: "unknown".to_string(),
+                message: e.to_string(),
+            })?;
         self.pause(&tpl)?;
         let key = format!("{}-{}", topic, partition);
         self.pause_state.lock().insert(key, true);
@@ -217,7 +227,10 @@ impl ConsumerRunner {
     pub fn resume_partition(&self, topic: &str, partition: i32) -> Result<(), ConsumerError> {
         let mut tpl = rdkafka::TopicPartitionList::new();
         tpl.add_partition_offset(topic, partition, rdkafka::Offset::Beginning)
-            .map_err(|e| ConsumerError::Subscription(e.to_string()))?;
+            .map_err(|e| ConsumerError::Subscription {
+                broker: "unknown".to_string(),
+                message: e.to_string(),
+            })?;
         self.resume(&tpl)?;
         let key = format!("{}-{}", topic, partition);
         self.pause_state.lock().remove(&key);

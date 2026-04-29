@@ -116,7 +116,7 @@ impl ConsumerDispatcher {
                         Ok(outcome) => {
                             self.check_resume(&topic, outcome.queue_depth);
                         }
-                        Err(DispatchError::Backpressure(_)) => {
+                        Err(DispatchError::Backpressure { queue_name: _, reason: _ }) => {
                             tracing::Span::current().record("routing_decision", "backpressure");
                             if let Some(BackpressureAction::FuturePausePartition(pause_topic)) =
                                 pause_signal
@@ -139,7 +139,7 @@ impl ConsumerDispatcher {
                                 }
                             }
                         }
-                        Err(DispatchError::HandlerNotRegistered(t)) => {
+                        Err(DispatchError::HandlerNotRegistered { topic: t }) => {
                             tracing::Span::current().record("routing_decision", "not_registered");
                             tracing::debug!("no handler for topic '{}', skipping", t);
                         }
@@ -178,7 +178,7 @@ impl ConsumerDispatcher {
                 }
                 match qm.send_to_handler_by_id(&handler_id, msg) {
                     Ok(outcome) => (Ok(outcome), None),
-                    Err(DispatchError::Backpressure(_)) => {
+                    Err(DispatchError::Backpressure { queue_name, reason }) => {
                         let action = policy.on_queue_full(
                             handler_id.as_str(),
                             qm.handlers
@@ -189,10 +189,10 @@ impl ConsumerDispatcher {
                         );
                         match action {
                             BackpressureAction::Drop | BackpressureAction::Wait => {
-                                (Err(DispatchError::Backpressure(handler_id.to_string())), None)
+                                (Err(DispatchError::Backpressure { queue_name, reason }), None)
                             }
                             BackpressureAction::FuturePausePartition(t) => (
-                                Err(DispatchError::Backpressure(handler_id.to_string())),
+                                Err(DispatchError::Backpressure { queue_name, reason }),
                                 Some(BackpressureAction::FuturePausePartition(t)),
                             ),
                         }
@@ -203,14 +203,14 @@ impl ConsumerDispatcher {
             RoutingDecision::Drop => {
                 tracing::debug!("message dropped by routing chain");
                 (
-                    Err(DispatchError::HandlerNotRegistered("routing-drop".into())),
+                    Err(DispatchError::HandlerNotRegistered { topic: "routing-drop".to_string() }),
                     None,
                 )
             }
             RoutingDecision::Reject(reason) => {
                 tracing::warn!("message rejected by routing chain: {}", reason);
                 (
-                    Err(DispatchError::HandlerNotRegistered("routing-reject".into())),
+                    Err(DispatchError::HandlerNotRegistered { topic: "routing-reject".to_string() }),
                     None,
                 )
             }
@@ -218,7 +218,7 @@ impl ConsumerDispatcher {
                 // Should not happen with properly configured chain, but handle gracefully
                 tracing::warn!("routing chain returned Defer with no fallback");
                 (
-                    Err(DispatchError::HandlerNotRegistered("routing-defer".into())),
+                    Err(DispatchError::HandlerNotRegistered { topic: "routing-defer".to_string() }),
                     None,
                 )
             }
@@ -255,12 +255,11 @@ impl ConsumerDispatcher {
         if let Some(tpl) = handles.get(topic) {
             self.runner.pause(tpl)
         } else {
-            Err(crate::consumer::error::ConsumerError::Subscription(
-                format!(
-                    "no partition handle for topic '{}' - call populate_partitions() first",
-                    topic
-                ),
-            ))
+            Err(crate::consumer::error::ConsumerError::Subscription {
+                broker: topic.to_string(),
+                message: "no partition handle for topic - call populate_partitions() first"
+                    .to_string(),
+            })
         }
     }
 
@@ -273,9 +272,10 @@ impl ConsumerDispatcher {
         if let Some(tpl) = handles.get(topic) {
             self.runner.resume(tpl)
         } else {
-            Err(crate::consumer::error::ConsumerError::Subscription(
-                format!("no partition handle for topic '{}'", topic),
-            ))
+            Err(crate::consumer::error::ConsumerError::Subscription {
+                broker: topic.to_string(),
+                message: "no partition handle for topic".to_string(),
+            })
         }
     }
 
@@ -294,7 +294,10 @@ impl ConsumerDispatcher {
                 .or_default();
             let tpl = by_topic.get_mut(&topic_name).unwrap();
             tpl.add_partition_offset(topic_name.as_str(), partition, offset)
-                .map_err(|e| crate::consumer::error::ConsumerError::Subscription(e.to_string()))?;
+                .map_err(|e| crate::consumer::error::ConsumerError::Subscription {
+                    broker: topic_name,
+                    message: e.to_string(),
+                })?;
         }
         *self.partition_handles.lock() = by_topic;
         Ok(())
@@ -366,7 +369,7 @@ mod tests {
         let msg2 = OwnedMessage::fake("test-topic", 1, 101);
         let (result, _) =
             dispatcher.send_with_policy_and_signal(msg2).await;
-        assert!(matches!(result, Err(DispatchError::Backpressure(_))));
+        assert!(matches!(result, Err(DispatchError::Backpressure { .. })));
     }
 
     // DISP-15: No semaphore = unlimited concurrency (bounded by channel capacity)

@@ -106,10 +106,13 @@ impl Dispatcher {
         let guard = self.queue_manager.handlers.lock();
         let entry = guard
             .get(&topic)
-            .ok_or_else(|| DispatchError::HandlerNotRegistered(topic.clone()))?;
+            .ok_or_else(|| DispatchError::HandlerNotRegistered { topic: topic.clone() })?;
 
         if !entry.metadata.try_acquire_semaphore() {
-            return Err(DispatchError::Backpressure(topic));
+            return Err(DispatchError::Backpressure {
+                queue_name: topic.clone(),
+                reason: "semaphore permit unavailable".to_string(),
+            });
         }
 
         entry.metadata.inflight.fetch_add(1, Ordering::Relaxed);
@@ -127,11 +130,14 @@ impl Dispatcher {
             }
             Err(TrySendError::Full(_)) => {
                 entry.metadata.inflight.fetch_sub(1, Ordering::Relaxed);
-                Err(DispatchError::Backpressure(topic))
+                Err(DispatchError::Backpressure {
+                    queue_name: topic.clone(),
+                    reason: "queue full".to_string(),
+                })
             }
             Err(TrySendError::Closed(_)) => {
                 entry.metadata.inflight.fetch_sub(1, Ordering::Relaxed);
-                Err(DispatchError::QueueClosed(topic))
+                Err(DispatchError::QueueClosed { topic })
             }
         }
     }
@@ -167,7 +173,10 @@ impl Dispatcher {
 
         // DISP-15: Acquire semaphore permit BEFORE dispatch (non-blocking)
         if !entry.metadata.try_acquire_semaphore() {
-            return (Err(DispatchError::Backpressure(topic.clone())), None);
+            return (Err(DispatchError::Backpressure {
+                queue_name: topic.clone(),
+                reason: "semaphore permit unavailable".to_string(),
+            }), None);
         }
 
         entry.metadata.inflight.fetch_add(1, Ordering::Relaxed);
@@ -189,11 +198,14 @@ impl Dispatcher {
             }
             Err(TrySendError::Full(_)) => {
                 entry.metadata.inflight.fetch_sub(1, Ordering::Relaxed);
-                (Err(DispatchError::Backpressure(topic.clone())), None)
+                (Err(DispatchError::Backpressure {
+                    queue_name: topic.clone(),
+                    reason: "queue full".to_string(),
+                }), None)
             }
             Err(TrySendError::Closed(_)) => {
                 entry.metadata.inflight.fetch_sub(1, Ordering::Relaxed);
-                (Err(DispatchError::QueueClosed(topic.clone())), None)
+                (Err(DispatchError::QueueClosed { topic }), None)
             }
         }
     }

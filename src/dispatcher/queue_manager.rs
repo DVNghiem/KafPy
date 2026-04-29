@@ -244,7 +244,9 @@ impl QueueManager {
         let guard = self.handlers.lock();
         let entry = guard
             .get(handler_id.as_str())
-            .ok_or_else(|| DispatchError::HandlerNotRegistered(handler_id.as_str().to_string()))?;
+            .ok_or_else(|| DispatchError::HandlerNotRegistered {
+                topic: handler_id.to_string(),
+            })?;
 
         tracing::info!(handler_id = %handler_id, topic = %topic, capacity = entry.metadata.capacity, "send_to_handler_by_id: attempting try_send");
         match entry.sender.try_send(message) {
@@ -261,11 +263,16 @@ impl QueueManager {
             }
             Err(TrySendError::Full(_)) => {
                 tracing::info!(handler_id = %handler_id, "send_to_handler_by_id: Full");
-                Err(DispatchError::QueueFull(handler_id.to_string()))
+                Err(DispatchError::QueueFull {
+                    queue_name: handler_id.to_string(),
+                    capacity: entry.metadata.capacity,
+                })
             }
             Err(TrySendError::Closed(_)) => {
                 tracing::warn!(handler_id = %handler_id, "send_to_handler_by_id: Closed - receiver dropped!");
-                Err(DispatchError::QueueClosed(handler_id.to_string()))
+                Err(DispatchError::QueueClosed {
+                    topic: handler_id.to_string(),
+                })
             }
         }
     }
