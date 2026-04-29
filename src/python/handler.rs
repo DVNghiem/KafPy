@@ -22,7 +22,7 @@ use pyo3::types::PyDict;
 ///
 /// Call inside `Python::attach(|py| { ... })` with the Python token.
 /// Optionally injects trace context if provided.
-fn message_to_pydict<'py>(
+pub(crate) fn message_to_pydict<'py>(
     py: Python<'py>,
     msg: &OwnedMessage,
     trace_context: Option<&HashMap<String, String>>,
@@ -91,6 +91,8 @@ pub enum HandlerMode {
     BatchSync,
     /// Batch async invocation via into_future with Vec<OwnedMessage> (Phase 26).
     BatchAsync,
+    /// Streaming async invocation via persistent async generator loop (Phase 10).
+    StreamingAsync,
 }
 
 impl HandlerMode {
@@ -101,6 +103,7 @@ impl HandlerMode {
             HandlerMode::SingleAsync => "SingleAsync",
             HandlerMode::BatchSync => "BatchSync",
             HandlerMode::BatchAsync => "BatchAsync",
+            HandlerMode::StreamingAsync => "StreamingAsync",
         }
     }
 
@@ -112,6 +115,7 @@ impl HandlerMode {
             Some("async") => HandlerMode::SingleAsync,
             Some("batch_sync") => HandlerMode::BatchSync,
             Some("batch_async") => HandlerMode::BatchAsync,
+            Some("streaming_async") => HandlerMode::StreamingAsync,
             _ => HandlerMode::SingleSync,
         }
     }
@@ -220,6 +224,20 @@ impl PythonHandler {
         self.batch_policy.as_ref()
     }
 
+    /// Invokes a streaming async handler — drives a Python async generator to completion.
+    ///
+    /// Used for HandlerMode::StreamingAsync. Creates a coroutine inside GIL, wraps in
+    /// PythonAsyncFuture, polls in a loop until StopAsyncIteration or error.
+    async fn invoke_streaming(
+        &self,
+        ctx: &ExecutionContext,
+        initial_message: OwnedMessage,
+    ) -> ExecutionResult {
+        use crate::python::streaming::StreamingHandler;
+        let handler = StreamingHandler::new(Arc::clone(&self.callback));
+        handler.invoke_streaming(ctx, initial_message).await
+    }
+
     /// Returns the handler name (typically the topic name).
     pub fn name(&self) -> &str {
         &self.name
@@ -269,6 +287,9 @@ impl PythonHandler {
                         traceback: "PartialFailure not implemented in v1.6".to_string(),
                     },
                 }
+            }
+            HandlerMode::StreamingAsync => {
+                self.invoke_streaming(ctx, message).await
             }
         };
 

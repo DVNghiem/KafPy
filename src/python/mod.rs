@@ -20,6 +20,7 @@ pub mod execution_result;
 pub mod executor;
 pub mod handler;
 pub mod logger;
+pub mod streaming;
 
 pub use batch::BatchAccumulator;
 pub use context::ExecutionContext;
