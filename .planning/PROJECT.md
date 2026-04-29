@@ -28,7 +28,11 @@ Python developers can write Kafka message handlers easily while Rust controls th
 
 ### Active
 
-(None — v1.0 shipped)
+- [ ] Work-stealing thread pool for blocking sync handlers (non-blocking poll)
+- [ ] Streaming handler patterns (@stream_handler for persistent WebSocket/SSE)
+- [ ] Handler middleware/chain (logging, metrics, retries)
+- [ ] Async handler timeout (abort slow handlers)
+- [ ] Async fan-in/fan-out (multiple async sources in one handler)
 
 ### Out of Scope
 
@@ -41,11 +45,23 @@ Python developers can write Kafka message handlers easily while Rust controls th
 - Multi-language support (JS, Java, Go) — Python focus only initially
 - Built-in ML/Data science libraries — Users bring their own
 
+## Current Milestone: v1.1 Async & Concurrency Hardening
+
+**Goal:** Prevent long-running sync handlers from blocking the poll cycle; expand Python handler API with streaming patterns, middleware, timeouts, and async fan-in/out.
+
+**Target features:**
+- Work-stealing thread pool for blocking sync handlers (non-blocking poll)
+- Streaming handler patterns (@stream_handler for persistent WebSocket/SSE)
+- Handler middleware/chain (logging, metrics, retries)
+- Async handler timeout (abort slow handlers)
+- Async fan-in/fan-out (multiple async sources in one handler)
+
 ## Context
 
-**Shipped v1.0:** 485K LOC across Rust (src/) and Python (kafpy/) modules.
+**v1.0 shipped:** Rust consumer engine with bounded queues, backpressure, retry/DLQ, Prometheus metrics, W3C tracing.
+**Problem identified:** Long-running sync handlers block the Tokio poll cycle, causing heartbeat misses and potential rebalances.
+**Solution:** Work-stealing thread pool (Rayon) for blocking work + richer async handler patterns for non-blocking workloads.
 **Tech stack:** Rust runtime + Python business logic, PyO3 bindings, rdkafka for Kafka ingestion.
-**Current milestone:** v1.1 planning (lint & hardening complete, next milestone TBD).
 
 ## Constraints
 
@@ -101,4 +117,4 @@ This document evolves at phase transitions and milestone boundaries.
 - Structured error variants with actionable context fields
 
 ---
-*Last updated: 2026-04-29 after v1.0 MVP shipped*
+*Last updated: 2026-04-29 after v1.1 milestone started*

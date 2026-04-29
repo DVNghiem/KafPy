@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: MVP
-status: shipped
-last_updated: "2026-04-29T14:15:00Z"
+milestone: v1.1
+milestone_name: Async & Concurrency Hardening
+status: active
+last_updated: "2026-04-29T14:30:00Z"
 last_activity: 2026-04-29
 progress:
-  total_phases: 6
-  completed_phases: 6
-  total_plans: 8
-  completed_plans: 8
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # KafPy Project State
@@ -22,9 +22,9 @@ progress:
 
 ## Current Position
 
-Milestone: v1.0 MVP
-Status: SHIPPED
-Last activity: 2026-04-29
+Milestone: v1.1 Async & Concurrency Hardening
+Status: Defining requirements
+Last activity: 2026-04-29 — Milestone v1.1 started
 
 ---
 
@@ -33,7 +33,7 @@ Last activity: 2026-04-29
 | Dimension | Status |
 |-----------|--------|
 | Requirements | 45/45 v1 requirements verified as satisfied |
-| Phases | 6/6 complete (5 GSD + 1 brownfield) |
+| Phases | 6/6 complete |
 | Plans | 8/8 complete |
 | Archive | `.planning/milestones/v1.0-ROADMAP.md`, `v1.0-REQUIREMENTS.md` |
 
@@ -41,9 +41,9 @@ Last activity: 2026-04-29
 
 ## Project Reference
 
-See: `.planning/PROJECT.md` (updated 2026-04-29 after v1.0 milestone)
+See: `.planning/PROJECT.md` (updated 2026-04-29)
 **Core value:** Python developers can write Kafka message handlers easily while Rust controls the hard runtime problems.
-**Current focus:** v1.0 shipped — next milestone TBD
+**Current focus:** v1.1 — Async & Concurrency Hardening
 
 ---
 
@@ -55,5 +55,4 @@ See: `.planning/PROJECT.md` (updated 2026-04-29 after v1.0 milestone)
 - Next milestone starts with fresh REQUIREMENTS.md via `/gsd-new-milestone`
 
 ---
-
-*Last updated: 2026-04-29 after v1.0 milestone shipped*
+*Last updated: 2026-04-29 after v1.1 milestone started*
