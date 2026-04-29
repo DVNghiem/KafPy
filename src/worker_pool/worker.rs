@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use tokio::select;
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::coordinator::OffsetCoordinator;
@@ -21,6 +22,7 @@ use crate::python::executor::Executor;
 use crate::python::handler::PythonHandler;
 use crate::python::logger;
 use crate::failure::FailureReason;
+use crate::worker_pool::fan_out::{BranchResult, FanOutTracker};
 use crate::worker_pool::handle_execution_failure;
 use crate::worker_pool::state::WorkerState;
 use crate::worker_pool::ExecutionAction;
@@ -320,6 +322,84 @@ pub(crate) async fn worker_loop(
                 worker_pool_state.set_idle(worker_id);
                 break;
             }
+
+            // FANOUT-01/02/03: Dispatch to sinks in parallel if handler has fan-out config.
+            // Primary result was handled above (ACK already fired for Ok, Retry, or Dlq).
+            // Fan-out sinks run in background — primary ACK is non-blocking.
+            if let Some(fan_out_config) = handler.fan_out_config() {
+                // FANOUT-02: Check if fan-out slots are exhausted
+                if fan_out_config.is_exhausted() {
+                    tracing::warn!(
+                        topic = %msg.topic,
+                        max_fan_out = fan_out_config.max_fan_out,
+                        "fan-out slots exhausted, returning backpressure"
+                    );
+                    // Primary already ACKed above. Return backpressure signal to caller.
+                    // The caller (ConsumerDispatcher) will pause the partition.
+                    continue;
+                }
+
+                // FANOUT-03: Primary ACKed immediately above (ACK happened in match block
+                // for Ok, or via handle_execution_failure for Error/Rejected/Timeout).
+                // Now spawn sink futures in parallel via JoinSet.
+
+                let fan_tracker = Arc::new(FanOutTracker::new(fan_out_config.max_fan_out));
+                let mut sink_join_set = JoinSet::new();
+
+                for sink in &fan_out_config.sinks {
+                    let tracker = Arc::clone(&fan_tracker);
+                    let sink_handler = Arc::clone(&sink.handler);
+                    let sink_topic = sink.topic.clone();
+                    let msg_clone = msg.clone();
+                    let ctx_clone = ExecutionContext::with_trace(
+                        sink_topic.clone(),
+                        ctx.partition,
+                        ctx.offset,
+                        worker_id,
+                        ctx.trace_id.clone(),
+                        ctx.span_id.clone(),
+                        ctx.trace_flags.clone(),
+                    );
+
+                    sink_join_set.spawn(async move {
+                        let branch_id = tracker.on_sink_complete(move |result| {
+                            tracing::debug!(topic = %sink_topic, "fan-out sink completed: {:?}", result);
+                        });
+                        let result = sink_handler.invoke_mode_with_timeout(&ctx_clone, msg_clone).await;
+                        let branch_result = match result {
+                            ExecutionResult::Ok => BranchResult::Ok,
+                            ExecutionResult::Error { reason, exception, .. } => {
+                                BranchResult::Error { reason, exception }
+                            }
+                            ExecutionResult::Timeout { info } => {
+                                BranchResult::Timeout { timeout_ms: info.timeout_ms }
+                            }
+                            ExecutionResult::Rejected { reason, .. } => BranchResult::Error {
+                                reason: FailureReason::Terminal(
+                                    crate::failure::TerminalKind::HandlerPanic,
+                                ),
+                                exception: "Rejected".to_string(),
+                            },
+                        };
+                        tracker.emit_completion(branch_id, branch_result);
+                        tracker.release_slot();
+                    });
+                }
+
+                // Drive JoinSet to completion in a spawned task (non-blocking for worker).
+                // Worker continues to Idle state while sinks complete in background.
+                tokio::spawn(async move {
+                    while let Some(result) = sink_join_set.join_next().await {
+                        match result {
+                            Ok(()) => {}
+                            Err(e) => {
+                                tracing::error!(error = ?e, "fan-out sink task panicked");
+                            }
+                        }
+                    }
+                });
+            }
+
             worker_pool_state.set_idle(worker_id);
             state = WorkerState::Idle;
         }

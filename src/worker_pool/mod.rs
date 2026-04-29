@@ -16,6 +16,7 @@ pub(crate) static HANDLER_METRICS: HandlerMetrics = HandlerMetrics;
 pub mod accumulator;
 pub mod batch_loop;
 pub mod concurrency;
+pub mod fan_out;
 pub mod pool;
 pub mod state;
 pub mod streaming_loop;

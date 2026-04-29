@@ -11,6 +11,7 @@ use crate::python::context::ExecutionContext;
 use crate::python::execution_result::{BatchExecutionResult, ExecutionResult, TimeoutInfo};
 use crate::rayon_pool::RayonPool;
 use crate::retry::RetryPolicy;
+use crate::worker_pool::fan_out::FanOutConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -156,6 +157,9 @@ pub struct PythonHandler {
     /// Middleware class objects to be executed around handler invocation.
     /// Arc-wrapped for GIL-safe access. Chain is built at invocation time.
     middleware: Option<Vec<Arc<Py<PyAny>>>>,
+    /// Fan-out configuration for this handler.
+    /// None means fan-out is not configured (single sink mode).
+    fan_out: Option<Arc<FanOutConfig>>,
 }
 
 impl PythonHandler {
@@ -179,6 +183,7 @@ impl PythonHandler {
             name,
             rayon_pool,
             middleware,
+            fan_out: None,
         }
     }
 
@@ -206,7 +211,18 @@ impl PythonHandler {
             name,
             rayon_pool,
             middleware,
+            fan_out: None,
         }
+    }
+
+    /// Returns the fan-out configuration for this handler, if configured.
+    pub fn fan_out_config(&self) -> Option<&FanOutConfig> {
+        self.fan_out.as_deref()
+    }
+
+    /// Sets the fan-out configuration for this handler.
+    pub fn set_fan_out(&mut self, config: FanOutConfig) {
+        self.fan_out = Some(Arc::new(config));
     }
 
     /// Returns the retry policy for this handler, if configured.
