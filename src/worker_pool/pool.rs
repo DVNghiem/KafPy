@@ -193,6 +193,7 @@ impl WorkerPool {
     ///
     /// Uses the drain timeout from ShutdownCoordinator. If drain exceeds the
     /// timeout, forces abort of all remaining workers.
+    /// Also triggers Rayon pool drain during the finalizing phase.
     pub async fn shutdown(&mut self) {
         logger::log("INFO", "initiating worker pool shutdown");
         self.shutdown_token.cancel();
@@ -210,6 +211,8 @@ impl WorkerPool {
                 self.join_set.abort_all();
             }
         }
+        // SYNC-03: Drain the Rayon pool as part of shutdown coordination
+        self.coordinator.drain_rayon().await;
         // LSC-03: Flush pending retries to DLQ before finalizing
         self.offset_coordinator
             .flush_failed_to_dlq(&self.dlq_router, &self.dlq_producer);
@@ -241,6 +244,7 @@ mod tests {
                 None,
                 None,
                 "test".to_string(),
+                None,
             ))
         });
         let mut map = HashMap::new();

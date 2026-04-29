@@ -3,6 +3,8 @@
 //! Manages a 4-phase shutdown lifecycle: Running -> Draining -> Finalizing -> Done.
 //! Each phase transition is explicit and enforced; invalid transitions panic.
 
+use crate::rayon_pool::RayonPool;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -59,6 +61,8 @@ pub struct ShutdownCoordinator {
     worker_cancel: CancellationToken,
     /// Cancellation token for the committer — cancelled to enter finalization.
     committer_cancel: CancellationToken,
+    /// Rayon pool for sync handler offloading — drained during shutdown.
+    rayon_pool: Option<Arc<RayonPool>>,
 }
 
 impl ShutdownCoordinator {
@@ -68,6 +72,11 @@ impl ShutdownCoordinator {
     ///
     /// * `drain_timeout_secs` — seconds to wait for worker drain before force-abort
     pub fn new(drain_timeout_secs: u64) -> Self {
+        Self::with_rayon_pool(drain_timeout_secs, None)
+    }
+
+    /// Creates a new coordinator with an optional Rayon pool.
+    pub fn with_rayon_pool(drain_timeout_secs: u64, rayon_pool: Option<Arc<RayonPool>>) -> Self {
         let drain_timeout = Duration::from_secs(drain_timeout_secs);
         tracing::debug!(
             drain_timeout_secs = drain_timeout_secs,
@@ -79,6 +88,7 @@ impl ShutdownCoordinator {
             dispatcher_cancel: CancellationToken::new(),
             worker_cancel: CancellationToken::new(),
             committer_cancel: CancellationToken::new(),
+            rayon_pool,
         }
     }
 
@@ -168,6 +178,11 @@ impl ShutdownCoordinator {
         *self.phase.lock() == ShutdownPhase::Done
     }
 
+    /// Sets the Rayon pool to be drained during shutdown.
+    pub fn set_rayon_pool(&mut self, pool: Arc<RayonPool>) {
+        self.rayon_pool = Some(pool);
+    }
+
     /// Returns the configured drain timeout duration.
     pub fn drain_timeout(&self) -> Duration {
         self.drain_timeout
@@ -177,6 +192,25 @@ impl ShutdownCoordinator {
     #[allow(dead_code)]
     pub(crate) fn committer_cancel_token(&self) -> CancellationToken {
         self.committer_cancel.clone()
+    }
+
+    /// Drains the Rayon pool during shutdown, wrapped in the drain timeout.
+    ///
+    /// Called during the finalizing phase. If the timeout is exceeded,
+    /// logs a warning (Rayon has no forced abort mechanism).
+    pub(crate) async fn drain_rayon(&self) {
+        if let Some(ref pool) = self.rayon_pool {
+            let drain_timeout = self.drain_timeout;
+            match tokio::time::timeout(drain_timeout, async {
+                pool.drain();
+            }).await {
+                Ok(_) => tracing::info!("rayon pool drained gracefully"),
+                Err(_) => {
+                    tracing::warn!("rayon drain timeout exceeded");
+                    pool.abort();
+                }
+            }
+        }
     }
 }
 

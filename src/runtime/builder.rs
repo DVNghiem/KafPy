@@ -211,9 +211,12 @@ impl RuntimeBuilder {
         // Read num_workers from PyO3 config if provided, otherwise default to 4
         let n_workers = self.config.num_workers.unwrap_or(4) as usize;
 
-        // 9. Create shutdown coordinator with configured drain timeout
+        // 9. Create shutdown coordinator with rayon pool for drain coordination
         let coordinator: Arc<ShutdownCoordinator> =
-            Arc::new(ShutdownCoordinator::new(rust_config.drain_timeout_secs));
+            Arc::new(ShutdownCoordinator::with_rayon_pool(
+                rust_config.drain_timeout_secs,
+                Some(Arc::clone(&rayon_pool)),
+            ));
 
         // Create HandlerConcurrency with default limit of 4 per handler
         let handler_concurrency = HandlerConcurrency::new(4);
@@ -268,6 +271,7 @@ impl RuntimeBuilder {
             dispatcher_handle,
             committer_handle,
             coordinator,
+            rayon_pool,
         })
     }
 }
@@ -285,6 +289,9 @@ pub struct Runtime {
     /// Shutdown coordinator for drain signaling.
     #[allow(dead_code)]
     pub coordinator: Arc<ShutdownCoordinator>,
+    /// Rayon pool for sync handler offloading — must outlive workers.
+    #[allow(dead_code)]
+    rayon_pool: Arc<RayonPool>,
 }
 
 impl Runtime {
