@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A high-performance Kafka consumer framework that keeps the runtime core in Rust while allowing application teams to write all business logic in Python. Rust owns execution control, concurrency, memory management, and operational safety; Python owns message handlers and developer ergonomics.
+A high-performance Kafka consumer framework where Rust owns the runtime core (concurrency, memory, Kafka protocol) and Python owns business logic (message handlers). Rust handles execution control, concurrency, memory management, and operational safety while Python provides message handlers and developer ergonomics.
 
 ## Core Value
 
@@ -12,40 +12,40 @@ Python developers can write Kafka message handlers easily while Rust controls th
 
 ### Validated
 
-(None yet — ship to validate)
+- ✓ Rust-based Kafka consumer engine managing full message-consumption lifecycle — v1.0
+- ✓ Python handler registration via PyO3 boundary — v1.0
+- ✓ Topic-based routing with bounded internal queues — v1.0
+- ✓ Per-handler bounded queues with backpressure — v1.0
+- ✓ At-least-once delivery with partition-aware offset tracking — v1.0
+- ✓ Retryable vs non-retryable failure classification with backoff/jitter — v1.0
+- ✓ DLQ handoff after retries exhausted — v1.0
+- ✓ Graceful shutdown, queue draining, rebalance-safe partition handling — v1.0
+- ✓ Python-first developer API (@handler decorator style) — v1.0
+- ✓ Configurable: retry policies, batch size, flush timing, concurrency, DLQ, observability — v1.0
+- ✓ Observability: metrics, tracing, runtime introspection — v1.0
+- ✓ ConsumerConfig and ProducerConfig builder patterns — v1.0
+- ✓ Structured error fields with actionable context — v1.0
 
 ### Active
 
-- [ ] Rust-based Kafka consumer engine managing full message-consumption lifecycle
-- [ ] Python handler registration via PyO3 boundary
-- [ ] Topic-based routing with bounded internal queues
-- [ ] Per-handler bounded queues with backpressure
-- [ ] At-least-once delivery with partition-aware offset tracking
-- [ ] Retryable vs non-retryable failure classification with backoff/jitter
-- [ ] DLQ handoff after retries exhausted
-- [ ] Graceful shutdown, queue draining, rebalance-safe partition handling
-- [ ] Python-first developer API (@handler decorator style)
-- [ ] Configurable: retry policies, batch size, flush timing, concurrency, DLQ, observability
-- [ ] Observability: metrics, tracing, runtime introspection
+(None — v1.0 shipped)
 
 ### Out of Scope
 
-- Rust-only framework with thin Python bindings
-- Fake abstraction layer with unused config
-- Rule engine for everything
-- Platform exposing more features than implemented
+- Rust-only framework with thin Python bindings — This project IS the Pythonic layer
+- Fake abstraction layer with unused config — Public APIs must reflect real runtime behavior
+- Rule engine for everything — Business logic belongs in Python handlers
+- Platform exposing more features than implemented — Minimal, honest, maintainable codebase
+- Complex DSL or custom language — "Just Python" — no new DSL to learn
+- Heavyweight infrastructure (ZooKeeper) — Single process, pip install and go
+- Multi-language support (JS, Java, Go) — Python focus only initially
+- Built-in ML/Data science libraries — Users bring their own
 
 ## Context
 
-**Existing project: KafPy** — This is a brownfield project. The codebase already has:
-- Python/Rust hybrid architecture with PyO3 bindings
-- Consumer module (`kafpy/consumer.py`)
-- Config module (`kafpy/config.py`)
-- Handlers module (`kafpy/handlers.py`)
-- Runtime module (`kafpy/runtime.py`)
-- Rust source in `src/` (consumer, config, logging, observability, worker pool)
-
-The idea document describes the target architecture. The current codebase represents an early implementation that needs verification and completion against this spec.
+**Shipped v1.0:** 485K LOC across Rust (src/) and Python (kafpy/) modules.
+**Tech stack:** Rust runtime + Python business logic, PyO3 bindings, rdkafka for Kafka ingestion.
+**Current milestone:** v1.1 planning (lint & hardening complete, next milestone TBD).
 
 ## Constraints
 
@@ -58,10 +58,14 @@ The idea document describes the target architecture. The current codebase repres
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Rust owns runtime, Python owns business logic | Performance vs productivity | — Pending |
-| Bounded channels for all queues | Prevent memory blowup under backpressure | — Pending |
-| Python handlers via PyO3, not ctypes | Type safety, async support, ergonomics | — Pending |
-| @handler decorator as primary API | Familiar, Pythonic, explicit routing | — Pending |
+| Rust owns runtime, Python owns business logic | Performance vs productivity | ✓ Validated |
+| Bounded channels for all queues | Prevent memory blowup under backpressure | ✓ Validated |
+| Python handlers via PyO3, not ctypes | Type safety, async support, ergonomics | ✓ Validated |
+| @handler decorator as primary API | Familiar, Pythonic, explicit routing | ✓ Validated |
+| Arc<Semaphore> per handler key for concurrency | Tokio-compatible, GIL-safe concurrency limiting | ✓ Validated |
+| W3C traceparent header parsing | Standard trace context propagation | ✓ Validated |
+| Builder pattern for ConsumerConfig/ProducerConfig | Replace 24/17 arg constructors with fluent API | ✓ Validated |
+| Structured error fields (not stringly-typed) | Actionable error context at runtime | ✓ Validated |
 
 ## Evolution
 
@@ -80,16 +84,21 @@ This document evolves at phase transitions and milestone boundaries.
 3. Audit Out of Scope — reasons still valid?
 4. Update Context with current state
 
-## Current Milestone: v1.1 Lint & Hardening
+## Current State
 
-**Goal:** Resolve all clippy warnings and improve code quality for production readiness.
-
-**Target features:**
-- Zero clippy warnings (19→0: dead code, too_many_arguments, enum names, module inception, etc.)
-- ConsumerConfig builder pattern (24-arg constructor → fluent builder)
-- ProducerConfig builder pattern (17-arg constructor → fluent builder)
-- Better ergonomics for Python API consumers
+**v1.0 MVP shipped.** The framework delivers all 45 v1 requirements:
+- Rust consumer engine with rdkafka (consumer groups, topic/regex subscription, manual/auto offset commit, graceful start/stop)
+- Per-handler bounded queues with backpressure (Drop/Wait/PausePartition)
+- Partition-aware offset tracking with contiguous commit semantics
+- Rebalance-safe partition handling via CustomConsumerContext
+- Failure classification (Retryable/Terminal/NonRetryable) with capped exponential backoff + jitter
+- DLQ routing with metadata envelope (topic/partition/offset/reason/attempt_count)
+- @handler decorator with sync/async support, per-handler concurrency, batch mode
+- W3C trace context propagation (trace_id/span_id from traceparent headers)
+- Prometheus metrics (throughput, latency, consumer lag, queue depth, DLQ volume)
+- Context manager support (with Consumer(config) as c:)
+- ConsumerConfigBuilder and ProducerConfigBuilder fluent APIs
+- Structured error variants with actionable context fields
 
 ---
-
-*Last updated: 2026-04-29 after lint & hardening*
+*Last updated: 2026-04-29 after v1.0 MVP shipped*
