@@ -117,6 +117,7 @@ from .handlers import (
     HandlerContext,
     HandlerResult,
     register_handler,
+    stream_handler,
 )
 
 # Consumer wrapper (Phase 35)
@@ -227,6 +228,7 @@ __all__ = [
     "HandlerResult",
     "HandlerAction",
     "register_handler",
+    "stream_handler",
     # Exception types — Phase 36
     "KafPyError",
     "ConsumerError",

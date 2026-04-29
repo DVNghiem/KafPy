@@ -18,6 +18,7 @@ __all__ = [
     "FailureCategory",
     "FailureReason",
     "register_handler",
+    "stream_handler",
 ]
 
 
@@ -106,6 +107,88 @@ def register_handler(
         handler_type = "batch_sync"
     else:
         handler_type = "sync"
+
+
+def stream_handler(
+    topic: str,
+    *,
+    name: str | None = None,
+    retries: int | None = None,
+    timeout: float | None = None,
+    middleware: list | None = None,
+):
+    """Decorator for registering a persistent async iterable handler.
+
+    Unlike @handler which processes single messages, @stream_handler
+    creates a long-lived handler that continuously yields messages
+    from Kafka until stopped.
+
+    The decorated function must be an async generator::
+
+        @stream_handler(topic="my-topic")
+        async def handler(msg, ctx):
+            async for msg in kafka_consumer:
+                await process(msg)
+                yield  # checkpoint for backpressure
+
+    Args:
+        topic: Kafka topic to subscribe to.
+        name: Optional handler name for observability.
+        retries: Number of retry attempts on failure.
+        timeout: Handler execution timeout in seconds.
+        middleware: List of middleware instances (Logging, Metrics).
+
+    Returns:
+        Decorated async generator function.
+
+    Raises:
+        TypeError: If the decorated function is not an async generator.
+    """
+    def decorator(func):
+        # Detect async generator — async generators return False for iscoroutinefunction
+        # but True for isasyncgenfunction
+        if not inspect.isasyncgenfunction(func):
+            raise TypeError("@stream_handler requires an async generator function")
+
+        handler_name = name or getattr(func, "__name__", "stream_handler")
+
+        # Register with streaming_async mode
+        _register_handler(
+            topic=topic,
+            handler=func,
+            mode="streaming_async",  # Per D-07: explicit streaming mode
+            name=handler_name,
+            retries=retries,
+            timeout=timeout,
+            middleware=middleware,
+        )
+        return func
+    return decorator
+
+
+def _register_handler(
+    topic: str,
+    handler: Callable,
+    *,
+    mode: str = "sync",
+    name: str | None = None,
+    retries: int | None = None,
+    timeout: float | None = None,
+    middleware: list | None = None,
+) -> None:
+    """Internal handler registration (stub for future Rust integration).
+
+    Args:
+        topic: The Kafka topic.
+        handler: The callable to invoke.
+        mode: Handler mode (sync, async, batch_async, batch_sync, streaming_async).
+        name: Optional handler name.
+        retries: Optional retry count.
+        timeout: Optional timeout in seconds.
+        middleware: Optional middleware list.
+    """
+    # Stub — actual registration via Rust PythonHandler
+    pass
 
 
 @dataclass(frozen=True)
