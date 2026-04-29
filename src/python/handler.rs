@@ -146,6 +146,8 @@ pub struct PythonHandler {
     batch_policy: Option<BatchPolicy>,
     /// Handler execution timeout. None means no timeout (handler can run indefinitely).
     handler_timeout: Option<Duration>,
+    /// Human-readable handler name for observability (typically the topic).
+    name: String,
 }
 
 impl PythonHandler {
@@ -156,6 +158,7 @@ impl PythonHandler {
         mode: HandlerMode,
         batch_policy: Option<BatchPolicy>,
         handler_timeout: Option<Duration>,
+        name: String,
     ) -> Self {
         Self {
             callback,
@@ -163,6 +166,7 @@ impl PythonHandler {
             mode,
             batch_policy,
             handler_timeout,
+            name,
         }
     }
 
@@ -177,6 +181,7 @@ impl PythonHandler {
         mode: HandlerMode,
         batch_policy: Option<BatchPolicy>,
         handler_timeout: Option<Duration>,
+        name: String,
     ) -> Self {
         Self {
             callback,
@@ -184,6 +189,7 @@ impl PythonHandler {
             mode,
             batch_policy,
             handler_timeout,
+            name,
         }
     }
 
@@ -200,6 +206,11 @@ impl PythonHandler {
     /// Returns the batch policy for this handler, if configured.
     pub fn batch_policy(&self) -> Option<&BatchPolicy> {
         self.batch_policy.as_ref()
+    }
+
+    /// Returns the handler name (typically the topic name).
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Invokes the handler according to its mode, with an optional timeout.

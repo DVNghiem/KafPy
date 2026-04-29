@@ -48,10 +48,12 @@ pub(crate) async fn flush_partition_batch(
         ExecutionContext::new(topic.clone(), partition, batch[0].offset, worker_id);
     let span = tracing::Span::current().kafpy_handler_invoke(
         topic.as_str(),
+        handler.name(),
         topic.as_str(),
         partition,
         batch[0].offset,
         handler.mode().as_str(),
+        0, // batch: attempt starts at 0
     );
     worker_pool_state.set_busy(worker_id, "shared".to_string());
     let result = span

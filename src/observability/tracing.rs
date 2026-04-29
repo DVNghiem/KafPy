@@ -14,10 +14,12 @@ pub trait KafpySpanExt {
     fn kafpy_handler_invoke(
         &self,
         handler_id: &str,
+        handler_name: &str,
         topic: &str,
         partition: i32,
         offset: i64,
         mode: &str,
+        attempt: u32,
     ) -> Span;
 
     /// Creates a `kafpy.dispatch.process` span.
@@ -37,18 +39,22 @@ impl KafpySpanExt for Span {
     fn kafpy_handler_invoke(
         &self,
         handler_id: &str,
+        handler_name: &str,
         topic: &str,
         partition: i32,
         offset: i64,
         mode: &str,
+        attempt: u32,
     ) -> Span {
         tracing::info_span!(
             "kafpy.handler.invoke",
             handler_id = handler_id,
+            handler_name = handler_name,
             topic = topic,
             partition = partition,
             offset = offset,
             mode = mode,
+            attempt = attempt,
         )
     }
 

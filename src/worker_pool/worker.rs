@@ -128,14 +128,16 @@ pub(crate) async fn worker_loop(
                 .insert("mode", handler.mode().as_str());
             let span = tracing::Span::current().kafpy_handler_invoke(
                 ctx.topic.as_str(),
+                handler.name(),
                 ctx.topic.as_str(),
                 ctx.partition,
                 ctx.offset,
                 handler.mode().as_str(),
+                1, // attempt: will be corrected in failure path after record_failure
             );
             logger::log("INFO", &format!(
-                "handler invoke start handler_id={} topic={} partition={} offset={} mode={}",
-                ctx.topic, ctx.topic, ctx.partition, ctx.offset, handler.mode().as_str()
+                "handler invoke start handler_id={} handler_name={} topic={} partition={} offset={} mode={}",
+                ctx.topic, handler.name(), ctx.topic, ctx.partition, ctx.offset, handler.mode().as_str()
             ));
             // Acquire concurrency permit — holds until end of this block
             let _permit = handler_concurrency.acquire(&ctx.topic).await;
@@ -284,6 +286,7 @@ mod tests {
                 HandlerMode::SingleSync,
                 None,
                 None,
+                "test".to_string(),
             ))
         });
         let mut map = HashMap::new();

@@ -176,6 +176,7 @@ impl RuntimeBuilder {
                         meta.mode.clone(),
                         batch_policy,
                         timeout,
+                        topic.clone(),
                     ));
                     (topic.clone(), handler)
                 })

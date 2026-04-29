@@ -227,6 +227,7 @@ mod tests {
                 HandlerMode::SingleSync,
                 None,
                 None,
+                "test".to_string(),
             ))
         });
         let mut map = HashMap::new();
