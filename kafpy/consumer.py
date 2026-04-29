@@ -38,6 +38,7 @@ class Consumer:
         batch_max_size: int | None = None,
         batch_max_wait_ms: int | None = None,
         timeout_ms: int | None = None,
+        concurrency: int | None = None,
     ) -> None:
         """Register a handler for a topic.
 
@@ -48,8 +49,9 @@ class Consumer:
             batch_max_size: Max messages per batch (batch modes only).
             batch_max_wait_ms: Max wait time per batch in ms (batch modes only).
             timeout_ms: Per-handler execution timeout in milliseconds.
+            concurrency: Maximum concurrent executions for this handler. None = no limit.
         """
-        self._consumer.add_handler(topic, handler, mode, batch_max_size, batch_max_wait_ms, timeout_ms)
+        self._consumer.add_handler(topic, handler, mode, batch_max_size, batch_max_wait_ms, timeout_ms, concurrency)
 
     def start(self) -> object:
         """Start the consumer. Returns an awaitable coroutine."""
@@ -63,6 +65,34 @@ class Consumer:
         (Running → Draining → Finalizing → Done).
         """
         self._consumer.stop()
+
+    def __enter__(self) -> "Consumer":
+        """Enter the context manager."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        traceback: Any,
+    ) -> bool:
+        """Exit the context manager — stops the consumer gracefully.
+
+        Args:
+            exc_type: Exception type if an error occurred inside the with block.
+            exc_val: Exception value if an error occurred.
+            traceback: Traceback object if an error occurred.
+
+        Returns:
+            False — exceptions are NOT suppressed and propagate normally.
+        """
+        if exc_type is not None:
+            import logging
+            logging.getLogger("kafpy").info(
+                f"Consumer context exit with exception {exc_type.__name__}, initiating graceful shutdown"
+            )
+        self.stop()
+        return False  # don't suppress exceptions
 
     def status(self) -> dict[str, Any]:
         """Return the current runtime snapshot as a dictionary.

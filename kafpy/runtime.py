@@ -83,6 +83,7 @@ class KafPy:
         *,
         routing: object | None = None,
         timeout_ms: int | None = None,
+        concurrency: int | None = None,
     ) -> Callable[[Callable], Callable]:
         """Decorator to register a handler for a topic.
 
@@ -91,6 +92,8 @@ class KafPy:
             routing: Optional routing configuration.
             timeout_ms: Per-handler execution timeout in milliseconds.
                 Overrides ``ConsumerConfig.handler_timeout_ms``.
+            concurrency: Maximum concurrent executions of this handler.
+                None means no limit (default).
 
         Returns:
             A decorator that registers the decorated callable as a handler.
@@ -103,7 +106,7 @@ class KafPy:
         """
 
         def decorator(fn: Callable) -> Callable:
-            self.register_handler(topic, fn, routing=routing, timeout_ms=timeout_ms)
+            self.register_handler(topic, fn, routing=routing, timeout_ms=timeout_ms, concurrency=concurrency)
             return fn
 
         return decorator
@@ -169,6 +172,7 @@ class KafPy:
         batch_max_size: int | None = None,
         batch_max_wait_ms: int | None = None,
         timeout_ms: int | None = None,
+        concurrency: int | None = None,
     ) -> None:
         """Explicitly register a handler for a topic.
 
@@ -222,6 +226,7 @@ class KafPy:
             "batch_max_size": batch_max_size,
             "batch_max_wait_ms": batch_max_wait_ms,
             "timeout_ms": timeout_ms,
+            "concurrency": concurrency,
         }
 
         # Also register with the Rust consumer so it can dispatch messages
@@ -231,4 +236,5 @@ class KafPy:
             batch_max_size=batch_max_size,
             batch_max_wait_ms=batch_max_wait_ms,
             timeout_ms=timeout_ms,
+            concurrency=concurrency,
         )
