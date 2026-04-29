@@ -407,17 +407,15 @@ let result = self.rayon_pool.spawn(move || {
 
 **If this table is empty:** All claims were verified or cited.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Does `spawn_blocking` work from inside a Rayon `pool.spawn` closure?**
-   - What we know: `spawn_blocking` creates a new thread specifically to not interfere with Tokio's async thread pool. Rayon threads are OS threads. The `spawn_blocking` thread should be independent.
-   - What's unclear: Whether `spawn_blocking` detects that it's being called from a Rayon thread (not a Tokio thread) and handles it correctly.
-   - Recommendation: Test this pattern in isolation before full implementation. Use a simple benchmark: dispatch N tasks to Rayon, each calling `spawn_blocking`, measure throughput.
+   - RESOLVED: Yes. `spawn_blocking` borrows a thread from Tokio's blocking pool — it does NOT require the caller to be on a Tokio thread. The chain is: Tokio worker → `RayonPool::spawn` → [Rayon thread] → `spawn_blocking` → [Tokio blocking thread] → Python GIL call. The blocking thread is independent of the calling thread. See Pattern 3 (lines 181-197) and code example lines 363-386.
+   - The key insight: `spawn_blocking` creates a new thread specifically to avoid interfering with Tokio's async thread pool. This works from any OS thread, including Rayon workers.
 
 2. **Should Python calls stay on Tokio's blocking pool or move entirely to Rayon's threads?**
-   - What we know: The concern is poll cycle blocking. `spawn_blocking` keeps poll cycle free. The question is whether multiple concurrent `spawn_blocking` calls from different Tokio workers cause contention.
-   - What's unclear: Rayon might not provide much benefit over Tokio's built-in blocking pool for purely Python-bound work.
-   - Recommendation: The value of Rayon is CPU-bound preprocessing on the Rust side (e.g., message parsing, schema validation) BEFORE the Python call. If handlers do heavy Rust preprocessing, Rayon helps. If handlers are pure Python with no Rust preprocessing, Tokio's blocking pool may suffice.
+   - RESOLVED: Python calls via `spawn_blocking` should STAY on Tokio's blocking pool (via the spawn_blocking call FROM inside the Rayon closure). Rayon's role is CPU-bound Rust preprocessing (message parsing, schema validation) BEFORE the Python call, NOT the Python GIL call itself. The architecture is: Tokio worker → RayonPool::spawn → [Rayon thread does Rust preprocessing] → spawn_blocking → [Tokio blocking thread does Python GIL call]. This is shown in Pattern 3 (lines 181-197) and the code example at lines 363-386.
+   - Rayon provides value for CPU-bound preprocessing on the Rust side. If handlers are pure Python with no Rust preprocessing, Tokio's blocking pool alone may suffice — but the Rayon layer still provides isolation and configurable pool sizing.
 
 ## Environment Availability
 

@@ -15,6 +15,7 @@ autonomous: true
 requirements:
   - SYNC-01
   - SYNC-02
+  - SYNC-03
 must_haves:
   truths:
     - "Sync handlers execute on Rayon work-stealing pool, not blocking Tokio poll cycle"
@@ -119,7 +120,7 @@ pub async fn shutdown(&mut self) {
     - Cargo.toml contains `rayon = "1.1"` in [dependencies]
     - cargo check passes with no new warnings
   </acceptance_criteria>
-  <verify>cargo check 2>&1 | tail -5</verify>
+  <verify><automated>cargo check 2>&1 | tail -5</automated></verify>
   <done>Cargo.toml updated with rayon dependency, cargo check passes</done>
 </task>
 
@@ -214,7 +215,7 @@ Also add `pub mod rayon_pool;` to `src/lib.rs`.
     - src/lib.rs contains `pub mod rayon_pool;`
     - cargo check passes with no errors
   </acceptance_criteria>
-  <verify>cargo check 2>&1 | tail -5</verify>
+  <verify><automated>cargo check 2>&1 | tail -5</automated></verify>
   <done>src/rayon_pool.rs created, src/lib.rs updated, cargo check passes</done>
 </task>
 
@@ -257,7 +258,7 @@ pub routing_rules: Vec<RoutingRule>,
     - build() validates 1-256 range and computes default as `num_cpus::get().saturating_sub(2).max(2)`
     - cargo check passes
   </acceptance_criteria>
-  <verify>cargo check 2>&1 | tail -10</verify>
+  <verify><automated>cargo check 2>&1 | tail -10</automated></verify>
   <done>ConsumerConfigBuilder has rayon_pool_size method, validation in build(), cargo check passes</done>
 </task>
 
@@ -360,7 +361,7 @@ pool.spawn(move || {
     - The oneshot channel pattern is used for Tokio-Rayon communication
     - cargo check passes with no errors
   </acceptance_criteria>
-  <verify>cargo check 2>&1 | tail -10</verify>
+  <verify><automated>cargo check 2>&1 | tail -10</automated></verify>
   <done>PythonHandler uses RayonPool for sync dispatch when configured, cargo check passes</done>
 </task>
 
@@ -409,8 +410,50 @@ In `src/runtime/mod.rs`, add `pub mod rayon_pool;` so the module is accessible f
     - Default pool size uses num_cpus::get().saturating_sub(2).max(2)
     - cargo check passes with no errors
   </acceptance_criteria>
-  <verify>cargo check 2>&1 | tail -10</verify>
+  <verify><automated>cargo check 2>&1 | tail -10</automated></verify>
   <done>RayonPool wired through RuntimeBuilder to PythonHandler, cargo check passes</done>
+</task>
+
+<task type="auto">
+  <name>Task 6: Coordinate Rayon drain with ShutdownCoordinator (SYNC-03)</name>
+  <files>src/shutdown/shutdown.rs</files>
+  <read_first>src/shutdown/shutdown.rs</read_first>
+  <action>
+In `src/shutdown/shutdown.rs`, modify `ShutdownCoordinator` to store an `Arc<RayonPool>` and call `rayon_pool.drain()` during the finalizing phase of shutdown. The drain must be wrapped in the existing `drain_timeout` Duration.
+
+The pattern from `WorkerPool::shutdown()` in `src/worker_pool/pool.rs` shows the timeout-based drain approach. Apply the same pattern for Rayon:
+
+```rust
+// In ShutdownCoordinator or where it's used during shutdown:
+let drain_timeout = self.drain_timeout();
+let rayon_pool = self.rayon_pool.clone();
+
+match tokio::time::timeout(drain_timeout, async {
+    // First: drain the worker join set (existing)
+    self.join_set.shutdown().await;
+    // Then: drain the Rayon pool
+    rayon_pool.drain();
+}) {
+    Ok(_) => tracing::info!("rayon pool drained gracefully"),
+    Err(_) => {
+        tracing::warn!("rayon drain timeout exceeded, forcing abort");
+        rayon_pool.abort();
+    }
+}
+```
+
+Alternatively, add a `drain_rayon(&self)` method to `ShutdownCoordinator` that returns a future coordinating both drains, and call it from `WorkerPool::shutdown()`.
+
+The key requirement from SYNC-03: "Graceful shutdown coordinates with Rayon drain (30s timeout)" — ensure the `drain_timeout` (already 30s via `ConsumerConfigBuilder::drain_timeout`) applies to the Rayon drain as well.
+</action>
+  <acceptance_criteria>
+    - ShutdownCoordinator or WorkerPool calls rayon_pool.drain() during shutdown
+    - Drain is wrapped in drain_timeout timeout (30s default)
+    - On timeout exceeded, rayon_pool.abort() is called
+    - cargo check passes with no errors
+  </acceptance_criteria>
+  <verify><automated>cargo check 2>&1 | tail -10</automated></verify>
+  <done>Rayon pool drains within drain_timeout during graceful shutdown, cargo check passes</done>
 </task>
 
 </tasks>
