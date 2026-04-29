@@ -306,4 +306,4 @@ KafPy delivers a high-performance Kafka consumer framework where Rust owns the r
 
 ---
 
-*Last updated: 2026-04-28*
+*Last updated: 2026-04-29*
