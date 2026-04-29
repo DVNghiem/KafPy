@@ -8,6 +8,14 @@ A high-performance Kafka consumer framework where Rust owns the runtime core (co
 
 Python developers can write Kafka message handlers easily while Rust controls the hard runtime problems (concurrency, backpressure, retries, DLQ, offset tracking, graceful shutdown).
 
+## Current State
+
+**v1.1 Async & Concurrency Hardening SHIPPED.** The framework now supports:
+- Rayon work-stealing thread pool for blocking sync handlers (non-blocking poll)
+- Handler timeout with structured metadata and Prometheus metrics
+- Middleware chain (Logging, Metrics) per handler via @handler(middleware=[...])
+- Streaming handler support (@stream_handler) for persistent async iterables with backpressure
+
 ## Requirements
 
 ### Validated
@@ -25,14 +33,16 @@ Python developers can write Kafka message handlers easily while Rust controls th
 - ✓ Observability: metrics, tracing, runtime introspection — v1.0
 - ✓ ConsumerConfig and ProducerConfig builder patterns — v1.0
 - ✓ Structured error fields with actionable context — v1.0
+- ✓ Rayon work-stealing pool for blocking sync handlers (non-blocking poll) — v1.1
+- ✓ Handler timeout with metadata and Prometheus counter — v1.1
+- ✓ Handler middleware chain (Logging, Metrics) — v1.1
+- ✓ Streaming handler support (@stream_handler) — v1.1
 
 ### Active
 
-- [ ] Work-stealing thread pool for blocking sync handlers (non-blocking poll)
-- [ ] Streaming handler patterns (@stream_handler for persistent WebSocket/SSE)
-- [ ] Handler middleware/chain (logging, metrics, retries)
-- [ ] Async handler timeout (abort slow handlers)
-- [ ] Async fan-in/fan-out (multiple async sources in one handler)
+- [ ] Fan-Out: One message triggers multiple async handlers/sinks in parallel
+- [ ] Fan-In: Multiple async sources merged into single handler (round-robin, priority)
+- [ ] Async fan-out/fan-in (multiple async sources in one handler)
 
 ### Out of Scope
 
@@ -44,24 +54,26 @@ Python developers can write Kafka message handlers easily while Rust controls th
 - Heavyweight infrastructure (ZooKeeper) — Single process, pip install and go
 - Multi-language support (JS, Java, Go) — Python focus only initially
 - Built-in ML/Data science libraries — Users bring their own
+- Blocking middleware in async context — GIL hold during middleware blocks Tokio event loop
+- Fan-out with distributed transactions — Two-phase commit across handlers is not at-least-once semantics
+- Streaming handler with exactly-once — Checkpointing state complexity explodes
+- Middleware that mutates messages — Hidden mutations break debugging and predictability
+- Unbounded fan-out — No limit causes resource exhaustion
 
-## Current Milestone: v1.1 Async & Concurrency Hardening
+## Next Milestone: v2.0 Fan-Out/Fan-In
 
-**Goal:** Prevent long-running sync handlers from blocking the poll cycle; expand Python handler API with streaming patterns, middleware, timeouts, and async fan-in/out.
+**Goal:** Enable parallel multi-sink production and multi-source consumption patterns.
 
 **Target features:**
-- Work-stealing thread pool for blocking sync handlers (non-blocking poll)
-- Streaming handler patterns (@stream_handler for persistent WebSocket/SSE)
-- Handler middleware/chain (logging, metrics, retries)
-- Async handler timeout (abort slow handlers)
-- Async fan-in/fan-out (multiple async sources in one handler)
+- Fan-Out: One message triggers multiple async handlers/sinks in parallel via JoinSet
+- Fan-In: Multiple async sources merged into single handler (round-robin, priority)
+- Python API for both patterns
 
 ## Context
 
-**v1.0 shipped:** Rust consumer engine with bounded queues, backpressure, retry/DLQ, Prometheus metrics, W3C tracing.
-**Problem identified:** Long-running sync handlers block the Tokio poll cycle, causing heartbeat misses and potential rebalances.
-**Solution:** Work-stealing thread pool (Rayon) for blocking work + richer async handler patterns for non-blocking workloads.
+**v1.1 shipped:** Rust consumer engine with Rayon thread pool, handler timeout, middleware chain, streaming handlers.
 **Tech stack:** Rust runtime + Python business logic, PyO3 bindings, rdkafka for Kafka ingestion.
+**v1.0 shipped:** Rust consumer engine with bounded queues, backpressure, retry/DLQ, Prometheus metrics, W3C tracing.
 
 ## Constraints
 
@@ -82,6 +94,12 @@ Python developers can write Kafka message handlers easily while Rust controls th
 | W3C traceparent header parsing | Standard trace context propagation | ✓ Validated |
 | Builder pattern for ConsumerConfig/ProducerConfig | Replace 24/17 arg constructors with fluent API | ✓ Validated |
 | Structured error fields (not stringly-typed) | Actionable error context at runtime | ✓ Validated |
+| Rayon work-stealing pool for sync handlers | Prevent poll cycle blocking, heartbeat/rebalance risk | ✓ Validated v1.1 |
+| Tokio stays as async runtime | No change to existing async infrastructure | ✓ Validated v1.1 |
+| Python GIL calls via spawn_blocking | GIL safety preserved | ✓ Validated v1.1 |
+| Oneshot channels for Tokio-Rayon communication | Prevent deadlock (no Tokio APIs from Rayon) | ✓ Validated v1.1 |
+| Streaming handler with four-phase state machine | Lifecycle: start/subscribe, run/loop, stop/drain, error recovery | ✓ Validated v1.1 |
+| PausePartition/ResumePartition for backpressure | Slow consumer signal to Kafka, fast producer doesn't overflow memory | ✓ Validated v1.1 |
 
 ## Evolution
 
@@ -100,21 +118,5 @@ This document evolves at phase transitions and milestone boundaries.
 3. Audit Out of Scope — reasons still valid?
 4. Update Context with current state
 
-## Current State
-
-**v1.0 MVP shipped.** The framework delivers all 45 v1 requirements:
-- Rust consumer engine with rdkafka (consumer groups, topic/regex subscription, manual/auto offset commit, graceful start/stop)
-- Per-handler bounded queues with backpressure (Drop/Wait/PausePartition)
-- Partition-aware offset tracking with contiguous commit semantics
-- Rebalance-safe partition handling via CustomConsumerContext
-- Failure classification (Retryable/Terminal/NonRetryable) with capped exponential backoff + jitter
-- DLQ routing with metadata envelope (topic/partition/offset/reason/attempt_count)
-- @handler decorator with sync/async support, per-handler concurrency, batch mode
-- W3C trace context propagation (trace_id/span_id from traceparent headers)
-- Prometheus metrics (throughput, latency, consumer lag, queue depth, DLQ volume)
-- Context manager support (with Consumer(config) as c:)
-- ConsumerConfigBuilder and ProducerConfigBuilder fluent APIs
-- Structured error variants with actionable context fields
-
 ---
-*Last updated: 2026-04-29 after v1.1 milestone started*
+*Last updated: 2026-04-29 after v1.1 milestone shipped*
