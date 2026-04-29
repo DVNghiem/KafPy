@@ -6,8 +6,9 @@
 //! - Successful build with all fields
 
 use _kafpy::consumer::config::{
-    AutoOffsetReset, ConsumerConfig, ConsumerConfigBuilder, PartitionAssignmentStrategy,
+    AutoOffsetReset, ConsumerConfigBuilder, PartitionAssignmentStrategy,
 };
+use _kafpy::config::ProducerConfigBuilder;
 use std::time::Duration;
 
 #[test]
@@ -103,4 +104,61 @@ fn consumer_builder_with_all_fields() {
     assert_eq!(config.retry_backoff_ms, 200);
     assert_eq!(config.dlq_topic_prefix, "dlq.");
     assert_eq!(config.drain_timeout_secs, 60);
+}
+
+// ─── ProducerConfigBuilder tests ────────────────────────────────────────────────
+
+#[test]
+fn producer_builder_requires_brokers() {
+    let result = ProducerConfigBuilder::new().build();
+    let err = result.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("brokers"),
+        "expected error about missing 'brokers', got: {msg}"
+    );
+}
+
+#[test]
+fn producer_builder_success_with_brokers() {
+    let config = ProducerConfigBuilder::new()
+        .brokers("localhost:9092".to_string())
+        .build()
+        .expect("build should succeed with brokers");
+    assert_eq!(config.brokers, "localhost:9092");
+}
+
+#[test]
+fn producer_builder_with_all_fields() {
+    let config = ProducerConfigBuilder::new()
+        .brokers("localhost:9092".to_string())
+        .message_timeout_ms(60000)
+        .queue_buffering_max_messages(200000)
+        .queue_buffering_max_kbytes(2097152)
+        .batch_num_messages(20000)
+        .compression_type("lz4".to_string())
+        .linger_ms(10)
+        .request_timeout_ms(60000)
+        .retry_backoff_ms(200)
+        .retries(5)
+        .max_in_flight(10)
+        .enable_idempotence(false)
+        .acks("1".to_string())
+        .security_protocol("PLAINTEXT".to_string())
+        .build()
+        .expect("build should succeed with all fields");
+    assert_eq!(config.brokers, "localhost:9092");
+    assert_eq!(config.message_timeout_ms, 60000);
+    assert_eq!(config.queue_buffering_max_messages, 200000);
+    assert_eq!(config.queue_buffering_max_kbytes, 2097152);
+    assert_eq!(config.batch_num_messages, 20000);
+    assert_eq!(config.compression_type, "lz4");
+    assert_eq!(config.linger_ms, 10);
+    assert_eq!(config.request_timeout_ms, 60000);
+    assert_eq!(config.retry_backoff_ms, 200);
+    assert_eq!(config.retries, 5);
+    assert_eq!(config.max_in_flight, 10);
+    assert!(!config.enable_idempotence);
+    assert_eq!(config.acks, "1");
+    assert_eq!(config.security_protocol.as_deref(), Some("PLAINTEXT"));
 }

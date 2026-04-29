@@ -417,7 +417,7 @@ impl Clone for ProducerConfigBuilder {
 impl ProducerConfigBuilder {
     #[new]
     #[pyo3(signature = ())]
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             brokers: RwLock::new(None),
             message_timeout_ms: 30000,
@@ -611,7 +611,7 @@ impl Clone for ConsumerConfigBuilder {
 impl ConsumerConfigBuilder {
     #[new]
     #[pyo3(signature = ())]
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             brokers: RwLock::new(None),
             group_id: RwLock::new(None),
