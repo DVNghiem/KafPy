@@ -60,6 +60,7 @@ impl PyConsumer {
     ///     timeout_ms: Per-handler execution timeout in ms. None uses ConsumerConfig.handler_timeout_ms.
     ///     concurrency: Maximum concurrent executions for this handler. None = no limit.
     #[pyo3(signature = (topic, callback, mode=None, batch_max_size=None, batch_max_wait_ms=None, timeout_ms=None, concurrency=None))]
+    #[allow(clippy::too_many_arguments)]
     pub fn add_handler(
         &mut self,
         topic: String,

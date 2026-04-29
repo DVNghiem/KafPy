@@ -31,15 +31,15 @@ impl FailureClassifier for DefaultFailureClassifier {
         } else if error_repr.contains("PanicException") || error_repr.contains("SystemExit") {
             FailureReason::Terminal(TerminalKind::HandlerPanic)
         } else if error_repr.contains("ValidationError") || error_repr.contains("ValueError") {
-            FailureReason::NonRetryable(NonRetryableKind::ValidationError)
+            FailureReason::NonRetryable(NonRetryableKind::Validation)
         } else if error_repr.contains("BusinessLogicError")
             || error_repr.contains("DomainException")
         {
-            FailureReason::NonRetryable(NonRetryableKind::BusinessLogicError)
+            FailureReason::NonRetryable(NonRetryableKind::BusinessLogic)
         } else if error_repr.contains("ConfigError") || error_repr.contains("ConfigurationError") {
-            FailureReason::NonRetryable(NonRetryableKind::ConfigurationError)
+            FailureReason::NonRetryable(NonRetryableKind::Configuration)
         } else {
-            FailureReason::NonRetryable(NonRetryableKind::BusinessLogicError)
+            FailureReason::NonRetryable(NonRetryableKind::BusinessLogic)
         }
     }
 }

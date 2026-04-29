@@ -18,7 +18,7 @@ mod tests {
 
     #[test]
     fn failure_reason_category_non_retryable() {
-        let reason = FailureReason::NonRetryable(NonRetryableKind::ValidationError);
+        let reason = FailureReason::NonRetryable(NonRetryableKind::Validation);
         assert_eq!(reason.category(), FailureCategory::NonRetryable);
     }
 

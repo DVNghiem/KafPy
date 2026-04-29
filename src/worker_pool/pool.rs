@@ -39,8 +39,12 @@ pub struct WorkerPool {
     /// Shutdown coordinator for accessing drain timeout.
     coordinator: Arc<ShutdownCoordinator>,
     /// Per-handler concurrency control via Arc<Semaphore>.
+    /// Stored for cloning to workers — the struct field itself is never read.
+    #[allow(dead_code)]
     handler_concurrency: HandlerConcurrency,
     /// Shared Prometheus sink for metrics recording.
+    /// Stored for cloning to workers — the struct field itself is never read.
+    #[allow(dead_code)]
     prometheus_sink: SharedPrometheusSink,
 }
 
@@ -51,6 +55,7 @@ impl WorkerPool {
     /// shared across all workers via `Arc`. Uses `DefaultExecutor` (EXEC-04).
     /// The `shutdown_token` is supplied by the owner (Consumer) so that
     /// `stop()` can cancel all workers by cancelling the shared token.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         n_workers: usize,
         receivers: Vec<mpsc::Receiver<OwnedMessage>>,
@@ -94,7 +99,6 @@ impl WorkerPool {
             let dlq_producer = dlq_producer.clone();
             let dlq_router = dlq_router.clone();
             let worker_pool_state = Arc::clone(&worker_pool_state);
-            let prometheus_sink = prometheus_sink.clone();
 
             if all_batch {
                 // Need to pass handler map to batch_worker_loop for topic lookup

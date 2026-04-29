@@ -11,6 +11,7 @@ use tracing::Span;
 /// Creates spans that will be visible through Python logging configuration.
 pub trait KafpySpanExt {
     /// Creates a `kafpy.handler.invoke` span.
+    #[allow(clippy::too_many_arguments)]
     fn kafpy_handler_invoke(
         &self,
         handler_id: &str,

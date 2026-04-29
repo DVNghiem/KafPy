@@ -278,8 +278,10 @@ impl OffsetCoordinator for OffsetTracker {
             if let Some(offset) = self.highest_contiguous(&topic, partition) {
                 let runner_guard = self.runner.lock();
                 if let Some(ref runner_arc) = *runner_guard {
-                    let _ = runner_arc.store_offset(&topic, partition, offset);
-                    let _ = runner_arc.commit();
+                    // These are fire-and-forget offset operations — drop the JoinHandle explicitly
+                    // to signal we intentionally do not await completion.
+                    drop(runner_arc.store_offset(&topic, partition, offset));
+                    drop(runner_arc.commit());
                 }
             }
         }

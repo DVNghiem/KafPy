@@ -26,6 +26,7 @@ use crate::worker_pool::HANDLER_METRICS;
 /// Common helper used by all 6 flush sites in batch_worker_loop:
 /// - deadline expiry, backpressure flush, preemptive flush, max_batch_size flush,
 ///   channel-closed drain, shutdown drain.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn flush_partition_batch(
     partition: i32,
     batch: Vec<OwnedMessage>,
@@ -92,6 +93,7 @@ pub(crate) async fn flush_partition_batch(
 /// Per D-01: BatchAccumulator is a dedicated struct (separate from worker_loop).
 /// Per D-02: Fixed-window timer — deadline set on first message, never recalculated.
 /// Per D-04: Inline iteration for batch results in this function.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn batch_worker_loop(
     mut rx: mpsc::Receiver<OwnedMessage>,
     handler: Arc<PythonHandler>,
@@ -300,6 +302,7 @@ pub(crate) async fn batch_worker_loop(
 /// Per D-04: Inline iteration in worker_loop.
 /// AllSuccess → record_ack per message individually.
 /// AllFailure → record_failure per message individually (routes to RetryCoordinator).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_batch_result_inline(
     result: BatchExecutionResult,
     batch: Vec<OwnedMessage>,

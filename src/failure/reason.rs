@@ -31,14 +31,15 @@ pub enum TerminalKind {
 }
 
 /// Specific non-retryable failure kinds
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum NonRetryableKind {
     #[error("validation error")]
-    ValidationError,
+    Validation,
     #[error("business logic error")]
-    BusinessLogicError,
+    BusinessLogic,
     #[error("configuration error")]
-    ConfigurationError,
+    Configuration,
 }
 
 /// Structured failure reason with category hierarchy

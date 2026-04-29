@@ -198,11 +198,13 @@ use prometheus_client::encoding::text::encode;
 /// Exposes metrics in Prometheus text format for the `/metrics` endpoint.
 ///
 /// Backed by a `SharedPrometheusSink`.
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct PrometheusExporter {
     sink: SharedPrometheusSink,
 }
 
+#[allow(dead_code)]
 impl PrometheusExporter {
     /// Creates a new exporter backed by a fresh `SharedPrometheusSink`.
     pub fn new() -> Self {
@@ -348,6 +350,7 @@ impl Default for QueueSnapshot {
 /// This is a zero-cost abstraction — all methods are no-ops.
 pub mod noop_sink {
     /// A metrics sink that discards all recordings.
+    #[allow(dead_code)]
     pub struct NoopSink;
 
     impl super::MetricsSink for NoopSink {

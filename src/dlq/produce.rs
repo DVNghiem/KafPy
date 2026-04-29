@@ -33,6 +33,8 @@ struct DLQMessage {
 /// a background task drains the channel and produces to Kafka.
 pub struct SharedDlqProducer {
     send_tx: mpsc::Sender<DLQMessage>,
+    /// Stored only for cloning to background task — field itself is never read.
+    #[allow(dead_code)]
     prometheus_sink: SharedPrometheusSink,
 }
 

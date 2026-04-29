@@ -66,6 +66,7 @@ pub struct ProducerConfig {
 
 #[pymethods]
 impl ConsumerConfig {
+    #[allow(clippy::too_many_arguments)]
     #[new]
     #[pyo3(signature = (
         brokers,
@@ -228,6 +229,7 @@ impl ConsumerConfig {
 
 #[pymethods]
 impl ProducerConfig {
+    #[allow(clippy::too_many_arguments)]
     #[new]
     #[pyo3(signature = (
         brokers,

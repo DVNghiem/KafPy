@@ -14,6 +14,12 @@ pub struct PerPartitionBuffer {
     deadline: Option<Instant>,
 }
 
+impl Default for PerPartitionBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PerPartitionBuffer {
     /// Create a new empty buffer with no deadline set.
     pub fn new() -> Self {
