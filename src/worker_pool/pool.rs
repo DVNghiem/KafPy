@@ -13,6 +13,7 @@ use crate::coordinator::OffsetCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqRouter, SharedDlqProducer};
+use crate::observability::metrics::SharedPrometheusSink;
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::python::executor::Executor;
 use crate::python::handler::PythonHandler;
@@ -39,6 +40,8 @@ pub struct WorkerPool {
     coordinator: Arc<ShutdownCoordinator>,
     /// Per-handler concurrency control via Arc<Semaphore>.
     handler_concurrency: HandlerConcurrency,
+    /// Shared Prometheus sink for metrics recording.
+    prometheus_sink: SharedPrometheusSink,
 }
 
 impl WorkerPool {
@@ -60,6 +63,7 @@ impl WorkerPool {
         dlq_router: Arc<dyn DlqRouter>,
         shutdown_token: CancellationToken,
         coordinator: Arc<ShutdownCoordinator>,
+        prometheus_sink: SharedPrometheusSink,
         handler_concurrency: HandlerConcurrency,
     ) -> Self {
         let mut join_set = JoinSet::new();
@@ -90,6 +94,7 @@ impl WorkerPool {
             let dlq_producer = dlq_producer.clone();
             let dlq_router = dlq_router.clone();
             let worker_pool_state = Arc::clone(&worker_pool_state);
+            let prometheus_sink = prometheus_sink.clone();
 
             if all_batch {
                 // Need to pass handler map to batch_worker_loop for topic lookup
@@ -111,6 +116,7 @@ impl WorkerPool {
                     worker_id,
                     token,
                     worker_pool_state,
+                    prometheus_sink.clone(),
                 ));
             } else {
                 join_set.spawn(worker_loop(
@@ -125,6 +131,7 @@ impl WorkerPool {
                     worker_id,
                     token,
                     worker_pool_state,
+                    prometheus_sink.clone(),
                     handler_concurrency.clone(),
                 ));
             }
@@ -140,6 +147,7 @@ impl WorkerPool {
             worker_pool_state,
             coordinator,
             handler_concurrency,
+            prometheus_sink,
         }
     }
 
@@ -245,7 +253,7 @@ mod tests {
     }
 
     fn dummy_dlq_producer() -> Arc<SharedDlqProducer> {
-        Arc::new(SharedDlqProducer::new(&test_config()).unwrap())
+        Arc::new(SharedDlqProducer::new(&test_config(), crate::observability::metrics::SharedPrometheusSink::new()).unwrap())
     }
 
     fn dummy_dlq_router() -> Arc<dyn DlqRouter> {
@@ -269,6 +277,7 @@ mod tests {
             dummy_dlq_router(),
             CancellationToken::new(),
             std::sync::Arc::new(crate::coordinator::ShutdownCoordinator::new(30)),
+            crate::observability::metrics::SharedPrometheusSink::new(),
             crate::worker_pool::HandlerConcurrency::new(4),
         );
         let _ = tx;

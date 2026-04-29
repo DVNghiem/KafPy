@@ -26,6 +26,7 @@ use crate::dispatcher::DefaultBackpressurePolicy;
 use crate::dlq::produce::SharedDlqProducer;
 use crate::dlq::router::DefaultDlqRouter;
 use crate::dlq::DlqRouter;
+use crate::observability::metrics::SharedPrometheusSink;
 use crate::observability::runtime_snapshot::RuntimeSnapshotTask;
 use crate::pyconsumer::HandlerMetadata;
 use crate::python::handler::PythonHandler;
@@ -105,9 +106,12 @@ impl RuntimeBuilder {
 
         let default_retry_policy = rust_config.default_retry_policy.clone();
 
-        // 2. Create DLQ producer and router (needed for ConsumerRunner with CustomConsumerContext)
+        // 2. Create SharedPrometheusSink (before DLQ producer so it can be threaded in)
+        let prometheus_sink = SharedPrometheusSink::new();
+
+        // 3. Create DLQ producer and router (needed for ConsumerRunner with CustomConsumerContext)
         let dlq_producer: Arc<SharedDlqProducer> =
-            Arc::new(SharedDlqProducer::new(&rust_config).expect("Failed to create DLQ producer"));
+            Arc::new(SharedDlqProducer::new(&rust_config, prometheus_sink.clone()).expect("Failed to create DLQ producer"));
         let dlq_router: Arc<dyn DlqRouter> =
             Arc::new(DefaultDlqRouter::new(rust_config.dlq_topic_prefix.clone()));
 
@@ -212,6 +216,7 @@ impl RuntimeBuilder {
             dlq_router,
             self.shutdown_token.clone(),
             Arc::clone(&coordinator),
+            prometheus_sink.clone(),
             handler_concurrency,
         );
 
@@ -221,6 +226,7 @@ impl RuntimeBuilder {
             Some(offset_tracker.clone()),
             Some(Arc::clone(&pool.worker_pool_state)),
             std::time::Duration::from_secs(10),
+            prometheus_sink,
         );
 
         // 12. Create OffsetCommitter and spawn committer task
