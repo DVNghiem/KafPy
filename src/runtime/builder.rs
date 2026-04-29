@@ -34,6 +34,7 @@ use crate::pyconsumer::HandlerMetadata;
 use crate::python::handler::PythonHandler;
 use crate::python::logger;
 use crate::python::{DefaultExecutor, Executor};
+use crate::rayon_pool::RayonPool;
 use crate::worker_pool::concurrency::HandlerConcurrency;
 use crate::worker_pool::pool::WorkerPool;
 use std::collections::HashMap;
@@ -107,6 +108,12 @@ impl RuntimeBuilder {
         let rust_config = config_builder.build()?;
 
         let default_retry_policy = rust_config.default_retry_policy.clone();
+
+        // Create Rayon pool for sync handler offloading
+        let rayon_pool = Arc::new(
+            RayonPool::new(rust_config.rayon_pool_size)
+                .expect("failed to create rayon thread pool"),
+        );
 
         // 2. Create SharedPrometheusSink (before DLQ producer so it can be threaded in)
         let prometheus_sink = SharedPrometheusSink::new();
@@ -188,6 +195,7 @@ impl RuntimeBuilder {
                         batch_policy,
                         timeout,
                         topic.clone(),
+                        Some(Arc::clone(&rayon_pool)),
                     ));
                     (topic.clone(), handler)
                 })
