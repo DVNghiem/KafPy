@@ -13,7 +13,7 @@ use crate::dispatcher::queue_manager::QueueManager;
 use crate::python::context::ExecutionContext;
 use crate::python::execution_result::ExecutionResult;
 use crate::python::handler::PythonHandler;
-use crate::worker_pool::logger;
+use crate::python::logger;
 
 /// State machine for streaming handler lifecycle.
 /// Transitions: Starting → Running → Draining → Recovering
