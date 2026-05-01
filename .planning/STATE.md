@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Fan-Out/Fan-In
-current_phase: 11 (Fan-Out Core)
+current_phase: 16
 status: executing
-last_updated: "2026-05-01T03:58:10.762Z"
+last_updated: "2026-05-01T08:07:03.628Z"
 progress:
-  total_phases: 5
+  total_phases: 6
   completed_phases: 4
-  total_plans: 11
+  total_plans: 12
   completed_plans: 10
-  percent: 91
+  percent: 83
 ---
 
 # KafPy Project State
@@ -22,10 +22,12 @@ progress:
 
 ## Current Position
 
+Phase: 16 (fix warning and dead code) — EXECUTING
+Plan: 1 of 1
 **Milestone:** v2.0 Fan-Out/Fan-In (started)
-**Current Phase:** 11 (Fan-Out Core)
+**Current Phase:** 16
 **Plan:** —
-**Status:** Ready to execute
+**Status:** Executing Phase 16
 
 ---
 
@@ -55,6 +57,7 @@ progress:
 | 13 | Fan-Out Python API | FANOUT-06, OBSV-01, OBSV-02 |
 | 14 | Fan-In Multiplexer | FANIN-01, FANIN-02, FANIN-03 |
 | 15 | Fan-In Integration | FANIN-04, FANIN-05, OBSV-03 |
+| 16 | Fix warnings and dead code | Remove all `#[allow(dead_code)]` and fix root cause |
 
 ---
 
@@ -67,6 +70,7 @@ Phase 10 (Streaming Handler) [v1.1]
               └── Phase 13 (Fan-Out Python API)
                     └── Phase 14 (Fan-In Multiplexer)
                           └── Phase 15 (Fan-In Integration)
+                                └── Phase 16 (Fix warnings and dead code)
 ```
 
 ---
@@ -132,3 +136,9 @@ Phase 10 (Streaming Handler) [v1.1]
 
 ---
 *Last updated: 2026-04-29 after v2.0 roadmap created*
+
+---
+
+## Roadmap Evolution
+
+- Phase 16 added: fix warning and dead code, not use allow deadcode, must fix or remove it

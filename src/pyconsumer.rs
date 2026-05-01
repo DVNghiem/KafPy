@@ -286,7 +286,7 @@ impl PyConsumer {
         // For fan-out sinks, the actual handler with FanOutConfig is stored in
         // fan_out_handlers. HandlerMetadata.callback is set to PyNone as a marker
         // so RuntimeBuilder knows this topic needs special handling.
-        let py_none: Py<PyAny> = unsafe { Python::assume_gil_acquired() }.None().into();
+        let py_none: Py<PyAny> = unsafe { Python::assume_attached() }.None().into();
         let meta = HandlerMetadata::new(
             Arc::new(py_none),
             HandlerMode::SingleSync,
@@ -331,7 +331,7 @@ impl PyConsumer {
 
         // For fan-in handlers, the actual handler is stored in fan_in_handlers.
         // HandlerMetadata.callback is set to PyNone as a marker.
-        let py_none: Py<PyAny> = unsafe { Python::assume_gil_acquired() }.None().into();
+        let py_none: Py<PyAny> = unsafe { Python::assume_attached() }.None().into();
         let meta = HandlerMetadata::new(
             Arc::new(py_none),
             crate::python::handler::HandlerMode::SingleSync,

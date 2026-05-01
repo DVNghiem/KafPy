@@ -366,7 +366,7 @@ pub(crate) async fn worker_loop(
                 // Clone trace context once before loop so each iteration can borrow.
                 let parent_trace_id_opt = trace_id.clone();
                 let parent_span_id_opt = span_id.clone();
-                let parent_trace_flags_opt = trace_flags.clone();
+                let _parent_trace_flags_opt = trace_flags.clone();
 
                 for sink in &fan_out_config.sinks {
                     let tracker = Arc::clone(&fan_tracker);
@@ -432,7 +432,7 @@ pub(crate) async fn worker_loop(
                             ExecutionResult::Timeout { info } => {
                                 BranchResult::Timeout { timeout_ms: info.timeout_ms }
                             }
-                            ExecutionResult::Rejected { reason, .. } => BranchResult::Error {
+                            ExecutionResult::Rejected { .. } => BranchResult::Error {
                                 reason: FailureReason::Terminal(
                                     crate::failure::TerminalKind::HandlerPanic,
                                 ),
@@ -449,7 +449,6 @@ pub(crate) async fn worker_loop(
                 // Spawn a task to drive the JoinSet and collect results.
                 let dlq_producer_clone = Arc::clone(&dlq_producer);
                 let dlq_router_clone = Arc::clone(&dlq_router);
-                let msg_topic = msg.topic.clone();
                 let msg_partition = msg.partition;
                 let msg_offset = msg.offset;
                 let msg_clone_for_dlq = msg.clone();
@@ -475,7 +474,7 @@ pub(crate) async fn worker_loop(
                     for (branch_result, sink_topic) in branch_results.results.iter().zip(sink_topics.iter()) {
                         let branch_id = branch_result.0;
                         if !matches!(branch_result.1, BranchResult::Ok) {
-                            let (exception, is_timeout, timeout_val) = match &branch_result.1 {
+                            let (exception, _is_timeout, timeout_val) = match &branch_result.1 {
                                 BranchResult::Error { exception, .. } => {
                                     (exception.clone(), false, None)
                                 }

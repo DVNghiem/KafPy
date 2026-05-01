@@ -24,7 +24,6 @@ pub mod streaming_loop;
 pub mod worker;
 
 pub use concurrency::HandlerConcurrency;
-pub use fan_in_loop::fan_in_worker_loop;
 
 // ─── Execution Action ─────────────────────────────────────────────────────────
 

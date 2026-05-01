@@ -356,25 +356,6 @@ const BRANCH_OUTCOME_TIMEOUT: &str = "timeout";
 pub struct FanOutMetrics;
 
 impl FanOutMetrics {
-    /// Record fan-out branch duration histogram: kafpy.fanout.branch_duration_seconds
-    pub fn record_branch_duration(
-        sink: &dyn MetricsSink,
-        fan_out_id: u64,
-        branch_name: &str,
-        branch_outcome: &str,
-        elapsed_secs: f64,
-    ) {
-        let labels = MetricLabels::new()
-            .insert("fan_out_id", fan_out_id.to_string())
-            .insert("branch_name", branch_name)
-            .insert("branch_outcome", branch_outcome);
-        sink.record_histogram(
-            "kafpy.fanout.branch_duration_seconds",
-            elapsed_secs,
-            &labels.as_slice(),
-        );
-    }
-
     /// Increment fan-out branch completion counter: kafpy.fanout.branch_total
     pub fn record_branch_completion(
         sink: &dyn MetricsSink,

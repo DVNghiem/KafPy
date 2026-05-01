@@ -46,9 +46,9 @@ const MAX_RECOVERY_ATTEMPTS: u32 = 3;
 ///
 /// # Returns
 /// `Ok(())` on normal exit, `Err(...)` on fatal error
-pub async fn streaming_worker_loop(
+pub(crate) async fn streaming_worker_loop(
     worker_id: usize,
-    consumer: rdkafka::consumer::StreamConsumer,
+    _consumer: rdkafka::consumer::StreamConsumer,
     handler: PythonHandler,
     cancel: CancellationToken,
     queue_manager: Arc<QueueManager>,
@@ -59,21 +59,11 @@ pub async fn streaming_worker_loop(
     );
 
     let mut state = StreamingState::Starting;
-    let mut current_attempt: u32 = 0;
 
     loop {
         match state {
             StreamingState::Starting => {
                 tracing::info!(worker_id = worker_id, "streaming: starting");
-
-                // Build initial ExecutionContext from consumer assignment
-                // For streaming, we use a placeholder offset until the generator yields
-                let ctx = ExecutionContext::new(
-                    "streaming".to_string(),
-                    0,
-                    0,
-                    worker_id,
-                );
 
                 // Transition to Running immediately (subscription is implicit via consumer)
                 state = StreamingState::Running;
@@ -120,7 +110,7 @@ pub async fn streaming_worker_loop(
                         );
                         break;
                     }
-                    ExecutionResult::Error { reason, exception, traceback } => {
+                    ExecutionResult::Error { reason: _, exception, traceback } => {
                         // Error during yield — error recovery path (D-03)
                         tracing::warn!(
                             worker_id = worker_id,
@@ -129,7 +119,6 @@ pub async fn streaming_worker_loop(
                             "streaming: error during yield, entering recovery"
                         );
                         state = StreamingState::Recovering { attempt: 1 };
-                        current_attempt = 1;
                     }
                     _ => {
                         // Unexpected result (Rejected/Timeout) — treat as error

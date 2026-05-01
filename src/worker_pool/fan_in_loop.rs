@@ -32,7 +32,7 @@ use crate::python::logger;
 /// * `fan_in_id` — Fan-in group ID for ExecutionContext
 /// * `queue_manager` — Queue manager for acking messages
 /// * `cancel` — Cancellation token for graceful shutdown
-pub async fn fan_in_worker_loop(
+pub(crate) async fn fan_in_worker_loop(
     worker_id: usize,
     sources: Vec<(String, i32, Box<dyn tokio_stream::Stream<Item = OwnedMessage> + Send + std::marker::Unpin>)>,
     handler: Arc<PythonHandler>,
