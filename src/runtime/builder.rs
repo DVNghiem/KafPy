@@ -50,6 +50,7 @@ pub struct RuntimeBuilder {
     config: ConsumerConfig,
     handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
     fan_out_handlers: HashMap<String, std::sync::Arc<crate::python::handler::PythonHandler>>,
+    fan_in_handlers: HashMap<String, std::sync::Arc<crate::python::handler::PythonHandler>>,
     shutdown_token: CancellationToken,
 }
 
@@ -59,12 +60,14 @@ impl RuntimeBuilder {
         config: ConsumerConfig,
         handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
         fan_out_handlers: HashMap<String, std::sync::Arc<crate::python::handler::PythonHandler>>,
+        fan_in_handlers: HashMap<String, std::sync::Arc<crate::python::handler::PythonHandler>>,
         shutdown_token: CancellationToken,
     ) -> Self {
         Self {
             config,
             handlers,
             fan_out_handlers,
+            fan_in_handlers,
             shutdown_token,
         }
     }
