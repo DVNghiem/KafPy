@@ -166,7 +166,7 @@ fn multiple_topics_independent_queues() {
 fn dispatch_error_unknown_topic_variant_exists() {
     // Verify UnknownTopic variant exists (DISP-19 requirement)
     // UnknownTopic = topic doesn't exist in Kafka cluster (not subscribed)
-    let err = DispatchError::UnknownTopic("my-topic".to_string());
+    let err = DispatchError::UnknownTopic { topic: "my-topic".to_string(), broker: "localhost:9092".to_string() };
     let msg_str = format!("{}", err);
     let debug_str = format!("{:?}", err);
     assert!(!msg_str.is_empty());
@@ -176,7 +176,7 @@ fn dispatch_error_unknown_topic_variant_exists() {
 #[test]
 fn dispatch_error_queue_full_variant_exists() {
     // Verify QueueFull variant exists (DISP-19 requirement)
-    let err = DispatchError::QueueFull("my-topic".to_string());
+    let err = DispatchError::QueueFull { queue_name: "my-topic".to_string(), capacity: 10 };
     let msg_str = format!("{}", err);
     let debug_str = format!("{:?}", err);
     assert!(msg_str.contains("full"));
@@ -187,7 +187,7 @@ fn dispatch_error_queue_full_variant_exists() {
 fn dispatch_error_handler_not_registered_variant_exists() {
     // Verify HandlerNotRegistered variant exists (DISP-19 requirement)
     // HandlerNotRegistered = topic exists but no Python handler is registered
-    let err = DispatchError::HandlerNotRegistered("my-topic".to_string());
+    let err = DispatchError::HandlerNotRegistered { topic: "my-topic".to_string() };
     let msg_str = format!("{}", err);
     let debug_str = format!("{:?}", err);
     assert!(msg_str.contains("handler") || msg_str.contains("registered"));
@@ -197,7 +197,7 @@ fn dispatch_error_handler_not_registered_variant_exists() {
 #[test]
 fn dispatch_error_queue_closed_variant_exists() {
     // Verify QueueClosed variant exists (DISP-19 requirement)
-    let err = DispatchError::QueueClosed("my-topic".to_string());
+    let err = DispatchError::QueueClosed { topic: "my-topic".to_string() };
     let msg_str = format!("{}", err);
     let debug_str = format!("{:?}", err);
     assert!(msg_str.contains("closed"));
