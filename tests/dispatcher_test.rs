@@ -68,7 +68,7 @@ fn send_returns_handler_not_registered_for_unknown_topic() {
     let result = dispatcher.send(msg);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(matches!(err, DispatchError::HandlerNotRegistered(_)));
+    assert!(matches!(err, DispatchError::HandlerNotRegistered { topic: _ }));
 }
 
 #[test]
@@ -87,7 +87,7 @@ fn send_returns_queue_full_when_channel_full() {
     let result = dispatcher.send(msg2);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(matches!(err, DispatchError::Backpressure(_)));
+    assert!(matches!(err, DispatchError::Backpressure { queue_name: _, reason: _ }));
 
     drop(rx);
 }
@@ -102,7 +102,7 @@ fn send_returns_queue_closed_when_receiver_dropped() {
     let result = dispatcher.send(msg);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(matches!(err, DispatchError::QueueClosed(_)));
+    assert!(matches!(err, DispatchError::QueueClosed { topic: _ }));
 }
 
 #[test]
