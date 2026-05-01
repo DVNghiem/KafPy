@@ -172,6 +172,8 @@ impl ConsumerDispatcher {
             RoutingDecision::Route(handler_id) => {
                 // Dispatch to handler by ID
                 let qm = &self.dispatcher.queue_manager;
+                // Extract topic before send (msg moves into send_to_handler_by_id)
+                let source_topic = msg.topic.clone();
                 // Debug: log handlers map contents before send
                 {
                     let guard = qm.handlers.lock();
@@ -180,8 +182,10 @@ impl ConsumerDispatcher {
                 match qm.send_to_handler_by_id(&handler_id, msg) {
                     Ok(outcome) => (Ok(outcome), None),
                     Err(DispatchError::Backpressure { queue_name, reason }) => {
+                        // Policy decides action based on the source topic from the message.
+                        // topic drives PausePartition targeting the slow source.
                         let action = policy.on_queue_full(
-                            handler_id.as_str(),
+                            source_topic.as_str(), // pass actual Kafka source topic for per-source pause
                             qm.handlers
                                 .lock()
                                 .get(handler_id.as_str())
