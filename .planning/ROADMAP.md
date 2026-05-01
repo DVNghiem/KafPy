@@ -75,7 +75,10 @@
 2. Fan-out metrics include fan_out_id and branch_name labels without double-counting throughput
 3. Each fan-out branch spawns a child trace span with parent correlation
 
-**Plans:** TBD
+**Plans:** 3 plans
+- [x] 13-01-PLAN.md — register_fanout API (FanOutBuilder Rust bridge, PyConsumer method, Python FanOutBuilder)
+- [x] 13-02-PLAN.md — fan-out metrics (FanOutMetrics, fan_out_branch_duration_seconds, fan_out_branch_total)
+- [x] 13-03-PLAN.md — trace context branching (kafpy.fanout.branch span, parent correlation)
 
 **UI hint:** no
 
@@ -148,11 +151,11 @@ Phase 10 (Streaming Handler) [v1.1]
 | 10 | v1.1 | 4/4 | Complete | 2026-04-29 |
 | 11 | v2.0 | 0/3 | Not started | - |
 | 12 | v2.0 | 0/2 | Not started | - |
-| 13 | v2.0 | 0/3 | Not started | - |
+| 13 | v2.0 | 3/3 | Planned | - |
 | 14 | v2.0 | 0/3 | Not started | - |
 | 15 | v2.0 | 0/3 | Not started | - |
 
 **Full milestone history at `.planning/milestones/`**
 
 ---
-*Last updated: 2026-04-29 after v2.0 requirements defined*
+*Last updated: 2026-05-01 after Phase 13 planning*
