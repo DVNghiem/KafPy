@@ -26,7 +26,7 @@ Multiple async sources merged into single handler (round-robin).
 - [ ] **FANIN-02**: Round-robin merge via `tokio::select!` biased loop — messages interleaved by arrival
 - [x] **FANIN-03**: `ExecutionContext.source_topic` field populated for fan-in handler
 - [ ] **FANIN-04**: Per-source independent backpressure (PausePartition per topic+partition)
-- [ ] **FANIN-05**: `register_fanin(handler_key, sources: Vec<String>)` Python API
+- [x] **FANIN-05**: `register_fanin(handler_key, sources: Vec<String>)` Python API
 
 ### Observability (OBSV)
 
@@ -81,7 +81,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FANIN-02 | Phase 14 | Pending |
 | FANIN-03 | Phase 14 | Complete |
 | FANIN-04 | Phase 15 | Pending |
-| FANIN-05 | Phase 15 | Pending |
+| FANIN-05 | Phase 15 | Complete |
 | OBSV-01 | Phase 13 | Pending |
 | OBSV-02 | Phase 13 | Pending |
 | OBSV-03 | Phase 15 | Pending |
