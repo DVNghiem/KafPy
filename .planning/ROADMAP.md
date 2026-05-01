@@ -157,12 +157,12 @@ Phase 10 (Streaming Handler) [v1.1]
 | 8 | v1.1 | 2/2 | Complete | 2026-04-29 |
 | 9 | v1.1 | 3/3 | Complete | 2026-04-29 |
 | 10 | v1.1 | 4/4 | Complete | 2026-04-29 |
-| 11 | v2.0 | 0/3 | Not started | - |
-| 12 | v2.0 | 0/2 | Not started | - |
+| 11 | v2.0 | 3/3 | Complete   | 2026-04-29 |
+| 12 | v2.0 | 2/2 | Complete   | 2026-04-29 |
 | 13 | v2.0 | 3/3 | Complete   | 2026-05-01 |
-| 14 | v2.0 | 3/3 | Planned     | - |
-| 15 | v2.0 | 0/3 | Planned     | - |
-| 16 | v2.0 | 1/1 | Planned     | - |
+| 14 | v2.0 | 3/3 | Complete   | - |
+| 15 | v2.0 | 3/3 | Complete   | - |
+| 16 | v2.0 | 1/1 | Complete   | 2026-05-01 |
 
 **Full milestone history at `.planning/milestones/`**
 
