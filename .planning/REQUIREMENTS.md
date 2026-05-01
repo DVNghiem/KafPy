@@ -24,7 +24,7 @@ Multiple async sources merged into single handler (round-robin).
 
 - [ ] **FANIN-01**: Multi-topic Kafka subscription via rdkafka `subscribe(&[topics])`
 - [ ] **FANIN-02**: Round-robin merge via `tokio::select!` biased loop — messages interleaved by arrival
-- [ ] **FANIN-03**: `ExecutionContext.source_topic` field populated for fan-in handler
+- [x] **FANIN-03**: `ExecutionContext.source_topic` field populated for fan-in handler
 - [ ] **FANIN-04**: Per-source independent backpressure (PausePartition per topic+partition)
 - [ ] **FANIN-05**: `register_fanin(handler_key, sources: Vec<String>)` Python API
 
@@ -79,7 +79,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FANOUT-06 | Phase 13 | Pending |
 | FANIN-01 | Phase 14 | Pending |
 | FANIN-02 | Phase 14 | Pending |
-| FANIN-03 | Phase 14 | Pending |
+| FANIN-03 | Phase 14 | Complete |
 | FANIN-04 | Phase 15 | Pending |
 | FANIN-05 | Phase 15 | Pending |
 | OBSV-01 | Phase 13 | Pending |

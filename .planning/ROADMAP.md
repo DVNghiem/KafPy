@@ -16,7 +16,7 @@
 
 - [ ] **Phase 11: Fan-Out Core** — JoinSet dispatch, bounded fan-out, partial success dispatch
 - [ ] **Phase 12: Fan-Out Offset Commit** — Fan-out tracker, offset gating, per-sink error classification
-- [ ] **Phase 13: Fan-Out Python API** — register_fanout API, fan-out metrics, trace context branching
+- [x] **Phase 13: Fan-Out Python API** — register_fanout API, fan-out metrics, trace context branching (completed 2026-05-01)
 - [ ] **Phase 14: Fan-In Multiplexer** — Multi-topic subscription, round-robin merge, source topic context
 - [ ] **Phase 15: Fan-In Integration** — QueueManager wiring, per-source backpressure, register_fanin API
 
@@ -75,7 +75,7 @@
 2. Fan-out metrics include fan_out_id and branch_name labels without double-counting throughput
 3. Each fan-out branch spawns a child trace span with parent correlation
 
-**Plans:** 3 plans
+**Plans:** 3/3 plans complete
 - [x] 13-01-PLAN.md — register_fanout API (FanOutBuilder Rust bridge, PyConsumer method, Python FanOutBuilder)
 - [x] 13-02-PLAN.md — fan-out metrics (FanOutMetrics, fan_out_branch_duration_seconds, fan_out_branch_total)
 - [x] 13-03-PLAN.md — trace context branching (kafpy.fanout.branch span, parent correlation)
@@ -97,7 +97,10 @@
 2. Messages from all subscribed topics are delivered to one handler in round-robin order via tokio::select!
 3. ExecutionContext.source_topic field is populated for every fan-in message
 
-**Plans:** TBD
+**Plans:** 3/3 plans
+- [x] 14-01-PLAN.md — ExecutionContext source_topic + fan_in_id fields, ctx_to_pydict exposure
+- [x] 14-02-PLAN.md — fan_in_worker_loop with round-robin tokio::select! merge
+- [x] 14-03-PLAN.md — register_fanin API (PyConsumer + FanInBuilderRust + RuntimeBuilder wiring)
 
 **UI hint:** no
 
@@ -151,11 +154,11 @@ Phase 10 (Streaming Handler) [v1.1]
 | 10 | v1.1 | 4/4 | Complete | 2026-04-29 |
 | 11 | v2.0 | 0/3 | Not started | - |
 | 12 | v2.0 | 0/2 | Not started | - |
-| 13 | v2.0 | 3/3 | Planned | - |
-| 14 | v2.0 | 0/3 | Not started | - |
+| 13 | v2.0 | 3/3 | Complete   | 2026-05-01 |
+| 14 | v2.0 | 3/3 | Planned     | - |
 | 15 | v2.0 | 0/3 | Not started | - |
 
 **Full milestone history at `.planning/milestones/`**
 
 ---
-*Last updated: 2026-05-01 after Phase 13 planning*
+*Last updated: 2026-05-01 after Phase 14 planning*
