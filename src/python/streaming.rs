@@ -45,6 +45,9 @@ impl StreamingHandler {
         // Wrap in PythonAsyncFuture and poll in a loop
         let future = PythonAsyncFuture::from(coro);
 
+        // This loop runs exactly once — the async generator yields a single message
+        // then the loop exits. Clippy complains but the pattern is intentional.
+        #[allow(clippy::never_loop)]
         loop {
             match future.await {
                 ExecutionResult::Ok => {
