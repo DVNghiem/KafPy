@@ -8,7 +8,7 @@
 
 - [x] **v1.0 MVP** — Phases 1-6 (shipped 2026-04-29)
 - [x] **v1.1 Async & Concurrency Hardening** — Phases 7-10 (shipped 2026-04-29)
-- [ ] **v2.0 Fan-Out/Fan-In** — Phases 11-15 (in progress)
+- [ ] **v2.0 Fan-Out/Fan-In** — Phases 11-16 (in progress)
 
 ## Phases
 
@@ -19,6 +19,7 @@
 - [x] **Phase 13: Fan-Out Python API** — register_fanout API, fan-out metrics, trace context branching (completed 2026-05-01)
 - [ ] **Phase 14: Fan-In Multiplexer** — Multi-topic subscription, round-robin merge, source topic context
 - [ ] **Phase 15: Fan-In Integration** — QueueManager wiring, per-source backpressure, register_fanin API
+- [ ] **Phase 16: Fix warnings and dead code** — Remove all `#[allow(dead_code)]` and fix root cause
 
 ---
 
@@ -137,6 +138,7 @@ Phase 10 (Streaming Handler) [v1.1]
               └── Phase 13 (Fan-Out Python API) [v2.0]
                     └── Phase 14 (Fan-In Multiplexer) [v2.0]
                           └── Phase 15 (Fan-In Integration) [v2.0]
+                                └── Phase 16 (Fix warnings and dead code) [v2.0]
 ```
 
 ---
@@ -160,8 +162,23 @@ Phase 10 (Streaming Handler) [v1.1]
 | 13 | v2.0 | 3/3 | Complete   | 2026-05-01 |
 | 14 | v2.0 | 3/3 | Planned     | - |
 | 15 | v2.0 | 0/3 | Planned     | - |
+| 16 | v2.0 | 1/1 | Planned     | - |
 
 **Full milestone history at `.planning/milestones/`**
 
+### Phase 16: fix warning and dead code, not use allow deadcode, must fix or remove it
+
+**Goal:** Remove all `#[allow(dead_code)]` attributes and fix all compiler warnings. The warnings must be fixed at the root cause, not suppressed.
+
+**Requirements**: N/A (cleanup phase)
+
+**Depends on:** Phase 15
+
+**Plans:** 1 plan
+
+Plans:
+- [ ] 16-01-PLAN.md — Fix all warnings and dead code (7 tasks covering deprecated API, unused variables, visibility, and dead code removal)
+
 ---
-*Last updated: 2026-05-01 after Phase 15 planning*
+
+*Last updated: 2026-05-01 after Phase 16 planning*
