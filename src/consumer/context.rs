@@ -253,22 +253,7 @@ mod tests {
     #[test]
     fn custom_consumer_context_debug() {
         // Verify Debug impl compiles and produces expected output
-        let ctx = CustomConsumerContext::new(
-            Arc::new(OffsetTracker::new()),
-            Arc::new(crate::dlq::router::DefaultDlqRouter::with_default_prefix()),
-            Arc::new(
-                crate::dlq::produce::SharedDlqProducer::new(
-                    &crate::consumer::ConsumerConfigBuilder::new()
-                        .brokers("localhost:9092")
-                        .group_id("test-group")
-                        .topics(["test"])
-                        .build()
-                        .unwrap(),
-                    crate::observability::metrics::SharedPrometheusSink::new(),
-                )
-                .unwrap(),
-            ),
-        );
+        let ctx = CustomConsumerContext::new(Arc::new(OffsetTracker::new()));
         let debug_str = format!("{:?}", ctx);
         assert!(debug_str.contains("CustomConsumerContext"));
     }
