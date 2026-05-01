@@ -91,6 +91,9 @@ impl FanOutConfig {
 
 // ─── Callback Registry ─────────────────────────────────────────────────────────
 
+/// Type alias for branch completion callbacks.
+type BranchCallback = Box<dyn Fn(BranchResult) + Send + Sync>;
+
 /// Manages completion callbacks per branch.
 ///
 /// Each fan-out branch gets a unique branch_id. Callbacks are invoked
@@ -100,7 +103,7 @@ impl FanOutConfig {
 /// registered and emitted from async contexts but the Mutex only needs to
 /// be held briefly during mutation — no .await across lock boundary.
 pub struct CallbackRegistry {
-    callbacks: Mutex<HashMap<u64, Box<dyn Fn(BranchResult) + Send + Sync>>>,
+    callbacks: Mutex<HashMap<u64, BranchCallback>>,
     next_branch_id: std::sync::atomic::AtomicU64,
 }
 
@@ -259,8 +262,7 @@ impl FanOutTracker {
     ///
     /// Must be called before spawning the branch task.
     pub fn register_branch(&self) -> u64 {
-        let branch_id = self.total.fetch_add(1, std::sync::atomic::Ordering::SeqCst) as u64;
-        branch_id
+        self.total.fetch_add(1, std::sync::atomic::Ordering::SeqCst) as u64
     }
 
     /// Record a branch result and signal completion if all branches are done.

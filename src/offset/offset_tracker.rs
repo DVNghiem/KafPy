@@ -68,14 +68,6 @@ impl PartitionState {
         }
     }
 
-    /// Sets `has_terminal = true` for this partition.
-    ///
-    /// Idempotent — calling when already true is a no-op (D-03: set once, never clear).
-    #[allow(dead_code)]
-    pub fn set_terminal(&mut self) {
-        self.has_terminal = true;
-    }
-
     /// Records an ack for `offset`, buffering if out-of-order.
     ///
     /// Algorithm:
@@ -187,7 +179,6 @@ impl OffsetTracker {
     /// Does NOT advance `committed_offset`.
     ///
     /// If the topic-partition is not registered, this is a no-op.
-    #[allow(dead_code)]
     pub fn mark_failed(&self, topic: &str, partition: i32, offset: i64) {
         let key = TopicPartitionKey::new(topic, partition);
         let mut guard = self.partitions.lock();
@@ -199,7 +190,6 @@ impl OffsetTracker {
     /// Returns the last committed offset for the given topic-partition.
     ///
     /// Returns `-1` if the topic-partition has not been registered.
-    #[allow(dead_code)]
     pub fn committed_offset(&self, topic: &str, partition: i32) -> i64 {
         let key = TopicPartitionKey::new(topic, partition);
         let guard = self.partitions.lock();

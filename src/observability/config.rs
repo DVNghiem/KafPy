@@ -3,7 +3,6 @@
 
 /// Log format for structured logging.
 #[derive(Debug, Clone, Copy, Default)]
-#[allow(dead_code)]
 pub enum LogFormat {
     Json,
     Pretty,
@@ -19,13 +18,10 @@ pub enum LogFormat {
 pub struct ObservabilityConfig {
     /// OTLP exporter endpoint (e.g., "http://localhost:4317").
     /// None = tracing disabled (zero-cost).
-    #[allow(dead_code)]
     pub otlp_endpoint: Option<String>,
     /// Service name for OTLP resource.
-    #[allow(dead_code)]
     pub service_name: String,
     /// Sampling ratio (0.0 to 1.0). 1.0 = sample everything.
-    #[allow(dead_code)]
     pub sampling_ratio: f64,
     /// Log format for structured logging.
     pub log_format: LogFormat,

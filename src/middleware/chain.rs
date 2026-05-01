@@ -23,7 +23,7 @@ impl MiddlewareChain {
     }
 
     /// Add middleware to the chain. Returns self for builder-style chaining.
-    pub fn add(mut self, m: Box<dyn HandlerMiddleware>) -> Self {
+    pub fn add_middleware(mut self, m: Box<dyn HandlerMiddleware>) -> Self {
         self.middleware.push(m);
         self
     }

@@ -3,18 +3,25 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Original message context (topic, partition, offset).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OriginalMessage {
+    /// Original Kafka topic the message came from.
+    pub topic: String,
+    /// Original partition the message was assigned to.
+    pub partition: i32,
+    /// Original offset of the message.
+    pub offset: i64,
+}
+
 /// Metadata envelope attached to every DLQ message.
 ///
 /// Contains the original message context plus failure information
 /// needed for debugging, replay, and alerting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DlqMetadata {
-    /// Original Kafka topic the message came from.
-    pub original_topic: String,
-    /// Original partition the message was assigned to.
-    pub original_partition: i32,
-    /// Original offset of the message.
-    pub original_offset: i64,
+    /// Original message context.
+    pub original: OriginalMessage,
     /// Why the message was sent to DLQ.
     pub failure_reason: String,
     /// How many times the handler was invoked before DLQ routing.
@@ -51,9 +58,11 @@ impl DlqMetadata {
         fan_out_id: Option<u64>,
     ) -> Self {
         Self {
-            original_topic,
-            original_partition,
-            original_offset,
+            original: OriginalMessage {
+                topic: original_topic,
+                partition: original_partition,
+                offset: original_offset,
+            },
             failure_reason,
             attempt_count,
             first_failure_timestamp,

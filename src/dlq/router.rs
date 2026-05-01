@@ -66,8 +66,8 @@ impl DefaultDlqRouter {
 
 impl DlqRouter for DefaultDlqRouter {
     fn route(&self, metadata: &DlqMetadata) -> TopicPartition {
-        let topic = format!("{}{}", self.dlq_topic_prefix, metadata.original_topic);
-        TopicPartition::new(topic, metadata.original_partition)
+        let topic = format!("{}{}", self.dlq_topic_prefix, metadata.original.topic);
+        TopicPartition::new(topic, metadata.original.partition)
     }
 }
 

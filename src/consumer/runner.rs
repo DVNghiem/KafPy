@@ -42,16 +42,12 @@ impl ConsumerRunner {
     /// * `coordinator` — optional shutdown coordinator for phased graceful shutdown.
     ///   When `None`, `stop()` falls back to the existing broadcast-channel shutdown.
     /// * `offset_tracker` — for seeking to committed+1 on partition assignment
-    /// * `dlq_router` — for DLQ routing on partition revocation
-    /// * `dlq_producer` — for producing failed messages to DLQ
     pub fn new(
         config: ConsumerConfig,
         coordinator: Option<Arc<ShutdownCoordinator>>,
         offset_tracker: Arc<crate::coordinator::OffsetTracker>,
-        dlq_router: Arc<dyn crate::dlq::DlqRouter>,
-        dlq_producer: Arc<crate::dlq::SharedDlqProducer>,
     ) -> Result<Self, ConsumerError> {
-        let context = CustomConsumerContext::new(offset_tracker, dlq_router, dlq_producer);
+        let context = CustomConsumerContext::new(offset_tracker);
         let consumer: StreamConsumer<CustomConsumerContext> = config
             .clone()
             .into_rdkafka_config()

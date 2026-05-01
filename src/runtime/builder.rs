@@ -50,7 +50,6 @@ pub struct RuntimeBuilder {
     config: ConsumerConfig,
     handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
     fan_out_handlers: HashMap<String, std::sync::Arc<crate::python::handler::PythonHandler>>,
-    fan_in_handlers: HashMap<String, std::sync::Arc<crate::python::handler::PythonHandler>>,
     shutdown_token: CancellationToken,
 }
 
@@ -60,14 +59,12 @@ impl RuntimeBuilder {
         config: ConsumerConfig,
         handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
         fan_out_handlers: HashMap<String, std::sync::Arc<crate::python::handler::PythonHandler>>,
-        fan_in_handlers: HashMap<String, std::sync::Arc<crate::python::handler::PythonHandler>>,
         shutdown_token: CancellationToken,
     ) -> Self {
         Self {
             config,
             handlers,
             fan_out_handlers,
-            fan_in_handlers,
             shutdown_token,
         }
     }
@@ -140,8 +137,6 @@ impl RuntimeBuilder {
             rust_config.clone(),
             None,
             Arc::clone(&offset_tracker),
-            Arc::clone(&dlq_router),
-            Arc::clone(&dlq_producer),
         )?;
 
         // 5. Wire ConsumerRunner into OffsetTracker
@@ -286,7 +281,6 @@ impl RuntimeBuilder {
             dispatcher_handle,
             committer_handle,
             coordinator,
-            rayon_pool,
         })
     }
 }
@@ -302,11 +296,7 @@ pub struct Runtime {
     /// Handle to the offset committer task.
     pub committer_handle: tokio::task::JoinHandle<()>,
     /// Shutdown coordinator for drain signaling.
-    #[allow(dead_code)]
     pub coordinator: Arc<ShutdownCoordinator>,
-    /// Rayon pool for sync handler offloading — must outlive workers.
-    #[allow(dead_code)]
-    rayon_pool: Arc<RayonPool>,
 }
 
 impl Runtime {

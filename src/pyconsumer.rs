@@ -156,11 +156,10 @@ impl PyConsumer {
         let config = self.config.clone();
         let handlers = Arc::clone(&self.handlers);
         let fan_out_handlers = self.get_fan_out_handlers();
-        let fan_in_handlers = self.get_fan_in_handlers();
         let shutdown_token = self.shutdown_token.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let builder = RuntimeBuilder::new(config, handlers, fan_out_handlers, fan_in_handlers, shutdown_token);
+            let builder = RuntimeBuilder::new(config, handlers, fan_out_handlers, shutdown_token);
             let runtime = builder
                 .build()
                 .await
@@ -286,7 +285,7 @@ impl PyConsumer {
         // For fan-out sinks, the actual handler with FanOutConfig is stored in
         // fan_out_handlers. HandlerMetadata.callback is set to PyNone as a marker
         // so RuntimeBuilder knows this topic needs special handling.
-        let py_none: Py<PyAny> = unsafe { Python::assume_attached() }.None().into();
+        let py_none = unsafe { Python::assume_attached() }.None();
         let meta = HandlerMetadata::new(
             Arc::new(py_none),
             HandlerMode::SingleSync,
@@ -331,7 +330,7 @@ impl PyConsumer {
 
         // For fan-in handlers, the actual handler is stored in fan_in_handlers.
         // HandlerMetadata.callback is set to PyNone as a marker.
-        let py_none: Py<PyAny> = unsafe { Python::assume_attached() }.None().into();
+        let py_none = unsafe { Python::assume_attached() }.None();
         let meta = HandlerMetadata::new(
             Arc::new(py_none),
             crate::python::handler::HandlerMode::SingleSync,

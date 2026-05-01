@@ -6,8 +6,6 @@
 //! on assignment.
 
 use crate::coordinator::OffsetTracker;
-use crate::dlq::produce::SharedDlqProducer;
-use crate::dlq::router::DlqRouter;
 use rdkafka::client::ClientContext;
 use rdkafka::config::RDKafkaLogLevel;
 use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance};
@@ -41,10 +39,6 @@ use tracing::{debug, error, info};
 #[derive(Clone)]
 pub struct CustomConsumerContext {
     offset_tracker: Arc<OffsetTracker>,
-    #[allow(dead_code)]
-    dlq_router: Arc<dyn DlqRouter>,
-    #[allow(dead_code)]
-    dlq_producer: Arc<SharedDlqProducer>,
     /// Tracks whether each topic-partition is paused (for backpressure).
     /// Key: "topic-partition", Value: bool (true = paused)
     pause_state: Arc<parking_lot::Mutex<std::collections::HashMap<String, bool>>>,
@@ -54,13 +48,9 @@ impl CustomConsumerContext {
     /// Creates a new CustomConsumerContext with the given dependencies.
     pub fn new(
         offset_tracker: Arc<OffsetTracker>,
-        dlq_router: Arc<dyn DlqRouter>,
-        dlq_producer: Arc<SharedDlqProducer>,
     ) -> Self {
         Self {
             offset_tracker,
-            dlq_router,
-            dlq_producer,
             pause_state: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
         }
     }
@@ -77,8 +67,6 @@ impl std::fmt::Debug for CustomConsumerContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CustomConsumerContext")
             .field("offset_tracker", &"Arc<OffsetTracker>")
-            .field("dlq_router", &"Arc<dyn DlqRouter>")
-            .field("dlq_producer", &"Arc<SharedDlqProducer>")
             .finish()
     }
 }

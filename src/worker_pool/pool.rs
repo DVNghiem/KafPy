@@ -38,14 +38,6 @@ pub struct WorkerPool {
     pub(crate) worker_pool_state: Arc<WorkerPoolState>,
     /// Shutdown coordinator for accessing drain timeout.
     coordinator: Arc<ShutdownCoordinator>,
-    /// Per-handler concurrency control via Arc<Semaphore>.
-    /// Stored for cloning to workers — the struct field itself is never read.
-    #[allow(dead_code)]
-    handler_concurrency: HandlerConcurrency,
-    /// Shared Prometheus sink for metrics recording.
-    /// Stored for cloning to workers — the struct field itself is never read.
-    #[allow(dead_code)]
-    prometheus_sink: SharedPrometheusSink,
 }
 
 impl WorkerPool {
@@ -168,8 +160,6 @@ impl WorkerPool {
             dlq_router,
             worker_pool_state,
             coordinator,
-            handler_concurrency,
-            prometheus_sink,
         }
     }
 

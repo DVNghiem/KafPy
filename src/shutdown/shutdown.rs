@@ -188,12 +188,6 @@ impl ShutdownCoordinator {
         self.drain_timeout
     }
 
-    /// Returns a reference to the committer cancellation token.
-    #[allow(dead_code)]
-    pub(crate) fn committer_cancel_token(&self) -> CancellationToken {
-        self.committer_cancel.clone()
-    }
-
     /// Drains the Rayon pool during shutdown, wrapped in the drain timeout.
     ///
     /// Called during the finalizing phase. If the timeout is exceeded,

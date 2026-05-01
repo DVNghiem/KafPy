@@ -100,15 +100,15 @@ pub fn build_middleware_chain(
         match type_name.as_str() {
             "Logging" => {
                 // Built-in Logging — stateless, create directly
-                chain = chain.add(Box::new(Logging::new()));
+                chain = chain.add_middleware(Box::new(Logging::new()));
             }
             "Metrics" => {
                 // Built-in Metrics — needs the metrics sink
-                chain = chain.add(Box::new(Metrics::new(metrics_sink.clone())));
+                chain = chain.add_middleware(Box::new(Metrics::new(metrics_sink.clone())));
             }
             _ => {
                 // Custom Python middleware — wrap in PythonMiddleware
-                chain = chain.add(Box::new(PythonMiddleware::new(Arc::clone(&inst))));
+                chain = chain.add_middleware(Box::new(PythonMiddleware::new(Arc::clone(&inst))));
             }
         }
     }

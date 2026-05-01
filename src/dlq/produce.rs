@@ -33,9 +33,6 @@ struct DLQMessage {
 /// a background task drains the channel and produces to Kafka.
 pub struct SharedDlqProducer {
     send_tx: mpsc::Sender<DLQMessage>,
-    /// Stored only for cloning to background task — field itself is never read.
-    #[allow(dead_code)]
-    prometheus_sink: SharedPrometheusSink,
 }
 
 impl SharedDlqProducer {
@@ -63,7 +60,6 @@ impl SharedDlqProducer {
 
         Ok(Self {
             send_tx,
-            prometheus_sink,
         })
     }
 
@@ -163,7 +159,7 @@ impl SharedDlqProducer {
 
         let msg = DLQMessage {
             topic,
-            original_topic: metadata.original_topic.clone(),
+            original_topic: metadata.original.topic.clone(),
             partition,
             payload,
             key,
@@ -173,9 +169,9 @@ impl SharedDlqProducer {
         // Try to send without blocking — if channel is full, drop the message
         if self.send_tx.try_send(msg).is_err() {
             warn!(
-                topic = %metadata.original_topic,
-                partition = metadata.original_partition,
-                offset = metadata.original_offset,
+                topic = %metadata.original.topic,
+                partition = metadata.original.partition,
+                offset = metadata.original.offset,
                 "DLQ channel full — dropping message"
             );
         }
@@ -186,15 +182,15 @@ impl SharedDlqProducer {
         vec![
             (
                 "dlq.original_topic".to_string(),
-                metadata.original_topic.as_bytes().to_vec(),
+                metadata.original.topic.as_bytes().to_vec(),
             ),
             (
                 "dlq.partition".to_string(),
-                metadata.original_partition.to_string().as_bytes().to_vec(),
+                metadata.original.partition.to_string().as_bytes().to_vec(),
             ),
             (
                 "dlq.offset".to_string(),
-                metadata.original_offset.to_string().as_bytes().to_vec(),
+                metadata.original.offset.to_string().as_bytes().to_vec(),
             ),
             (
                 "dlq.reason".to_string(),
