@@ -77,6 +77,12 @@ fn ctx_to_pydict<'py>(py: Python<'py>, ctx: &ExecutionContext, msg: &OwnedMessag
     if let Some(ref flags) = ctx.trace_flags {
         let _ = py_ctx.set_item("trace_flags", flags);
     }
+    // Fan-in source topic (D-06: FANIN-03)
+    let _ = py_ctx.set_item("source_topic", &ctx.source_topic);
+    // Fan-in group ID (D-07)
+    if let Some(fan_in_id) = ctx.fan_in_id {
+        let _ = py_ctx.set_item("fan_in_id", fan_in_id);
+    }
     py_ctx.into()
 }
 

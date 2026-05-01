@@ -136,6 +136,8 @@ pub(crate) async fn worker_loop(
                 trace_flags_for_ctx,
                 None,
                 None,
+                String::new(),
+                None,
             );
             let handler = handler_for_topic(&handlers, &msg.topic).clone();
             let start = std::time::Instant::now();
@@ -414,6 +416,8 @@ pub(crate) async fn worker_loop(
                             Some("01".to_string()),
                             Some(branch_id),
                             Some(fan_out_id_clone),
+                            String::new(),
+                            None,
                         );
                         let result = branch_span.in_scope(|| async {
                             sink_handler
