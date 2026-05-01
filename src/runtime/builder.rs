@@ -49,6 +49,7 @@ use tokio_util::sync::CancellationToken;
 pub struct RuntimeBuilder {
     config: ConsumerConfig,
     handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
+    fan_out_handlers: HashMap<String, std::sync::Arc<crate::python::handler::PythonHandler>>,
     shutdown_token: CancellationToken,
 }
 
@@ -57,11 +58,13 @@ impl RuntimeBuilder {
     pub fn new(
         config: ConsumerConfig,
         handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
+        fan_out_handlers: HashMap<String, std::sync::Arc<crate::python::handler::PythonHandler>>,
         shutdown_token: CancellationToken,
     ) -> Self {
         Self {
             config,
             handlers,
+            fan_out_handlers,
             shutdown_token,
         }
     }
@@ -69,7 +72,7 @@ impl RuntimeBuilder {
     /// Assembles the full runtime and returns a `Runtime` handle.
     ///
     /// Assembly order is fixed — see module-level doc for invariants.
-    pub async fn build(self) -> Result<Runtime, ConsumerError> {
+    pub async fn build(mut self) -> Result<Runtime, ConsumerError> {
         // 1. Build pure-Rust config from the Python-facing config
         let mut config_builder = ConsumerConfigBuilder::new()
             .brokers(&self.config.brokers)
@@ -166,14 +169,22 @@ impl RuntimeBuilder {
             .map(|(topic, _)| dispatcher.register_handler(topic.clone(), 100, None))
             .collect();
 
-        // 6. Build per-topic PythonHandler map from registered HandlerMetadata
-        // Each topic gets its own handler with individual config (timeout, mode, batch).
+        // 6. Build per-topic PythonHandler map from registered HandlerMetadata.
+        // For fan-out sink topics, use the pre-built handler from fan_out_handlers
+        // (it already has FanOutConfig attached). For regular handlers, build
+        // from HandlerMetadata.
         let default_handler_timeout = self.config.handler_timeout_ms.map(Duration::from_millis);
+        let fan_out_handlers = std::mem::take(&mut self.fan_out_handlers);
         let handler_map: HashMap<String, Arc<PythonHandler>> = {
             let handlers_guard = self.handlers.lock().unwrap();
             handlers_guard
                 .iter()
                 .map(|(topic, meta)| {
+                    // Check if this topic is a fan-out sink with pre-built handler
+                    if let Some(fan_handler) = fan_out_handlers.get(topic) {
+                        return (topic.clone(), Arc::clone(fan_handler));
+                    }
+
                     // Resolve timeout: per-handler > global config > None
                     let timeout = meta
                         .timeout_ms

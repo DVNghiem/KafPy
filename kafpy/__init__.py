@@ -126,6 +126,9 @@ from .consumer import Consumer
 # Runtime with KafPy class (Phase 35)
 from .runtime import KafPy
 
+# Fan-out builder (Phase 13)
+from .fanout import FanOutBuilder, FanOutRegistration
+
 # Exception types (Phase 36)
 from .exceptions import (
     KafPyError,
@@ -222,6 +225,9 @@ __all__ = [
     # Consumer wrapper and runtime — Phase 35
     "Consumer",
     "KafPy",
+    # Fan-out builder — Phase 13
+    "FanOutBuilder",
+    "FanOutRegistration",
     # Handler types and registration — Phase 35/36
     "KafkaMessage",
     "HandlerContext",

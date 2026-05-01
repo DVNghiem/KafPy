@@ -11,6 +11,10 @@ use std::sync::{Arc, Mutex};
 use crate::config::ConsumerConfig;
 use crate::python::handler::HandlerMode;
 use crate::runtime::RuntimeBuilder;
+use crate::worker_pool::fan_out::FanOutConfig;
+
+/// FanOutHandler is a PythonHandler with FanOutConfig attached.
+type FanOutHandler = crate::python::handler::PythonHandler;
 
 /// Per-handler metadata stored alongside the callback.
 #[derive(Debug, Clone)]
@@ -26,6 +30,8 @@ pub struct HandlerMetadata {
     /// Stored as Arc-wrapped Py objects for Clone derivability and GIL-safe access.
     /// Chain is built at invocation time when the metrics sink is available.
     pub middleware: Option<Vec<Arc<Py<PyAny>>>>,
+    /// Fan-out configuration for this handler. None means not a fan-out sink.
+    pub fan_out_config: Option<Arc<FanOutConfig>>,
 }
 
 impl HandlerMetadata {
@@ -38,6 +44,7 @@ impl HandlerMetadata {
         timeout_ms: Option<u64>,
         concurrency: Option<usize>,
         middleware: Option<Vec<Py<PyAny>>>,
+        fan_out_config: Option<Arc<FanOutConfig>>,
     ) -> Self {
         Self {
             callback,
@@ -47,8 +54,22 @@ impl HandlerMetadata {
             timeout_ms,
             concurrency,
             middleware: middleware.map(|v| v.into_iter().map(Arc::new).collect()),
+            fan_out_config,
         }
     }
+}
+
+/// Fan-out registration result returned to Python.
+///
+/// Holds the group_name and fan_out_id for later correlation.
+#[pyclass]
+pub struct FanOutRegistration {
+    #[pyo3(get)]
+    pub group_name: String,
+    #[pyo3(get)]
+    pub fan_out_id: u64,
+    #[pyo3(get)]
+    pub sink_topics: Vec<String>,
 }
 
 /// Python-callable consumer. Use `add_handler` to register a topic → callback
@@ -58,6 +79,10 @@ pub struct PyConsumer {
     config: ConsumerConfig,
     /// Stores handler metadata per topic.
     handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
+    /// Stores PythonHandler for fan-out sinks (topic -> handler with FanOutConfig attached).
+    /// Separate from handlers map since these need FanOutConfig set before RuntimeBuilder runs.
+    #[allow(dead_code)]
+    fan_out_handlers: Arc<Mutex<HashMap<String, Arc<FanOutHandler>>>>,
     /// Shared shutdown token — stop() cancels this to signal workers to exit.
     shutdown_token: tokio_util::sync::CancellationToken,
 }
@@ -69,6 +94,7 @@ impl PyConsumer {
         Self {
             config,
             handlers: Arc::new(Mutex::new(HashMap::new())),
+            fan_out_handlers: Arc::new(Mutex::new(HashMap::new())),
             shutdown_token: tokio_util::sync::CancellationToken::new(),
         }
     }
@@ -107,6 +133,7 @@ impl PyConsumer {
             timeout_ms,
             concurrency,
             middleware,
+            None, // no fan-out config
         );
         if let Ok(mut handlers) = self.handlers.lock() {
             handlers.insert(topic, meta);
@@ -118,10 +145,11 @@ impl PyConsumer {
     pub fn start(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let config = self.config.clone();
         let handlers = Arc::clone(&self.handlers);
+        let fan_out_handlers = self.get_fan_out_handlers();
         let shutdown_token = self.shutdown_token.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let builder = RuntimeBuilder::new(config, handlers, shutdown_token);
+            let builder = RuntimeBuilder::new(config, handlers, fan_out_handlers, shutdown_token);
             let runtime = builder
                 .build()
                 .await
@@ -155,6 +183,97 @@ impl PyConsumer {
     /// Returns the current runtime status as a Python dict.
     pub fn status(&self) -> PyResult<Py<PyAny>> {
         get_runtime_snapshot()
+    }
+
+    /// Registers a fan-out group: a handler callable that fans out to multiple sink topics.
+    ///
+    /// Args:
+    ///     group_name: Identifier for this fan-out group.
+    ///     sink_topics: List of sink topic names to fan out to.
+    ///     callback: Python callable invoked for each sink topic.
+    ///     max_fan_out: Maximum concurrent sink branches (default 4, max 64).
+    ///     timeout_ms: Per-branch execution timeout in milliseconds.
+    ///
+    /// Returns a `FanOutRegistration` with group_name, fan_out_id, and sink_topics.
+    #[pyo3(signature = (group_name, sink_topics, callback, max_fan_out=None, timeout_ms=None))]
+    pub fn register_fanout(
+        &mut self,
+        group_name: String,
+        sink_topics: Vec<String>,
+        callback: Bound<'_, PyAny>,
+        max_fan_out: Option<u8>,
+        timeout_ms: Option<u64>,
+    ) -> PyResult<FanOutRegistration> {
+        use crate::python::fan_out_bridge::FanOutBuilderRust;
+        use std::sync::Arc;
+
+        let mode = HandlerMode::from_opt_str(None); // sync by default
+        let builder = FanOutBuilderRust::new(
+            group_name.clone(),
+            sink_topics.clone(),
+            Arc::new(callback.unbind()),
+            mode,
+            timeout_ms,
+        );
+        let max = max_fan_out.unwrap_or(4).min(64);
+        let (returned_group_name, fan_out_id) = builder.register_into_consumer(self, max);
+        Ok(FanOutRegistration {
+            group_name: returned_group_name,
+            fan_out_id,
+            sink_topics,
+        })
+    }
+}
+
+// ─── Internal methods (not PyO3 wrapped) ───────────────────────────────────────
+
+impl PyConsumer {
+    /// Internal method used by FanOutBuilderRust to register a sink handler
+    /// with an attached FanOutConfig.
+    #[allow(unsafe_code)]
+    pub fn add_handler_with_fan_out(
+        &mut self,
+        topic: String,
+        handler: std::sync::Arc<FanOutHandler>,
+        fan_out_config: FanOutConfig,
+    ) {
+        use crate::python::handler::HandlerMode;
+        use std::sync::Arc;
+
+        // For fan-out sinks, the actual handler with FanOutConfig is stored in
+        // fan_out_handlers. HandlerMetadata.callback is set to PyNone as a marker
+        // so RuntimeBuilder knows this topic needs special handling.
+        let py_none: Py<PyAny> = unsafe { Python::assume_gil_acquired() }.None().into();
+        let meta = HandlerMetadata::new(
+            Arc::new(py_none),
+            HandlerMode::SingleSync,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(Arc::new(fan_out_config)),
+        );
+        // Insert metadata into handlers map (RuntimeBuilder will look up fan_out_config)
+        if let Ok(mut handlers) = self.handlers.lock() {
+            handlers.insert(topic.clone(), meta);
+        }
+        // Store the actual handler with FanOutConfig attached in fan_out_handlers map
+        if let Ok(mut fan_handlers) = self.fan_out_handlers.lock() {
+            fan_handlers.insert(topic, handler);
+        }
+    }
+
+    /// Exposes the fan-out handlers map for RuntimeBuilder to consume.
+    pub fn get_fan_out_handlers(
+        &self,
+    ) -> std::collections::HashMap<String, std::sync::Arc<FanOutHandler>> {
+        self.fan_out_handlers
+            .lock()
+            .expect("fan_out_handlers poisoned")
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::clone(v)))
+            .collect()
     }
 }
 

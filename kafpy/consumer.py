@@ -70,6 +70,38 @@ class Consumer:
         """Enter the context manager."""
         return self
 
+    def register_fanout(
+        self,
+        group_name: str,
+        sink_topics: list[str],
+        handler: Callable[[object], None],
+        *,
+        max_fan_out: int | None = None,
+        timeout_ms: int | None = None,
+    ) -> "FanOutBuilder":
+        """Register a fan-out group.
+
+        Args:
+            group_name: Identifier for this fan-out group.
+            sink_topics: List of sink topic names to fan out to.
+            handler: Python callable invoked for each sink topic.
+            max_fan_out: Maximum concurrent sink branches (default 4, max 64).
+            timeout_ms: Per-branch execution timeout in milliseconds.
+
+        Returns:
+            FanOutBuilder for configuring before calling .register()
+        """
+        from kafpy.fanout import FanOutBuilder
+
+        return FanOutBuilder(
+            _consumer=self,
+            _group_name=group_name,
+            _sink_topics=sink_topics,
+            _handler=handler,
+            _max_fan_out=max_fan_out,
+            _timeout_ms=timeout_ms,
+        )
+
     def __exit__(
         self,
         exc_type: type[BaseException] | None,

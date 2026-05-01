@@ -18,6 +18,7 @@ pub mod batch;
 pub mod context;
 pub mod execution_result;
 pub mod executor;
+pub mod fan_out_bridge;
 pub mod handler;
 pub mod logger;
 pub mod streaming;
