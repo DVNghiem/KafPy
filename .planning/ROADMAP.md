@@ -119,7 +119,10 @@
 2. Python code can call `consumer.register_fanin(handler_key, sources: List[str])`
 3. Consumer lag metrics include topic label for per-source monitoring
 
-**Plans:** TBD
+**Plans:** 3/3 planned
+- [ ] 15-01-PLAN.md — Per-source backpressure routing (FANIN-04)
+- [ ] 15-02-PLAN.md — register_fanin Python API (FANIN-05)
+- [ ] 15-03-PLAN.md — Consumer lag metrics with topic label (OBSV-03)
 
 **UI hint:** no
 
@@ -156,9 +159,9 @@ Phase 10 (Streaming Handler) [v1.1]
 | 12 | v2.0 | 0/2 | Not started | - |
 | 13 | v2.0 | 3/3 | Complete   | 2026-05-01 |
 | 14 | v2.0 | 3/3 | Planned     | - |
-| 15 | v2.0 | 0/3 | Not started | - |
+| 15 | v2.0 | 0/3 | Planned     | - |
 
 **Full milestone history at `.planning/milestones/`**
 
 ---
-*Last updated: 2026-05-01 after Phase 14 planning*
+*Last updated: 2026-05-01 after Phase 15 planning*
