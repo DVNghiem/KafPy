@@ -13,7 +13,7 @@ use crate::coordinator::RetryCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
-use crate::observability::metrics::{MetricLabels, TimeoutMetrics, ThroughputMetrics};
+use crate::observability::metrics::{FanOutMetrics, MetricLabels, TimeoutMetrics, ThroughputMetrics};
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
 use crate::python::context::ExecutionContext;
@@ -47,6 +47,11 @@ fn handler_for_topic<'a>(
         tracing::warn!(topic = %topic, "no handler registered for topic, using first available");
         handlers.values().next().expect("handler map is empty")
     })
+}
+
+/// Encode bytes as lowercase hex string (for W3C trace_id/span_id generation).
+fn encode_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -373,20 +378,47 @@ pub(crate) async fn worker_loop(
 
                     sink_join_set.spawn(async move {
                         let branch_id = tracker.register_branch();
+
+                        // D-07/D-08/D-09: Create branch span and W3C traceparent for this branch.
+                        // If parent trace context exists, use it as parent; otherwise generate new trace_id.
+                        let parent_trace_id = sink_trace_id.as_deref();
+                        let parent_span_id = sink_span_id.as_deref();
+                        let branch_span = tracing::Span::current().kafpy_fanout_branch_span(
+                            fan_out_id_clone,
+                            sink_topic.as_str(),
+                            parent_trace_id,
+                            parent_span_id,
+                        );
+
+                        // Build W3C traceparent for this branch.
+                        // All branches of the same fan-out dispatch share the same trace_id (D-09).
+                        // If no parent trace_id, generate a new one.
+                        let trace_id: String = match parent_trace_id {
+                            Some(tid) => tid.to_string(),
+                            None => {
+                                let bytes: [u8; 16] = rand::random();
+                                encode_hex(&bytes)
+                            }
+                        };
+                        let span_id_bytes: [u8; 8] = rand::random();
+                        let branch_span_id = encode_hex(&span_id_bytes);
+
                         let ctx_clone = ExecutionContext::with_trace(
                             sink_topic.clone(),
                             ctx.partition,
                             ctx.offset,
                             worker_id,
-                            sink_trace_id,
-                            sink_span_id,
-                            sink_trace_flags,
+                            Some(trace_id.clone()),
+                            Some(branch_span_id.clone()),
+                            Some("01".to_string()),
                             Some(branch_id),
                             Some(fan_out_id_clone),
                         );
-                        let result = sink_handler
-                            .invoke_mode_with_timeout_override(&ctx_clone, msg_clone, sink_timeout)
-                            .await;
+                        let result = branch_span.in_scope(|| async {
+                            sink_handler
+                                .invoke_mode_with_timeout_override(&ctx_clone, msg_clone, sink_timeout)
+                                .await
+                        }).await;
                         let branch_result = match result {
                             ExecutionResult::Ok => BranchResult::Ok,
                             ExecutionResult::Error { reason, exception, .. } => {
@@ -416,6 +448,7 @@ pub(crate) async fn worker_loop(
                 let msg_partition = msg.partition;
                 let msg_offset = msg.offset;
                 let msg_clone_for_dlq = msg.clone();
+                let metrics_sink = prometheus_sink.clone();
                 tokio::spawn(async move {
                     let branch_results = fan_tracker.wait_all().await;
                     tracing::debug!(
@@ -424,7 +457,16 @@ pub(crate) async fn worker_loop(
                         "all fan-out branches completed"
                     );
 
-                    // FANOUT-05: Route Error/Timeout branches to DLQ with branch metadata.
+                    // OBSV-01: Emit fan-out metrics for each branch result.
+                    for (branch_result, sink_topic) in branch_results.results.iter().zip(sink_topics.iter()) {
+                        let outcome = FanOutMetrics::outcome_from_result(&branch_result.1);
+                        FanOutMetrics::record_branch_completion(
+                            &metrics_sink,
+                            fan_out_id,
+                            sink_topic,
+                            outcome,
+                        );
+                    }
                     for (branch_result, sink_topic) in branch_results.results.iter().zip(sink_topics.iter()) {
                         let branch_id = branch_result.0;
                         if !matches!(branch_result.1, BranchResult::Ok) {

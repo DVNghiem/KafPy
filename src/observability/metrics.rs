@@ -1,9 +1,11 @@
 // src/observability/metrics.rs
-// MetricsSink trait, PrometheusSink, PrometheusExporter, HandlerMetrics, QueueSnapshot
+// MetricsSink trait, PrometheusSink, PrometheusExporter, HandlerMetrics, QueueSnapshot, FanOutMetrics
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+
+use crate::worker_pool::fan_out::BranchResult;
 
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::gauge::Gauge;
@@ -162,6 +164,15 @@ impl SharedPrometheusSink {
         sink.register_gauge("kafpy.consumer.lag", "Consumer lag per partition");
         sink.register_counter("kafpy.dlq.messages", "Messages produced to DLQ");
         sink.register_counter("kafpy.handler.timeout_total", "Handler timeout count");
+        // OBSV-01: Fan-out branch metrics
+        sink.register_histogram(
+            "kafpy.fanout.branch_duration_seconds",
+            "Fan-out branch processing time in seconds",
+        );
+        sink.register_counter(
+            "kafpy.fanout.branch_total",
+            "Fan-out branch completion count",
+        );
         Self {
             inner: Arc::new(Mutex::new(sink)),
         }
@@ -325,6 +336,66 @@ impl DlqMetrics {
             .insert("dlq_topic", dlq_topic)
             .insert("original_topic", original_topic);
         sink.record_counter("kafpy.dlq.messages", &labels.as_slice());
+    }
+}
+
+// ─── Fan-Out Metrics (OBSV-01) ────────────────────────────────────────────────
+
+/// Branch outcome label values (per D-06 from 13-CONTEXT.md).
+const BRANCH_OUTCOME_OK: &str = "ok";
+const BRANCH_OUTCOME_ERROR: &str = "error";
+const BRANCH_OUTCOME_TIMEOUT: &str = "timeout";
+
+/// Fan-out branch metrics recorder — OBSV-01.
+///
+/// Records per-branch latency histogram and branch completion counter.
+/// Labels: fan_out_id (group UUID), branch_name (topic), branch_outcome (ok/error/timeout).
+///
+/// Note: Primary message throughput is NOT double-counted — no fan-out metric
+/// is emitted on the primary dispatch path.
+pub struct FanOutMetrics;
+
+impl FanOutMetrics {
+    /// Record fan-out branch duration histogram: kafpy.fanout.branch_duration_seconds
+    pub fn record_branch_duration(
+        sink: &dyn MetricsSink,
+        fan_out_id: u64,
+        branch_name: &str,
+        branch_outcome: &str,
+        elapsed_secs: f64,
+    ) {
+        let labels = MetricLabels::new()
+            .insert("fan_out_id", fan_out_id.to_string())
+            .insert("branch_name", branch_name)
+            .insert("branch_outcome", branch_outcome);
+        sink.record_histogram(
+            "kafpy.fanout.branch_duration_seconds",
+            elapsed_secs,
+            &labels.as_slice(),
+        );
+    }
+
+    /// Increment fan-out branch completion counter: kafpy.fanout.branch_total
+    pub fn record_branch_completion(
+        sink: &dyn MetricsSink,
+        fan_out_id: u64,
+        branch_name: &str,
+        branch_outcome: &str,
+    ) {
+        let labels = MetricLabels::new()
+            .insert("fan_out_id", fan_out_id.to_string())
+            .insert("branch_name", branch_name)
+            .insert("branch_outcome", branch_outcome);
+        sink.record_counter("kafpy.fanout.branch_total", &labels.as_slice());
+    }
+
+    /// Convert BranchResult to branch_outcome label string.
+    pub fn outcome_from_result(result: &BranchResult) -> &'static str {
+        match result {
+            BranchResult::Ok => BRANCH_OUTCOME_OK,
+            BranchResult::Error { .. } => BRANCH_OUTCOME_ERROR,
+            BranchResult::Timeout { .. } => BRANCH_OUTCOME_TIMEOUT,
+        }
     }
 }
 
