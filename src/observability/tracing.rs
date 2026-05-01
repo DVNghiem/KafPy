@@ -34,6 +34,19 @@ pub trait KafpySpanExt {
 
     /// Creates a `kafpy.dlq.route` span.
     fn kafpy_dlq_route(&self, handler_id: &str, reason: &str, partition: i32) -> Span;
+
+    /// Creates a `kafpy.fanout.branch` span for a fan-out branch.
+    ///
+    /// Fields: fan_out_id, branch_name, parent_trace_id, parent_span_id.
+    /// parent_trace_id and parent_span_id are the trace context of the
+    /// parent dispatch span. If not present, use "none" as placeholder.
+    fn kafpy_fanout_branch_span(
+        &self,
+        fan_out_id: u64,
+        branch_name: &str,
+        parent_trace_id: Option<&str>,
+        parent_span_id: Option<&str>,
+    ) -> Span;
 }
 
 impl KafpySpanExt for Span {
@@ -81,6 +94,22 @@ impl KafpySpanExt for Span {
             handler_id = handler_id,
             reason = reason,
             partition = partition,
+        )
+    }
+
+    fn kafpy_fanout_branch_span(
+        &self,
+        fan_out_id: u64,
+        branch_name: &str,
+        parent_trace_id: Option<&str>,
+        parent_span_id: Option<&str>,
+    ) -> Span {
+        tracing::info_span!(
+            "kafpy.fanout.branch",
+            fan_out_id = %fan_out_id,
+            branch_name = %branch_name,
+            parent_trace_id = %parent_trace_id.unwrap_or("none"),
+            parent_span_id = %parent_span_id.unwrap_or("none"),
         )
     }
 }

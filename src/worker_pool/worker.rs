@@ -361,9 +361,10 @@ pub(crate) async fn worker_loop(
                 let fan_tracker = Arc::new(FanOutTracker::new(fan_out_config.max_fan_out));
                 let mut sink_join_set = JoinSet::new();
                 let sink_topics: Vec<String> = fan_out_config.sinks.iter().map(|s| s.topic.clone()).collect();
-                let ctx_trace_id = trace_id.clone();
-                let ctx_span_id = span_id.clone();
-                let ctx_trace_flags = trace_flags.clone();
+                // Clone trace context once before loop so each iteration can borrow.
+                let parent_trace_id_opt = trace_id.clone();
+                let parent_span_id_opt = span_id.clone();
+                let parent_trace_flags_opt = trace_flags.clone();
 
                 for sink in &fan_out_config.sinks {
                     let tracker = Arc::clone(&fan_tracker);
@@ -372,17 +373,17 @@ pub(crate) async fn worker_loop(
                     let sink_timeout = sink.timeout;
                     let msg_clone = msg.clone();
                     let fan_out_id_clone = fan_out_id;
-                    let sink_trace_id = ctx_trace_id.clone();
-                    let sink_span_id = ctx_span_id.clone();
-                    let sink_trace_flags = ctx_trace_flags.clone();
+                    // Clone trace context for this branch (moves into async block).
+                    let trace_id_clone = parent_trace_id_opt.clone();
+                    let span_id_clone = parent_span_id_opt.clone();
 
                     sink_join_set.spawn(async move {
                         let branch_id = tracker.register_branch();
 
                         // D-07/D-08/D-09: Create branch span and W3C traceparent for this branch.
                         // If parent trace context exists, use it as parent; otherwise generate new trace_id.
-                        let parent_trace_id = sink_trace_id.as_deref();
-                        let parent_span_id = sink_span_id.as_deref();
+                        let parent_trace_id = trace_id_clone.as_deref();
+                        let parent_span_id = span_id_clone.as_deref();
                         let branch_span = tracing::Span::current().kafpy_fanout_branch_span(
                             fan_out_id_clone,
                             sink_topic.as_str(),
