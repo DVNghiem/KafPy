@@ -37,8 +37,15 @@ impl BackpressureAction {
 ///
 /// Implementors define custom behavior when `try_send` fails with `Full`.
 /// The policy receives the topic name and handler metadata for inspection.
+///
+/// The `topic` parameter is the **actual Kafka source topic** from the message,
+/// NOT the handler_id. This enables per-source targeted pause for fan-in scenarios.
 pub(crate) trait BackpressurePolicy: Send + Sync {
     /// Called when a send attempt fails because the handler's queue is full.
+    ///
+    /// The `topic` parameter is the **source topic from the message being dispatched**,
+    /// not the handler_id. Implementors can use this to route PausePartition to the
+    /// specific slow source rather than the fan-in handler key.
     ///
     /// The handler metadata can be inspected for queue_depth, inflight, capacity.
     /// Return the action to take: Drop, Wait, or FuturePausePartition.
