@@ -39,6 +39,7 @@ class Consumer:
         batch_max_wait_ms: int | None = None,
         timeout_ms: int | None = None,
         concurrency: int | None = None,
+        middleware: list | None = None,
     ) -> None:
         """Register a handler for a topic.
 
@@ -50,8 +51,9 @@ class Consumer:
             batch_max_wait_ms: Max wait time per batch in ms (batch modes only).
             timeout_ms: Per-handler execution timeout in milliseconds.
             concurrency: Maximum concurrent executions for this handler. None = no limit.
+            middleware: List of middleware instances (e.g., [Logging(), Metrics()]).
         """
-        self._consumer.add_handler(topic, handler, mode, batch_max_size, batch_max_wait_ms, timeout_ms, concurrency)
+        self._consumer.add_handler(topic, handler, mode, batch_max_size, batch_max_wait_ms, timeout_ms, concurrency, middleware)
 
     def start(self) -> object:
         """Start the consumer. Returns an awaitable coroutine."""
@@ -100,6 +102,50 @@ class Consumer:
             _handler=handler,
             _max_fan_out=max_fan_out,
             _timeout_ms=timeout_ms,
+        )
+
+    def register_fanin(
+        self,
+        handler_key: str,
+        sources: list[str],
+        handler: Callable[[object], None],
+        *,
+        timeout_ms: int | None = None,
+    ) -> "FanInRegistration":
+        """Register a fan-in handler: one callback that receives messages from multiple topics.
+
+        Messages from all source topics are merged into a single round-robin stream
+        and dispatched to the handler in order.
+
+        Args:
+            handler_key: Unique identifier for this handler (used in QueueManager).
+            sources: List of Kafka topic names to subscribe to.
+            handler: Python callable invoked for each message.
+            timeout_ms: Per-handler execution timeout in milliseconds.
+
+        Returns:
+            FanInRegistration with handler_key, fan_in_id, and sources.
+
+        Example::
+
+            reg = consumer.register_fanin(
+                handler_key="aggregator",
+                sources=["topic-a", "topic-b", "topic-c"],
+                handler=my_handler,
+            )
+        """
+        from kafpy.fanout import FanInRegistration
+
+        result = self._consumer.register_fanin(
+            handler_key,
+            sources,
+            handler,
+            timeout_ms,
+        )
+        return FanInRegistration(
+            handler_key=result.handler_key,
+            fan_in_id=result.fan_in_id,
+            sources=result.sources,
         )
 
     def __exit__(

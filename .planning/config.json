@@ -1,17 +1,17 @@
 {
-  "mode": "yolo",
-  "granularity": "standard",
-  "parallelization": true,
-  "commit_docs": true,
-  "model_profile": "balanced",
   "workflow": {
-    "research": true,
-    "plan_check": true,
-    "verifier": true,
-    "nyquist_validation": true,
-    "auto_advance": true
+    "parallelization": true,
+    "auto_advance": false,
+    "discuss_mode": "discuss"
   },
-  "planning": {
-    "sub_repos": []
+  "agents": {
+    "orchestrator": "anthropic/claude-sonnet-4-5",
+    "discusser": "anthropic/claude-sonnet-4-5",
+    "mapper": "google/gemini-2.5-flash",
+    "coder": "anthropic/claude-opus-4-5",
+    "reviewer": "google/gemini-2.5-flash",
+    "researcher": "openai/gpt-4o",
+    "tester": "anthropic/claude-haiku-4-5",
+    "writer": "anthropic/claude-haiku-4-5"
   }
 }

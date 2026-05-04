@@ -5,7 +5,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-__all__ = ["FanOutBuilder", "FanOutRegistration"]
+__all__ = ["FanOutBuilder", "FanOutRegistration", "FanInRegistration"]
+
+
+@dataclass(frozen=True)
+class FanInRegistration:
+    """Result of a fan-in handler registration.
+
+    Attributes:
+        handler_key: The unique identifier for this fan-in handler.
+        fan_in_id: Unique numeric ID generated at registration time.
+        sources: The list of source topics that feed this handler.
+    """
+
+    handler_key: str
+    fan_in_id: int
+    sources: list[str]
 
 
 @dataclass(frozen=True)

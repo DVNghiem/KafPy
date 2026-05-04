@@ -67,15 +67,22 @@ class KafPy:
         self._consumer.stop()
 
     def run(self) -> None:
-        """Run the consumer until stop() is called.
+        """Run the consumer until stop() is called or a signal is received.
 
-        Blocks the current thread. Calls start() internally.
+        Blocks the calling thread by running the async consumer in a new event loop.
+        Use ``await app.start()`` instead if you are already inside an async context
+        (e.g., with ``asyncio.run`` or inside an ASGI framework).
+
+        Example::
+
+            app.run()  # blocks until consumer shuts down
+
+        To run from an async context::
+
+            await app.start()
         """
-        self.start()
-        # Simple blocking loop - proper event loop integration comes later
-        while not self._stopping:
-            import time
-            time.sleep(0.1)
+        import asyncio
+        asyncio.run(self.start())
 
     def handler(
         self,

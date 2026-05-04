@@ -223,9 +223,9 @@ consumer = Consumer(config)
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `max_attempts` | int | `3` | Maximum retry attempts |
-| `base_delay_ms` | int | `100` | Base delay in milliseconds |
-| `max_delay_ms` | int | `10000` | Maximum delay in milliseconds |
-| `jitter_factor` | float | `0.25` | Jitter factor (0.0–1.0) for backoff |
+| `base_delay` | float | `0.1` | Base delay in **seconds** between retries (exponential backoff) |
+| `max_delay` | float \| None | `None` | Maximum delay in **seconds** (None defaults to 30s) |
+| `jitter_factor` | float \| None | `None` | Jitter factor (0.0–1.0) for backoff (None defaults to 0.1) |
 
 #### Observability Configuration
 
@@ -239,8 +239,8 @@ consumer = Consumer(config)
 |-------|------|---------|-------------|
 | `otlp_endpoint` | str \| None | `None` | OTLP collector endpoint URL |
 | `service_name` | str | `"kafpy"` | Service name for tracing/metrics |
-| `sampling_ratio` | float | `0.1` | Trace sampling ratio (0.0–1.0) |
-| `log_format` | str | `"text"` | Log format (`"text"` or `"json"`) |
+| `sampling_ratio` | float | `1.0` | Trace sampling ratio (0.0–1.0) |
+| `log_format` | str | `"pretty"` | Log format (`"pretty"`, `"json"`, or `"simple"`) |
 
 #### Failure Classification
 
@@ -514,11 +514,12 @@ Consumer(config: ConsumerConfig)
 ```
 
 **Methods:**
-- `add_handler(topic: str, handler: callable[[KafkaMessage], None]) -> None`: Register a message handler for a specific topic
-- `async start() -> None`: Start consuming messages (async method)
+- `add_handler(topic: str, handler: callable[[KafkaMessage], None], *, mode=None, batch_max_size=None, batch_max_wait_ms=None, timeout_ms=None, concurrency=None, middleware=None) -> None`: Register a message handler for a specific topic
+- `async start() -> None`: Start consuming messages (async coroutine — use `await consumer.start()` or `asyncio.run(consumer.start())`)
 - `stop() -> None`: Stop the consumer gracefully
 - `status() -> dict`: Get runtime snapshot with consumer state, offsets, and queue depths
-- `set_handler_timeout(ms: int) -> None`: Set handler execution timeout in milliseconds (overrides config default)
+- `register_fanout(group_name, sink_topics, handler, *, max_fan_out=None, timeout_ms=None) -> FanOutBuilder`: Register a fan-out group
+- `register_fanin(handler_key, sources, handler, *, timeout_ms=None) -> FanInRegistration`: Register a single handler for multiple source topics
 
 ## Advanced Topics
 
@@ -545,10 +546,10 @@ from kafpy import ConsumerConfig, RetryConfig, ObservabilityConfig
 
 config = ConsumerConfig(
     # ... other params ...
-    default_retry_policy=RetryConfig(
+    retry_policy=RetryConfig(
         max_attempts=5,
-        base_delay_ms=200,
-        max_delay_ms=30000,
+        base_delay=0.2,        # 200ms in seconds
+        max_delay=30.0,        # 30s in seconds
         jitter_factor=0.3,
     ),
     dlq_topic_prefix="dlq.",           # Prefix for DLQ topics

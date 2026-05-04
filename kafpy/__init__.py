@@ -46,32 +46,9 @@ __version__ = "0.1.0"
 #     )
 #     logging.getLogger("kafpy").setLevel(logging.DEBUG)
 #
-import logging as _logging
-_logger = _logging.getLogger("kafpy")
-if not _logger.hasHandlers():
-    _handler = _logging.StreamHandler()
-    _handler.setFormatter(_logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    ))
-    _logger.addHandler(_handler)
-_logger.setLevel(_logging.INFO)
-
-# Initialize KafPy's Python logging system.
-# Users can customize logging via Python's standard logging module:
-#
-#     import logging
-#     logging.basicConfig(
-#         level=logging.INFO,
-#         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-#     )
-#
-# KafPy logs through the "kafpy" logger. To see more detail:
-#
-#     logging.getLogger("kafpy").setLevel(logging.DEBUG)
 import logging
 _logger = logging.getLogger("kafpy")
 _logger.setLevel(logging.INFO)
-# If no handlers are configured, add a basic handler to stderr
 if not _logger.handlers:
     _handler = logging.StreamHandler()
     _handler.setFormatter(logging.Formatter(
@@ -116,6 +93,7 @@ from .handlers import (
     KafkaMessage,
     HandlerContext,
     HandlerResult,
+    HandlerAction,
     register_handler,
     stream_handler,
 )
@@ -127,7 +105,7 @@ from .consumer import Consumer
 from .runtime import KafPy
 
 # Fan-out builder (Phase 13)
-from .fanout import FanOutBuilder, FanOutRegistration
+from .fanout import FanOutBuilder, FanOutRegistration, FanInRegistration
 
 # Exception types (Phase 36)
 from .exceptions import (
@@ -228,6 +206,7 @@ __all__ = [
     # Fan-out builder — Phase 13
     "FanOutBuilder",
     "FanOutRegistration",
+    "FanInRegistration",
     # Handler types and registration — Phase 35/36
     "KafkaMessage",
     "HandlerContext",

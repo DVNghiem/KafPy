@@ -84,6 +84,11 @@ fn _kafpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<pyconfig::PyFailureCategory>()?;
     m.add_class::<pyconfig::PyFailureReason>()?;
 
+    // Fan-out and fan-in registration result types
+    m.add_class::<pyconsumer::FanOutRegistration>()?;
+    m.add_function(wrap_pyfunction!(pyconsumer::get_runtime_snapshot, m.py())?)?;
+    m.add_function(wrap_pyfunction!(pyconsumer::register_status_callback, m.py())?)?;
+
     // Benchmark PyO3 functions
     m.add_function(wrap_pyfunction!(run_scenario_py, m.py())?)?;
     m.add_function(wrap_pyfunction!(run_hardening_checks_py, m.py())?)?;

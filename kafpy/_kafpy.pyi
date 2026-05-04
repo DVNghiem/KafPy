@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 # ─── Consumer Configuration ────────────────────────────────────────────────────
 
@@ -129,15 +129,29 @@ class KafkaMessage:
 # ─── Consumer ──────────────────────────────────────────────────────────────────
 
 @dataclass
+class FanOutRegistration:
+    group_name: str
+    fan_out_id: int
+    sink_topics: list[str]
+
+@dataclass
+class FanInRegistration:
+    handler_key: str
+    fan_in_id: int
+    sources: list[str]
+
+@dataclass
 class Consumer:
     config: ConsumerConfig
 
     def __init__(self, config: ConsumerConfig) -> None: ...
-    def add_handler(self, topic: str, handler: callable[[KafkaMessage], None], *, mode: str | None = None, batch_max_size: int | None = None, batch_max_wait_ms: int | None = None, timeout_ms: int | None = None, concurrency: int | None = None) -> None: ...
+    def add_handler(self, topic: str, handler: callable[[KafkaMessage], None], *, mode: str | None = None, batch_max_size: int | None = None, batch_max_wait_ms: int | None = None, timeout_ms: int | None = None, concurrency: int | None = None, middleware: list | None = None) -> None: ...
     async def start(self) -> None: ...
     def stop(self) -> None: ...
     def status(self) -> dict: ...
-    def __enter__(self) -> Consumer: ...
+    def register_fanout(self, group_name: str, sink_topics: list[str], callback: callable, max_fan_out: int | None = None, timeout_ms: int | None = None) -> "FanOutRegistration": ...
+    def register_fanin(self, handler_key: str, sources: list[str], callback: callable, timeout_ms: int | None = None) -> "FanInRegistration": ...
+    def __enter__(self) -> "Consumer": ...
     def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, traceback: Any) -> bool: ...
 
 
@@ -257,6 +271,23 @@ class PyFailureReason:
 
     def __init__(self, category: PyFailureCategory, description: str) -> None: ...
     def __repr__(self) -> str: ...
+
+
+# ─── Runtime Introspection ─────────────────────────────────────────────────────
+
+def get_runtime_snapshot() -> dict: ...
+"""Return the current runtime snapshot as a Python dict.
+
+Contains worker_states, queue_depths, accumulator_info, and consumer_lag_summary.
+Zero-cost when not called — no atomic updates on the hot path.
+"""
+
+def register_status_callback(callback: callable) -> None: ...
+"""Register a Python callable invoked on every runtime snapshot update.
+
+The callback receives a single dict argument (same structure as get_runtime_snapshot()).
+This is opt-in — no callbacks are invoked unless one is registered.
+"""
 
 
 # ─── Benchmark Functions ───────────────────────────────────────────────────────
