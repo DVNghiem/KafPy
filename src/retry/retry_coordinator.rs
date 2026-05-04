@@ -9,7 +9,6 @@
 use crate::consumer::config::ConsumerConfig;
 use crate::failure::FailureReason;
 use crate::retry::RetryPolicy;
-use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -21,71 +20,25 @@ use std::time::Duration;
 /// presence/absence to indicate state. The enum makes illegal states
 /// unrepresentable and enables exhaustive match checking.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum RetryState {
     /// Message is being tracked for retry attempts.
     Retrying {
-        /// Topic name.
-        topic: String,
-        /// Partition number.
-        partition: i32,
-        /// Message offset.
-        offset: i64,
         /// Current attempt number (1-based).
         attempt: usize,
-        /// Most recent failure reason.
-        last_failure: FailureReason,
-        /// Time of first failure attempt.
-        first_failure: DateTime<Utc>,
     },
     /// Message has exhausted all retry attempts and should be routed to DLQ.
-    Exhausted {
-        /// Topic name.
-        topic: String,
-        /// Partition number.
-        partition: i32,
-        /// Message offset.
-        offset: i64,
-        /// Final failure reason that caused exhaustion.
-        last_failure: FailureReason,
-        /// When the message first failed.
-        first_failure: DateTime<Utc>,
-    },
+    Exhausted,
 }
 
 impl RetryState {
-    /// Returns the topic for this retry state.
-    #[allow(dead_code)]
-    pub fn topic(&self) -> &str {
-        match self {
-            RetryState::Retrying { topic, .. } => topic,
-            RetryState::Exhausted { topic, .. } => topic,
-        }
-    }
 
-    /// Returns the partition for this retry state.
-    #[allow(dead_code)]
-    pub fn partition(&self) -> i32 {
-        match self {
-            RetryState::Retrying { partition, .. } => *partition,
-            RetryState::Exhausted { partition, .. } => *partition,
-        }
-    }
 
-    /// Returns the offset for this retry state.
-    #[allow(dead_code)]
-    pub fn offset(&self) -> i64 {
-        match self {
-            RetryState::Retrying { offset, .. } => *offset,
-            RetryState::Exhausted { offset, .. } => *offset,
-        }
-    }
 
     /// Returns the attempt count (only valid for Retrying state, 0 for Exhausted).
     pub fn attempt(&self) -> usize {
         match self {
             RetryState::Retrying { attempt, .. } => *attempt,
-            RetryState::Exhausted { .. } => 0,
+            RetryState::Exhausted => 0,
         }
     }
 }
@@ -113,8 +66,8 @@ impl RetryCoordinator {
         }
     }
 
-    /// Create with explicit policy (for testing).
-    #[allow(dead_code)]
+    /// Create with explicit policy (for testing only).
+    #[cfg(test)]
     pub fn with_policy(policy: RetryPolicy) -> Self {
         Self {
             state: Mutex::new(HashMap::new()),
@@ -145,48 +98,29 @@ impl RetryCoordinator {
         let mut state_guard = self.state.lock();
 
         // Check if already exhausted (idempotent - calling record_failure after exhaustion)
-        if let Some(RetryState::Exhausted { .. }) = state_guard.get(&key) {
+        if let Some(RetryState::Exhausted) = state_guard.get(&key) {
             return (false, true, None);
         }
 
         match state_guard.entry(key) {
             Entry::Occupied(mut entry) => {
                 let retry_state = entry.get();
-                if let RetryState::Retrying {
-                    attempt,
-                    last_failure: _,
-                    first_failure,
-                    ..
-                } = retry_state
-                {
+                if let RetryState::Retrying { attempt } = retry_state {
                     let new_attempt = *attempt + 1;
 
                     if new_attempt >= self.default_policy.max_attempts {
                         // Max attempts exceeded → transition to Exhausted
-                        let new_state = RetryState::Exhausted {
-                            topic: topic.to_string(),
-                            partition,
-                            offset,
-                            last_failure: reason.clone(),
-                            first_failure: *first_failure,
-                        };
+                        let new_state = RetryState::Exhausted;
                         entry.insert(new_state);
                         return (false, true, None);
                     }
 
-                    // Increment attempt and update failure
+                    // Increment attempt
                     let schedule = self.default_policy.schedule();
                     let delay = schedule.next_delay(new_attempt - 1); // attempt 1 = first retry delay
 
                     // Update to new retry state with incremented attempt
-                    let new_state = RetryState::Retrying {
-                        topic: topic.to_string(),
-                        partition,
-                        offset,
-                        attempt: new_attempt,
-                        last_failure: reason.clone(),
-                        first_failure: *first_failure,
-                    };
+                    let new_state = RetryState::Retrying { attempt: new_attempt };
                     entry.insert(new_state);
 
                     (true, false, Some(delay))
@@ -196,18 +130,9 @@ impl RetryCoordinator {
                 }
             }
             Entry::Vacant(entry) => {
-                // First failure for this message
-                let first_failure = Utc::now();
-
                 if 1 >= self.default_policy.max_attempts {
                     // Only one attempt allowed and it failed
-                    let new_state = RetryState::Exhausted {
-                        topic: topic.to_string(),
-                        partition,
-                        offset,
-                        last_failure: reason.clone(),
-                        first_failure,
-                    };
+                    let new_state = RetryState::Exhausted;
                     entry.insert(new_state);
                     return (false, true, None);
                 }
@@ -216,14 +141,7 @@ impl RetryCoordinator {
                 let schedule = self.default_policy.schedule();
                 let delay = schedule.next_delay(0); // attempt 1 = first retry delay
 
-                let new_state = RetryState::Retrying {
-                    topic: topic.to_string(),
-                    partition,
-                    offset,
-                    attempt: 1,
-                    last_failure: reason.clone(),
-                    first_failure,
-                };
+                let new_state = RetryState::Retrying { attempt: 1 };
                 entry.insert(new_state);
 
                 (true, false, Some(delay))

@@ -13,24 +13,19 @@ pub struct HeaderRule {
     pub handler_id: crate::routing::HandlerId,
 }
 
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct HeaderRouter {
+#[allow(unused)]
+pub(crate) struct HeaderRouter {
     rules: Arc<[HeaderRule]>,
 }
 
 impl HeaderRouter {
-    #[allow(dead_code)]
-    pub fn new(rules: Vec<HeaderRule>) -> Self {
+    #[allow(unused)]
+    pub(crate) fn new(rules: Vec<HeaderRule>) -> Self {
         Self {
             rules: rules.into(),
         }
     }
 
-    #[allow(dead_code)]
-    pub fn rule_count(&self) -> usize {
-        self.rules.len()
-    }
 }
 
 impl Router for HeaderRouter {

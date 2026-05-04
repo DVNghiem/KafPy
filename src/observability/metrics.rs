@@ -207,47 +207,6 @@ impl MetricsSink for SharedPrometheusSink {
     }
 }
 
-// ─── Prometheus Exporter ───────────────────────────────────────────────────────
-
-use prometheus_client::encoding::text::encode;
-
-/// Exposes metrics in Prometheus text format for the `/metrics` endpoint.
-///
-/// Backed by a `SharedPrometheusSink`.
-#[allow(dead_code)]
-#[derive(Clone)]
-pub struct PrometheusExporter {
-    sink: SharedPrometheusSink,
-}
-
-#[allow(dead_code)]
-impl PrometheusExporter {
-    /// Creates a new exporter backed by a fresh `SharedPrometheusSink`.
-    pub fn new() -> Self {
-        Self {
-            sink: SharedPrometheusSink::new(),
-        }
-    }
-
-    /// Returns the backing sink for recording metrics.
-    pub fn sink(&self) -> &SharedPrometheusSink {
-        &self.sink
-    }
-
-    /// Returns the current metrics as a Prometheus text format string.
-    pub fn metrics(&self) -> String {
-        let guard = self.sink.inner.lock().unwrap();
-        let mut buffer = String::new();
-        encode(&mut buffer, &guard.registry).expect("prometheus encoding failed");
-        buffer
-    }
-}
-
-impl Default for PrometheusExporter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 // ─── Handler Metrics ───────────────────────────────────────────────────────────
 
@@ -423,19 +382,6 @@ impl Default for QueueSnapshot {
 
 /// No-op metrics sink used when no metrics backend is configured.
 ///
-/// This is a zero-cost abstraction — all methods are no-ops.
-pub mod noop_sink {
-    /// A metrics sink that discards all recordings.
-    #[allow(dead_code)]
-    pub struct NoopSink;
-
-    impl super::MetricsSink for NoopSink {
-        fn record_counter(&self, _name: &str, _labels: &[(&str, &str)]) {}
-        fn record_histogram(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
-        fn record_gauge(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
-    }
-}
-
 // ─── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -468,11 +414,4 @@ mod tests {
         sink.record_gauge("kafpy.queue.depth", 5.0, &labels.as_slice());
     }
 
-    #[test]
-    fn prometheus_exporter_produces_output() {
-        let exporter = PrometheusExporter::new();
-        let output = exporter.metrics();
-        // Should contain at least some registered metric names
-        assert!(output.contains("kafpy") || output.len() > 0);
-    }
 }

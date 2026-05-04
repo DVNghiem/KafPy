@@ -57,24 +57,19 @@ impl KeyRule {
     }
 }
 
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[allow(unused)]
 pub struct KeyRouter {
     rules: Arc<[KeyRule]>,
 }
 
 impl KeyRouter {
-    #[allow(dead_code)]
+    #[allow(unused)]
     pub fn new(rules: Vec<KeyRule>) -> Self {
         Self {
             rules: rules.into(),
         }
     }
 
-    #[allow(dead_code)]
-    pub fn rule_count(&self) -> usize {
-        self.rules.len()
-    }
 }
 
 impl Router for KeyRouter {

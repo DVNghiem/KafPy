@@ -90,6 +90,9 @@ where
     crate::routing::context::RoutingContext<'static>: Send + Sync,
     crate::routing::decision::RoutingDecision: Send + Sync,
     crate::routing::key::KeyRouter: Send + Sync,
+    crate::routing::header::HeaderRouter: Send + Sync,
+    crate::routing::topic_pattern::TopicPatternRouter: Send + Sync,
+    crate::routing::python_router::PythonRouter: Send + Sync,
 {
 }
 

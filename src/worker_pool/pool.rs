@@ -77,11 +77,6 @@ impl WorkerPool {
             )
         });
 
-        // Check if any handler is StreamingAsync mode
-        let has_streaming = handlers.values().any(|h| {
-            matches!(h.mode(), crate::python::handler::HandlerMode::StreamingAsync)
-        });
-
         // Share the handler map across all workers via Arc
         let handlers_arc = Arc::new(handlers);
 
@@ -119,16 +114,6 @@ impl WorkerPool {
                     worker_pool_state,
                     prometheus_sink.clone(),
                 ));
-            } else if has_streaming {
-                // StreamingAsync workers use streaming_worker_loop
-                // They need a StreamConsumer for their subscription
-                // For now, spawn a dummy worker that logs - real integration needs consumer injection
-                tracing::info!(
-                    worker_id = worker_id,
-                    "spawning streaming worker (requires consumer injection)"
-                );
-                // TODO: Streaming workers need StreamConsumer injection via WorkerPool::new
-                // This will be implemented when streaming consumer integration is added
             } else {
                 join_set.spawn(worker_loop(
                     rx,

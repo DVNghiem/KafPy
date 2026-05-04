@@ -32,9 +32,6 @@ pub struct HandlerMetadata {
     pub middleware: Option<Vec<Arc<Py<PyAny>>>>,
     /// Fan-out configuration for this handler. None means not a fan-out sink.
     pub fan_out_config: Option<Arc<FanOutConfig>>,
-    /// Fan-in group ID. Set when the handler was registered via register_fanin().
-    /// None when not a fan-in handler.
-    pub fan_in_id: Option<u64>,
 }
 
 impl HandlerMetadata {
@@ -48,7 +45,6 @@ impl HandlerMetadata {
         concurrency: Option<usize>,
         middleware: Option<Vec<Py<PyAny>>>,
         fan_out_config: Option<Arc<FanOutConfig>>,
-        fan_in_id: Option<u64>,
     ) -> Self {
         Self {
             callback,
@@ -59,7 +55,6 @@ impl HandlerMetadata {
             concurrency,
             middleware: middleware.map(|v| v.into_iter().map(Arc::new).collect()),
             fan_out_config,
-            fan_in_id,
         }
     }
 }
@@ -86,11 +81,7 @@ pub struct PyConsumer {
     handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
     /// Stores PythonHandler for fan-out sinks (topic -> handler with FanOutConfig attached).
     /// Separate from handlers map since these need FanOutConfig set before RuntimeBuilder runs.
-    #[allow(dead_code)]
     fan_out_handlers: Arc<Mutex<HashMap<String, Arc<FanOutHandler>>>>,
-    /// Stores PythonHandler for fan-in handlers (handler_key -> handler with fan_in_id).
-    #[allow(dead_code)]
-    fan_in_handlers: Arc<Mutex<HashMap<String, Arc<crate::python::handler::PythonHandler>>>>,
     /// Shared shutdown token — stop() cancels this to signal workers to exit.
     shutdown_token: tokio_util::sync::CancellationToken,
 }
@@ -103,7 +94,6 @@ impl PyConsumer {
             config,
             handlers: Arc::new(Mutex::new(HashMap::new())),
             fan_out_handlers: Arc::new(Mutex::new(HashMap::new())),
-            fan_in_handlers: Arc::new(Mutex::new(HashMap::new())),
             shutdown_token: tokio_util::sync::CancellationToken::new(),
         }
     }
@@ -143,7 +133,6 @@ impl PyConsumer {
             concurrency,
             middleware,
             None, // no fan-out config
-            None, // no fan_in_id
         );
         if let Ok(mut handlers) = self.handlers.lock() {
             handlers.insert(topic, meta);
@@ -234,37 +223,6 @@ impl PyConsumer {
         })
     }
 
-    /// Registers a fan-in handler: a single Python callback that receives messages
-    /// from multiple Kafka topics in round-robin order.
-    ///
-    /// Args:
-    ///     handler_key: Identifier for this handler (used in QueueManager).
-    ///     sources: List of topic names to subscribe to.
-    ///     callback: Python callable invoked for each message.
-    ///     timeout_ms: Per-handler execution timeout in milliseconds.
-    ///
-    /// Returns a `FanInRegistration` with handler_key, fan_in_id, and sources.
-    #[pyo3(signature = (handler_key, sources, callback, timeout_ms=None))]
-    pub fn register_fanin(
-        &mut self,
-        handler_key: String,
-        sources: Vec<String>,
-        callback: Bound<'_, PyAny>,
-        timeout_ms: Option<u64>,
-    ) -> PyResult<crate::python::fan_in_bridge::FanInRegistration> {
-        use crate::python::fan_in_bridge::FanInBuilderRust;
-        use std::sync::Arc;
-
-        let mode = HandlerMode::from_opt_str(None); // sync by default
-        let builder = FanInBuilderRust::new(
-            handler_key.clone(),
-            sources.clone(),
-            Arc::new(callback.unbind()),
-            mode,
-            timeout_ms,
-        );
-        Ok(builder.register_into_consumer(self))
-    }
 }
 
 // ─── Internal methods (not PyO3 wrapped) ───────────────────────────────────────
@@ -295,7 +253,6 @@ impl PyConsumer {
             None,
             None,
             Some(Arc::new(fan_out_config)),
-            None, // no fan_in_id
         );
         // Insert metadata into handlers map (RuntimeBuilder will look up fan_out_config)
         if let Ok(mut handlers) = self.handlers.lock() {
@@ -314,49 +271,6 @@ impl PyConsumer {
         self.fan_out_handlers
             .lock()
             .expect("fan_out_handlers poisoned")
-            .iter()
-            .map(|(k, v)| (k.clone(), Arc::clone(v)))
-            .collect()
-    }
-
-    /// Internal method used by FanInBuilderRust to register a fan-in handler.
-    pub fn add_handler_with_fan_in(
-        &mut self,
-        handler_key: String,
-        handler: std::sync::Arc<crate::python::handler::PythonHandler>,
-        fan_in_id: u64,
-    ) {
-        use std::sync::Arc;
-
-        // For fan-in handlers, the actual handler is stored in fan_in_handlers.
-        // HandlerMetadata.callback is set to PyNone as a marker.
-        let py_none = unsafe { Python::assume_attached() }.None();
-        let meta = HandlerMetadata::new(
-            Arc::new(py_none),
-            crate::python::handler::HandlerMode::SingleSync,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None, // no fan-out config
-            Some(fan_in_id),
-        );
-        if let Ok(mut handlers) = self.handlers.lock() {
-            handlers.insert(handler_key.clone(), meta);
-        }
-        if let Ok(mut fan_in_handlers) = self.fan_in_handlers.lock() {
-            fan_in_handlers.insert(handler_key, handler);
-        }
-    }
-
-    /// Exposes the fan-in handlers map for RuntimeBuilder to consume.
-    pub fn get_fan_in_handlers(
-        &self,
-    ) -> std::collections::HashMap<String, std::sync::Arc<crate::python::handler::PythonHandler>> {
-        self.fan_in_handlers
-            .lock()
-            .expect("fan_in_handlers poisoned")
             .iter()
             .map(|(k, v)| (k.clone(), Arc::clone(v)))
             .collect()

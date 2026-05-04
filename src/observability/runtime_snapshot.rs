@@ -170,22 +170,6 @@ impl WorkerPoolState {
         self.states.read().clone()
     }
 
-    /// Returns counts of idle / active / busy workers.
-    #[allow(dead_code)]
-    pub fn worker_counts(&self) -> (usize, usize, usize) {
-        let guard = self.states.read();
-        let mut idle = 0;
-        let mut active = 0;
-        let mut busy = 0;
-        for state in guard.values() {
-            match state {
-                WorkerStatus::Idle => idle += 1,
-                WorkerStatus::Active { .. } => active += 1,
-                WorkerStatus::Busy { .. } => busy += 1,
-            }
-        }
-        (idle, active, busy)
-    }
 }
 
 // ─── StatusCallbackRegistry ──────────────────────────────────────────────────
@@ -296,14 +280,6 @@ impl RuntimeSnapshotTask {
         task
     }
 
-    /// Start the polling task (self-owned; does not block).
-    #[allow(dead_code)]
-    pub fn start(self: Arc<Self>) {
-        let this = Arc::clone(&self);
-        tokio::spawn(async move {
-            this.run().await;
-        });
-    }
 
     /// Returns a cheap clone of the current snapshot.
     pub fn get_snapshot(&self) -> RuntimeSnapshot {
