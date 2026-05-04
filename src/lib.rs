@@ -44,14 +44,8 @@ pub(crate) mod dlq;
 // Observability — metrics sink, metric labels, handler metrics, queue snapshots
 pub(crate) mod observability;
 
-// Benchmark infrastructure — measurement types, latency/throughput tracking
-pub(crate) mod benchmark;
-
 // Routing — zero-copy context, decision enum, router trait, and concrete routers
 pub(crate) mod routing;
-
-// Logging — internal logger initialization used by other modules
-mod logging;
 
 // Runtime assembly — RuntimeBuilder for composing pure-Rust consumer core
 pub(crate) mod runtime;
@@ -65,14 +59,8 @@ use kafka_message::KafkaMessage;
 use produce::PyProducer;
 use pyconsumer::PyConsumer;
 
-use benchmark::hardening::HardeningRunner;
-use benchmark::results::BenchmarkResult;
-use benchmark::runner::BenchmarkRunner;
-
 #[pymodule]
 fn _kafpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Initialize logging (no-op — Python logging is configured by user)
-    crate::logging::init();
 
     m.add_class::<KafkaMessage>()?;
     m.add_class::<PyConsumer>()?;
@@ -89,116 +77,7 @@ fn _kafpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pyconsumer::get_runtime_snapshot, m.py())?)?;
     m.add_function(wrap_pyfunction!(pyconsumer::register_status_callback, m.py())?)?;
 
-    // Benchmark PyO3 functions
-    m.add_function(wrap_pyfunction!(run_scenario_py, m.py())?)?;
-    m.add_function(wrap_pyfunction!(run_hardening_checks_py, m.py())?)?;
-
     Ok(())
-}
-
-// ─── PyO3 benchmark bindings ────────────────────────────────────────────────────
-
-/// Runs a benchmark scenario and returns the result as a JSON string.
-///
-/// Args:
-///     scenario_name: One of "throughput", "latency", "failure", "batch_vs_sync", "async_vs_sync"
-///     config_json: JSON configuration for the scenario
-///
-/// Returns:
-///     JSON string with BenchmarkResult fields
-#[pyfunction]
-fn run_scenario_py(_py: Python<'_>, scenario_name: &str, config_json: &str) -> PyResult<String> {
-    // Deserialize scenario config
-    let scenario: Box<dyn benchmark::scenarios::Scenario> = match scenario_name {
-        "throughput" => {
-            match serde_json::from_str::<benchmark::scenarios::ThroughputScenario>(config_json) {
-                Ok(cfg) => Box::new(cfg),
-                Err(e) => {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "invalid config for throughput scenario: {e}"
-                    )))
-                }
-            }
-        }
-        "latency" => {
-            match serde_json::from_str::<benchmark::scenarios::LatencyScenario>(config_json) {
-                Ok(cfg) => Box::new(cfg),
-                Err(e) => {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "invalid config for latency scenario: {e}"
-                    )))
-                }
-            }
-        }
-        _ => {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("unknown scenario '{scenario_name}', expected one of: throughput, latency, failure, batch_vs_sync, async_vs_sync")
-            ));
-        }
-    };
-
-    // Run benchmark synchronously on a tokio runtime
-    let rt = tokio::runtime::Runtime::new().map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create tokio runtime: {e}"))
-    })?;
-    let result = rt.block_on(async {
-        let runner = BenchmarkRunner::new(None);
-        runner.run_scenario(scenario).await
-    });
-
-    match result {
-        Ok(r) => {
-            // Build JSON dict manually to avoid extra serde overhead
-            let json = serde_json::json!({
-                "scenario_name": r.scenario_config.scenario_name,
-                "total_messages": r.total_messages,
-                "duration_ms": r.duration_ms,
-                "throughput_msg_s": r.throughput_msg_s,
-                "latency_p50_ms": r.latency_p50_ms,
-                "latency_p95_ms": r.latency_p95_ms,
-                "latency_p99_ms": r.latency_p99_ms,
-                "error_rate": r.error_rate,
-                "memory_delta_bytes": r.memory_delta_bytes,
-                "timestamp_ms": r.timestamp_ms,
-            });
-            Ok(serde_json::to_string(&json).unwrap())
-        }
-        Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
-            "benchmark run failed: {e}"
-        ))),
-    }
-}
-
-/// Runs hardening checks against a benchmark result and returns validation results as JSON.
-///
-/// Args:
-///     result_json: JSON string with BenchmarkResult fields
-///
-/// Returns:
-///     JSON array of ValidationResult objects
-#[pyfunction]
-fn run_hardening_checks_py(_py: Python<'_>, result_json: &str) -> PyResult<String> {
-    let result: BenchmarkResult = serde_json::from_str(result_json).map_err(|e| {
-        pyo3::exceptions::PyValueError::new_err(format!("invalid result JSON: {e}"))
-    })?;
-
-    let validations = HardeningRunner::run_all(&result);
-
-    let json_array: Vec<serde_json::Value> = validations
-        .iter()
-        .map(|v| {
-            serde_json::json!({
-                "check_name": v.check_name,
-                "passed": v.passed,
-                "details": v.details,
-                "suggestions": v.suggestions,
-            })
-        })
-        .collect();
-
-    serde_json::to_string(&json_array).map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("failed to serialize results: {e}"))
-    })
 }
 
 // ─── Compile-time Send+Sync guarantees ─────────────────────────────────────────

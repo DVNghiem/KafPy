@@ -47,6 +47,44 @@ __version__ = "0.1.0"
 #     logging.getLogger("kafpy").setLevel(logging.DEBUG)
 #
 import logging
+
+# Configuration classes (Python wrapper, Phase 34)
+from .config import (
+    ConsumerConfig,
+    RoutingConfig,
+    RetryConfig,
+    BatchConfig,
+    ConcurrencyConfig,
+    ObservabilityConfig,
+    FailureCategory,
+    FailureReason,
+)
+
+# Handler types and registration (Phase 35/36)
+from .handlers import (
+    KafkaMessage,
+    HandlerContext,
+    HandlerResult,
+    HandlerAction,
+)
+
+# Consumer wrapper (Phase 35)
+from .consumer import Consumer
+
+# Runtime with KafPy class (Phase 35)
+from .runtime import KafPy
+
+# Fan-out builder (Phase 13)
+from .fanout import FanOutBuilder, FanOutRegistration, FanInRegistration
+
+# Exception types (Phase 36)
+from .exceptions import (
+    KafPyError,
+    ConsumerError,
+    HandlerError,
+    ConfigurationError,
+)
+
 _logger = logging.getLogger("kafpy")
 _logger.setLevel(logging.INFO)
 if not _logger.handlers:
@@ -75,48 +113,6 @@ except ModuleNotFoundError:
     PyObservabilityConfig = None  # type: ignore
     PyFailureCategory = None  # type: ignore
     PyFailureReason = None  # type: ignore
-
-# Configuration classes (Python wrapper, Phase 34)
-from .config import (
-    ConsumerConfig,
-    RoutingConfig,
-    RetryConfig,
-    BatchConfig,
-    ConcurrencyConfig,
-    ObservabilityConfig,
-    FailureCategory,
-    FailureReason,
-)
-
-# Handler types and registration (Phase 35/36)
-from .handlers import (
-    KafkaMessage,
-    HandlerContext,
-    HandlerResult,
-    HandlerAction,
-    register_handler,
-    stream_handler,
-)
-
-# Consumer wrapper (Phase 35)
-from .consumer import Consumer
-
-# Runtime with KafPy class (Phase 35)
-from .runtime import KafPy
-
-# Fan-out builder (Phase 13)
-from .fanout import FanOutBuilder, FanOutRegistration, FanInRegistration
-
-# Exception types (Phase 36)
-from .exceptions import (
-    KafPyError,
-    ConsumerError,
-    HandlerError,
-    ConfigurationError,
-)
-
-# Benchmark types (Phase 43)
-from .benchmark import BenchmarkResult
 
 
 class BaseMiddleware:
@@ -189,8 +185,6 @@ __all__ = [
     "PyObservabilityConfig",
     "PyFailureCategory",
     "PyFailureReason",
-    # Benchmark result types — Phase 43
-    "BenchmarkResult",
     # Configuration types — Phase 34
     "ConsumerConfig",
     "RoutingConfig",
@@ -212,8 +206,6 @@ __all__ = [
     "HandlerContext",
     "HandlerResult",
     "HandlerAction",
-    "register_handler",
-    "stream_handler",
     # Exception types — Phase 36
     "KafPyError",
     "ConsumerError",

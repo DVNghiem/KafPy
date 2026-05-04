@@ -86,7 +86,6 @@ class FanOutBuilder:
         Returns:
             FanOutRegistration with group_name, fan_out_id, sink_topics.
         """
-        import kafpy._kafpy as _kafpy
 
         result = self._consumer._consumer.register_fanout(
             self._group_name,

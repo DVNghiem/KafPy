@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 # ─── Consumer Configuration ────────────────────────────────────────────────────
 
@@ -288,9 +288,3 @@ def register_status_callback(callback: callable) -> None: ...
 The callback receives a single dict argument (same structure as get_runtime_snapshot()).
 This is opt-in — no callbacks are invoked unless one is registered.
 """
-
-
-# ─── Benchmark Functions ───────────────────────────────────────────────────────
-
-def run_scenario_py(scenario_name: str, config_json: str) -> str: ...
-def run_hardening_checks_py(result_json: str) -> str: ...

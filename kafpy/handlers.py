@@ -1,13 +1,10 @@
-"""Handler types and registration for KafPy."""
+"""Handler types for KafPy."""
 
 from __future__ import annotations
 
-import inspect
 from dataclasses import dataclass
-from typing import Callable
 
 from enum import Enum
-from .config import FailureCategory, FailureReason
 from .exceptions import HandlerError
 
 __all__ = [
@@ -15,10 +12,6 @@ __all__ = [
     "HandlerContext",
     "HandlerResult",
     "HandlerAction",
-    "FailureCategory",
-    "FailureReason",
-    "register_handler",
-    "stream_handler",
 ]
 
 
@@ -77,118 +70,6 @@ class HandlerResult:
                 f"Invalid action {self.action!r}. Must be one of: "
                 f"{[e.value for e in HandlerAction]}"
             )
-
-
-def register_handler(
-    topic: str,
-    handler: Callable,
-    *,
-    routing: object | None = None,
-) -> None:
-    """Register a handler for a topic.
-
-    Args:
-        topic: The Kafka topic to handle.
-        handler: The callable to invoke for messages on this topic.
-        routing: Optional routing configuration.
-
-    Raises:
-        ValueError: If the handler is not callable.
-    """
-    if not callable(handler):
-        raise ValueError(f"handler must be callable, got {type(handler).__name__}")
-
-    # Detect handler type via callable inspection (D-02)
-    if inspect.iscoroutinefunction(handler):
-        handler_type = "async"
-    elif inspect.isasyncgenfunction(handler):
-        handler_type = "batch_async"
-    elif inspect.isgeneratorfunction(handler):
-        handler_type = "batch_sync"
-    else:
-        handler_type = "sync"
-
-
-def stream_handler(
-    topic: str,
-    *,
-    name: str | None = None,
-    retries: int | None = None,
-    timeout: float | None = None,
-    middleware: list | None = None,
-):
-    """Decorator for registering a persistent async iterable handler.
-
-    Unlike @handler which processes single messages, @stream_handler
-    creates a long-lived handler that continuously yields messages
-    from Kafka until stopped.
-
-    The decorated function must be an async generator::
-
-        @stream_handler(topic="my-topic")
-        async def handler(msg, ctx):
-            async for msg in kafka_consumer:
-                await process(msg)
-                yield  # checkpoint for backpressure
-
-    Args:
-        topic: Kafka topic to subscribe to.
-        name: Optional handler name for observability.
-        retries: Number of retry attempts on failure.
-        timeout: Handler execution timeout in seconds.
-        middleware: List of middleware instances (Logging, Metrics).
-
-    Returns:
-        Decorated async generator function.
-
-    Raises:
-        TypeError: If the decorated function is not an async generator.
-    """
-    def decorator(func):
-        # Detect async generator — async generators return False for iscoroutinefunction
-        # but True for isasyncgenfunction
-        if not inspect.isasyncgenfunction(func):
-            raise TypeError("@stream_handler requires an async generator function")
-
-        handler_name = name or getattr(func, "__name__", "stream_handler")
-
-        # Register with streaming_async mode
-        _register_handler(
-            topic=topic,
-            handler=func,
-            mode="streaming_async",  # Per D-07: explicit streaming mode
-            name=handler_name,
-            retries=retries,
-            timeout=timeout,
-            middleware=middleware,
-        )
-        return func
-    return decorator
-
-
-def _register_handler(
-    topic: str,
-    handler: Callable,
-    *,
-    mode: str = "sync",
-    name: str | None = None,
-    retries: int | None = None,
-    timeout: float | None = None,
-    middleware: list | None = None,
-) -> None:
-    """Internal handler registration (stub for future Rust integration).
-
-    Args:
-        topic: The Kafka topic.
-        handler: The callable to invoke.
-        mode: Handler mode (sync, async, batch_async, batch_sync, streaming_async).
-        name: Optional handler name.
-        retries: Optional retry count.
-        timeout: Optional timeout in seconds.
-        middleware: Optional middleware list.
-    """
-    # Stub — actual registration via Rust PythonHandler
-    pass
 
 
 @dataclass(frozen=True)
