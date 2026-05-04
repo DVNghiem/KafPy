@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from kafpy.fanout import FanInRegistration, FanOutBuilder
 
 __all__ = [
     "Consumer",
