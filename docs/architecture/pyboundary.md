@@ -4,11 +4,12 @@ Documentation of the GIL boundary, async bridges, and type conversions between R
 
 ## GIL Management Strategy
 
-Python's Global Interpreter Lock (GIL) prevents concurrent Python code execution. KafPy minimizes GIL hold time by:
+Python's Global Interpreter Lock (GIL) prevents concurrent Python bytecode execution.  
+KafPy minimizes GIL hold time by using dedicated boundary paths:
 
-1. **All Python calls go through `spawn_blocking`** — Releases GIL during Python execution
-2. **Rust async continues during Python calls** — Other tasks progress while waiting
-3. **No GIL held across Rust orchestration** — GIL only acquired for actual Python calls
+1. **Sync handler path** uses `spawn_blocking` to isolate blocking Python callback work.
+2. **Async handler path** uses async bridge polling (`PythonAsyncFuture`) integrated with Tokio.
+3. **Rust orchestration stays outside GIL** except around callback and conversion boundaries.
 
 ```mermaid
 flowchart TB
@@ -28,10 +29,7 @@ flowchart TB
     GIL -->|execute| CB
     CB -->|result| SB
     SB -->|release GIL| W
-    T -->|其他任务| T
-
-    style GIL fill:#ffcccc
-    style CB fill:#ccffcc
+    T -->|other tasks| T
 ```
 
 ## spawn_blocking Pattern
@@ -136,7 +134,7 @@ KafPy bridges Python configuration dataclasses to Rust internal types via interm
 #### PyRetryPolicy → RetryPolicy
 
 ```rust
-// Python RetryConfig → PyRetryPolicy (PyO3 boundary) → Rust RetryPolicy (internal)
+// Python RetryConfig -> PyRetryPolicy (PyO3 boundary) -> Rust RetryPolicy (internal)
 impl PyRetryPolicy {
     pub fn to_retry_policy(&self) -> RetryPolicy {
         RetryPolicy {
@@ -152,8 +150,8 @@ impl PyRetryPolicy {
 | Python Field (RetryConfig) | PyO3 Type (PyRetryPolicy) | Rust Type (RetryPolicy) |
 |---|---|---|
 | `max_attempts: int` | `max_attempts: u32` | `max_attempts: u32` |
-| `base_delay_ms: int` | `base_delay_ms: u64` | `base_delay: Duration` |
-| `max_delay_ms: int` | `max_delay_ms: u64` | `max_delay: Duration` |
+| `base_delay: float` | `base_delay_ms: u64` | `base_delay: Duration` |
+| `max_delay: float \| None` | `max_delay_ms: u64` | `max_delay: Duration` |
 | `jitter_factor: float` | `jitter_factor: f64` | `jitter_factor: f64` |
 
 #### PyObservabilityConfig → ObservabilityConfig
@@ -206,31 +204,15 @@ pub struct PyFailureReason {
 
 #### ConsumerConfig Extended Fields
 
-The `ConsumerConfig.to_rust()` method in `src/runtime/builder.rs` wires the new optional fields through the PyO3 boundary:
+The Python `ConsumerConfig.to_rust()` method creates PyO3 config objects, and runtime assembly in `src/runtime/builder.rs` maps relevant fields into Rust consumer/runtime components.
 
 ```rust
-// In ConsumerConfig (Python) → ConsumerConfig.to_rust() → RuntimeBuilder
-impl ConsumerConfig {
-    pub fn to_rust(&self) -> PyResult<RuntimeBuilder> {
-        let mut builder = RuntimeBuilder::new(/* ... */);
-        if let Some(retry_policy) = &self.default_retry_policy {
-            builder = builder.retry_policy(retry_policy.to_retry_policy());
-        }
-        if let Some(obs_config) = &self.observability_config {
-            builder = builder.observability(obs_config.to_observability_config());
-        }
-        builder = builder.dlq_prefix(self.dlq_topic_prefix.as_deref());
-        builder = builder.drain_timeout(self.drain_timeout_secs);
-        builder = builder.num_workers(self.num_workers.unwrap_or(4));
-        builder = builder.auto_offset_store(self.enable_auto_offset_store.unwrap_or(false));
-        Ok(builder)
-    }
-}
+// ConsumerConfig (Python) -> _kafpy.ConsumerConfig -> RuntimeBuilder::build()
 ```
 
 | Python Field | PyO3 Type | Rust Internal Target |
 |---|---|---|
-| `default_retry_policy` | `Option<PyRetryPolicy>` | `RetryPolicy` via `RetryCoordinator` |
+| `retry_policy` | `Option<PyRetryPolicy>` | `RetryPolicy` via runtime config |
 | `dlq_topic_prefix` | `Option<String>` | `DlqRouter` prefix |
 | `drain_timeout_secs` | `Option<u64>` | `ShutdownCoordinator` timeout |
 | `num_workers` | `Option<usize>` | `WorkerPool` thread count |

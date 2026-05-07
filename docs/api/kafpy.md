@@ -24,6 +24,8 @@ The `kafpy` package exposes all public types directly:
 | `kafpy.ConsumerError` | Consumer-level errors |
 | `kafpy.HandlerError` | Handler processing errors |
 | `kafpy.ConfigurationError` | Configuration errors |
+| `kafpy.ProducerConfig` | Producer configuration (available when extension is built) |
+| `kafpy.Producer` | Rust producer binding (available when extension is built) |
 
 ## Exception Import
 
@@ -60,20 +62,21 @@ Frozen dataclass with the following fields:
 | `partition_assignment_strategy` | `str` | `"roundrobin"` | Partition assignment strategy |
 | `retry_backoff_ms` | `int` | `100` | Retry backoff in milliseconds |
 | `message_batch_size` | `int` | `100` | Messages per batch |
-| `default_retry_policy` | `RetryConfig \| None` | `None` | Retry policy for failed messages |
+| `retry_policy` | `RetryConfig \| None` | `None` | Retry policy for failed messages |
 | `dlq_topic_prefix` | `str \| None` | `"dlq."` | DLQ topic name prefix |
 | `drain_timeout_secs` | `int \| None` | `30` | Graceful shutdown drain timeout |
 | `num_workers` | `int \| None` | `4` | Worker thread count |
 | `enable_auto_offset_store` | `bool \| None` | `False` | Auto offset store after processing |
 | `observability_config` | `ObservabilityConfig \| None` | `None` | OTLP/metrics configuration |
+| `handler_timeout_ms` | `int \| None` | `None` | Handler timeout in milliseconds |
 
 ### RetryConfig
 
 ```python
 RetryConfig(
     max_attempts=3,       # Maximum retry attempts
-    base_delay_ms=100,    # Initial backoff delay in ms
-    max_delay_ms=10000,   # Maximum backoff delay in ms
+    base_delay=0.1,       # Initial backoff delay in seconds
+    max_delay=10.0,       # Maximum backoff delay in seconds
     jitter_factor=0.25,   # Jitter factor (0.0–1.0)
 )
 ```
@@ -85,7 +88,7 @@ ObservabilityConfig(
     otlp_endpoint=None,    # OTLP collector endpoint URL
     service_name="kafpy",  # Service name for tracing/metrics
     sampling_ratio=0.1,    # Trace sampling ratio (0.0–1.0)
-    log_format="text",     # Log format: "text" or "json"
+    log_format="pretty",   # "pretty", "json", or "simple"
 )
 ```
 
@@ -109,7 +112,7 @@ FailureReason(
 ## Handler Types Import
 
 ```python
-from kafpy.handlers import KafkaMessage, HandlerContext, HandlerResult, FailureCategory, FailureReason, register_handler
+from kafpy.handlers import KafkaMessage, HandlerContext, HandlerResult
 ```
 
 ### KafkaMessage
@@ -125,6 +128,20 @@ from kafpy.handlers import KafkaMessage, HandlerContext, HandlerResult, FailureC
 | `timestamp_millis` | `int \| None` | Message timestamp in milliseconds |
 
 **Methods:**
-- `get_key() -> bytes | None` — Get message key
-- `get_headers() -> list[tuple[str, bytes | None]]` — Get message headers
-- `get_timestamp_millis() -> int | None` — Get message timestamp in milliseconds
+- `get_key_as_string() -> str | None` — Decode key as UTF-8
+- `get_payload_as_string() -> str | None` — Decode payload as UTF-8
+
+### HandlerContext
+
+| Field | Type | Description |
+|---|---|---|
+| `topic` | `str` | Source topic |
+| `partition` | `int` | Source partition |
+| `offset` | `int` | Source offset |
+| `timestamp` | `int` | Message timestamp |
+| `headers` | `dict[str, str]` | Header map |
+
+### Runtime behavior note
+
+`HandlerResult` is a typed result object for handler code ergonomics.  
+Failure routing (retry/DLQ) is driven by raised exceptions and timeout paths in runtime execution.

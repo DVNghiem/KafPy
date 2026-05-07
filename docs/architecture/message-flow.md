@@ -30,7 +30,7 @@ sequenceDiagram
         Note over CR: Advance offset, skip handler
     else BackpressureAction::Wait
         D->>D: mpsc::send() blocks
-    else BackpressureAction::FuturePausePartition
+    else BackpressureAction::PausePartition
         D->>CR: pause_partition(partition)
     end
 
@@ -44,7 +44,7 @@ sequenceDiagram
     WP->>RC: route(message)
     RC-->>WP: RoutingDecision::Route(handler_id)
     WP->>PY: invoke(message, context)
-    Note over PY: spawn_blocking acquires GIL
+    Note over PY: Sync handlers use spawn_blocking; async handlers use async bridge
 
     rect rgb(255, 248, 225)
         Note over PY,P: GIL Boundary (spawn_blocking)
@@ -112,7 +112,7 @@ flowchart TB
     PYTHON -->|No| DEFAULT{RoutingChain<br/>has default?}
 
     DEFAULT -->|Yes| DEFAULT_ROUTE[Route to<br/>default HandlerId]
-    DEFAULT -->|No| REJECT[RoutingDecision::Reject<br/>→ DLQ]
+    DEFAULT -->|No| REJECT[RoutingDecision::Reject<br/>→ dispatcher error path]
 
     ROUTE_Pattern --> DONE[Execute Handler]
     HEADER_ROUTE --> DONE

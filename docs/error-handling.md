@@ -20,7 +20,7 @@ KafPy classifies processing failures using a structured taxonomy:
 ### FailureCategory
 
 ```python
-from kafpy.handlers import FailureCategory
+from kafpy.config import FailureCategory
 
 # Three failure categories:
 FailureCategory.Retryable     # Transient failures — retry with backoff
@@ -39,7 +39,7 @@ FailureCategory.NonRetryable  # Non-retryable but not DLQ-bound
 `FailureReason` pairs a category with a human-readable description:
 
 ```python
-from kafpy.handlers import FailureCategory, FailureReason
+from kafpy.config import FailureCategory, FailureReason
 
 reason = FailureReason(
     category=FailureCategory.Retryable,
@@ -82,7 +82,7 @@ For example, a message from topic `"orders"` that fails will be sent to `"dlq.or
 ### DLQ with Failure Classification
 
 ```python
-from kafpy.handlers import FailureCategory, FailureReason
+from kafpy.config import FailureCategory, FailureReason
 
 @app.handler(topic="my-topic")
 def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext):
@@ -94,13 +94,13 @@ def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext):
             category=FailureCategory.Terminal,
             description=str(e),
         )
-        return kafpy.HandlerResult(action="dlq")
+        raise RuntimeError(reason.description) from e
     except TemporaryFailure as e:
         reason = FailureReason(
             category=FailureCategory.Retryable,
             description=str(e),
         )
-        return kafpy.HandlerResult(action="nack")
+        raise RuntimeError(reason.description) from e
 ```
 
 ### DLQ with Retry Policy
@@ -114,10 +114,10 @@ config = ConsumerConfig(
     bootstrap_servers="localhost:9092",
     group_id="my-group",
     topics=["my-topic"],
-    default_retry_policy=RetryConfig(
+    retry_policy=RetryConfig(
         max_attempts=3,
-        base_delay_ms=100,
-        max_delay_ms=10000,
+        base_delay=0.1,
+        max_delay=10.0,
         jitter_factor=0.25,
     ),
     dlq_topic_prefix="dlq.",

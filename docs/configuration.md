@@ -23,7 +23,7 @@ config = kafpy.ConsumerConfig(
     partition_assignment_strategy="roundrobin",
     retry_backoff_ms=100,
     # Retry & DLQ
-    default_retry_policy=None,
+    retry_policy=None,
     dlq_topic_prefix="dlq.",
     drain_timeout_secs=30,
     num_workers=4,
@@ -45,10 +45,10 @@ config = kafpy.ConsumerConfig(
     bootstrap_servers="localhost:9092",
     group_id="my-group",
     topics=["my-topic"],
-    default_retry_policy=RetryConfig(
+    retry_policy=RetryConfig(
         max_attempts=3,        # Maximum retry attempts
-        base_delay_ms=100,    # Initial backoff delay in ms
-        max_delay_ms=10000,   # Maximum backoff delay in ms
+        base_delay=0.1,       # Initial backoff delay in seconds
+        max_delay=10.0,       # Maximum backoff delay in seconds
         jitter_factor=0.25,   # Jitter factor (0.0–1.0)
     ),
 )
@@ -59,8 +59,8 @@ config = kafpy.ConsumerConfig(
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `max_attempts` | int | `3` | Maximum number of retry attempts before sending to DLQ |
-| `base_delay_ms` | int | `100` | Base delay in milliseconds for exponential backoff |
-| `max_delay_ms` | int | `10000` | Cap on backoff delay in milliseconds |
+| `base_delay` | float | `0.1` | Base delay in seconds for exponential backoff |
+| `max_delay` | float \| None | `None` | Cap on backoff delay in seconds (`None` defaults to 30s) |
 | `jitter_factor` | float | `0.25` | Random jitter factor (0.0–1.0) to spread retries |
 
 ## DLQ Configuration
@@ -109,7 +109,7 @@ config = kafpy.ConsumerConfig(
 | `otlp_endpoint` | str \| None | `None` | OTLP collector endpoint URL (e.g. `http://localhost:4317`) |
 | `service_name` | str | `"kafpy"` | Service name for tracing and metrics |
 | `sampling_ratio` | float | `0.1` | Trace sampling ratio (0.0–1.0) |
-| `log_format` | str | `"text"` | Log format: `"text"` or `"json"` |
+| `log_format` | str | `"pretty"` | Log format: `"pretty"`, `"json"`, or `"simple"` |
 
 ## Worker & Drain Configuration
 
@@ -162,6 +162,11 @@ Additional environment variables for retry, DLQ, worker, and observability setti
 | `KAFKA_DRAIN_TIMEOUT_SECS` | Graceful shutdown drain timeout in seconds (default: `30`) |
 | `KAFKA_NUM_WORKERS` | Number of worker threads (default: `4`) |
 | `KAFKA_ENABLE_AUTO_OFFSET_STORE` | Enable auto offset store (default: `false`) |
+| `KAFPY_ROUTING_PY_CALLBACK_HANDLER` | Optional registered handler key used as Python routing callback when routing rules are enabled |
+
+## Runtime wiring note
+
+`ConsumerConfig` exposes a broad API. In the current runtime builder path, only a subset is explicitly threaded into Rust config assembly before consumer startup (for example brokers/group/topics, poll/session controls, retry policy, DLQ prefix, drain timeout). Other fields may be accepted on the Python surface and still evolve in wiring coverage across releases.
 
 ## Security
 

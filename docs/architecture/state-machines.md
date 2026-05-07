@@ -60,12 +60,10 @@ The `ShutdownPhase` enum tracks the 4-phase graceful shutdown lifecycle.
 ```mermaid
 stateDiagram-v2
     [*] --> Running: Consumer started
-    Running --> SignalReceived: SIGINT/SIGTERM
-    SignalReceived --> DrainingHandlers: Stop accepting<br/>new messages
-    DrainingHandlers --> WaitingForIdle: Wait for handlers<br/>to complete
-    WaitingForIdle --> FlushingDlq: All handlers idle
-    FlushingDlq --> CommittingOffsets: Flush pending<br/>DLQ messages
-    CommittingOffsets --> [*]: Commits complete<br/>Shutdown finished
+    Running --> Draining: Begin graceful shutdown
+    Draining --> Finalizing: In-flight work drained
+    Finalizing --> Done: Cleanup complete
+    Done --> [*]
 ```
 
 ### Phases
@@ -73,11 +71,9 @@ stateDiagram-v2
 | Phase | Description |
 |-------|-------------|
 | `Running` | Normal operation |
-| `SignalReceived` | Shutdown signal received, stop accepting new messages |
-| `DrainingHandlers` | Waiting for in-flight handler executions |
-| `WaitingForIdle` | All handlers complete, flush DLQ |
-| `FlushingDlq` | Producing remaining DLQ messages |
-| `CommittingOffsets` | Final offset commit before exit |
+| `Draining` | Stop intake and drain in-flight work |
+| `Finalizing` | Final cleanup and closure steps |
+| `Done` | Shutdown complete |
 
 ---
 

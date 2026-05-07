@@ -35,6 +35,7 @@ use crate::python::handler::PythonHandler;
 use crate::python::logger;
 use crate::python::{DefaultExecutor, Executor};
 use crate::rayon_pool::RayonPool;
+use crate::routing::chain::RoutingChain;
 use crate::worker_pool::concurrency::HandlerConcurrency;
 use crate::worker_pool::pool::WorkerPool;
 use std::collections::HashMap;
@@ -144,7 +145,7 @@ impl RuntimeBuilder {
         offset_tracker.set_runner(Arc::clone(&runner_arc));
 
         // 4. Create ConsumerDispatcher
-        let dispatcher = ConsumerDispatcher::new((*runner_arc).clone());
+        let mut dispatcher = ConsumerDispatcher::new((*runner_arc).clone());
 
         // 5. Collect receivers from all registered handlers
         let all_handlers: Vec<(String, HandlerMetadata)> = {
@@ -154,6 +155,29 @@ impl RuntimeBuilder {
                 .map(|(topic, meta)| (topic.clone(), meta.clone()))
                 .collect()
         };
+
+        if !rust_config.routing_rules.is_empty() {
+            let default_handler = all_handlers
+                .iter()
+                .min_by(|(a, _), (b, _)| a.cmp(b))
+                .map(|(handler_id, _)| crate::routing::HandlerId::new(handler_id.clone()))
+                .unwrap_or_else(|| crate::routing::HandlerId::new("__default__"));
+            let python_callback = std::env::var("KAFPY_ROUTING_PY_CALLBACK_HANDLER")
+                .ok()
+                .and_then(|handler_id| {
+                    all_handlers
+                        .iter()
+                        .find(|(id, _)| id == &handler_id)
+                        .map(|(_, meta)| Arc::clone(&meta.callback))
+                });
+            let routing_chain =
+                RoutingChain::from_rules(&rust_config.routing_rules, default_handler, python_callback)
+                    .map_err(|e| ConsumerError::Subscription {
+                        broker: rust_config.brokers.clone(),
+                        message: format!("invalid routing rule: {e}"),
+                    })?;
+            dispatcher = dispatcher.with_routing_chain(Arc::new(routing_chain));
+        }
         logger::log(
             "INFO",
             &format!(

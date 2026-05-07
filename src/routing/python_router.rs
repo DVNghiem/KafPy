@@ -16,20 +16,17 @@ use tracing::warn;
 ///
 /// Python callable signature: `def my_router(msg: dict) -> str`
 /// Returns: "route:{handler_id}" | "drop" | "reject:{reason}" | "defer"
-#[allow(unused)]
 pub struct PythonRouter {
     callback: Arc<Py<PyAny>>,
 }
 
 impl PythonRouter {
     /// Construct with a Py<PyAny> callback.
-    #[allow(unused)]
     pub fn new(callback: Arc<Py<PyAny>>) -> Self {
         Self { callback }
     }
 
     /// Build a PyDict from RoutingContext inside a Python GIL guard.
-    #[allow(unused)]
     fn call_py_and_parse(&self, ctx: &RoutingContext) -> RoutingDecision {
         let callback = Arc::clone(&self.callback);
         let topic = ctx.topic.to_string();
@@ -78,18 +75,19 @@ impl PythonRouter {
             })
         });
 
-        // route() is sync but spawn_blocking returns a JoinHandle, so block_on it
-        tokio::runtime::Handle::current()
-            .block_on(handle)
-            .unwrap_or_else(|_| {
-                // spawn_blocking panicked — treat as routing error
-                warn!("Python router spawn_blocking task panicked");
-                RoutingDecision::Reject(RejectReason::Explicit("python_router_panic".to_string()))
-            })
+        // route() is sync but may run on a Tokio worker; block_in_place avoids runtime panic.
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(handle)
+                .unwrap_or_else(|_| {
+                    // spawn_blocking panicked — treat as routing error
+                    warn!("Python router spawn_blocking task panicked");
+                    RoutingDecision::Reject(RejectReason::Explicit("python_router_panic".to_string()))
+                })
+        })
     }
 
     /// Parse returned string into RoutingDecision per D-07.
-    #[allow(unused)]
     fn parse_return(result: String) -> RoutingDecision {
         if result.starts_with("route:") {
             let handler_id = result.strip_prefix("route:").unwrap().to_string();

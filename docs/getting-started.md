@@ -53,6 +53,15 @@ def batch_handler(messages: list[kafpy.KafkaMessage], ctx: kafpy.HandlerContext)
     return kafpy.HandlerResult(action="ack")
 ```
 
+### Failure behavior
+
+In the current runtime, success/failure classification is driven by execution outcome:
+
+- If your handler completes normally, the message is treated as processed.
+- If your handler raises, the runtime classifies failure for retry/DLQ handling.
+
+Use `HandlerResult` for readability and consistency, but raise exceptions for failure paths.
+
 ## Message Types
 
 ### KafkaMessage
@@ -65,7 +74,7 @@ def batch_handler(messages: list[kafpy.KafkaMessage], ctx: kafpy.HandlerContext)
 | `key` | `bytes \| None` | Message key |
 | `payload` | `bytes \| None` | Message payload |
 | `headers` | `list[tuple[str, bytes \| None]]` | Message headers |
-| `timestamp` | `int` | Timestamp in milliseconds |
+| `timestamp_millis` | `int \| None` | Timestamp in milliseconds |
 
 ### Methods
 

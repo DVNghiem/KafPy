@@ -21,21 +21,18 @@ pub struct TopicRule {
 }
 
 #[derive(Debug, Clone)]
-#[allow(unused)]
 pub struct TopicPatternRouter {
     rules: Arc<[TopicRule]>,
     compiled: Arc<[CompiledPattern]>,
 }
 
 #[derive(Debug, Clone)]
-#[allow(unused)]
 enum CompiledPattern {
     Glob(Pattern),
     Regex(Regex),
 }
 
 impl TopicPatternRouter {
-    #[allow(unused)]
     pub fn new(rules: Vec<TopicRule>) -> Result<Self, PatternError> {
         let mut compiled = Vec::with_capacity(rules.len());
         for rule in &rules {
@@ -77,7 +74,6 @@ impl Router for TopicPatternRouter {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[allow(unused)]
 pub enum PatternError {
     #[error("invalid glob pattern '{0}': {1}")]
     InvalidGlob(String, String),

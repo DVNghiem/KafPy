@@ -31,7 +31,7 @@ class OrderProcessor:
 
             # Validate order
             if not self.validate_order(order):
-                return kafpy.HandlerResult(action="nack")
+                raise ValueError("invalid order payload")
 
             # Persist to database
             self.save_order(order)
@@ -42,13 +42,13 @@ class OrderProcessor:
             return kafpy.HandlerResult(action="ack")
 
         except json.JSONDecodeError as e:
-            # Invalid JSON - send to DLQ for manual review
+            # Invalid JSON: raise so runtime failure path can classify and route.
             print(f"Invalid JSON: {e}")
-            return kafpy.HandlerResult(action="dlq")
+            raise
         except Exception as e:
-            # Database errors, etc - retry
+            # Database errors: raise for retry-classification path.
             print(f"Processing error: {e}")
-            return kafpy.HandlerResult(action="nack")
+            raise
 
     def validate_order(self, order: Order) -> bool:
         if order.total <= 0:
@@ -262,13 +262,13 @@ class TransactionProcessor:
             return kafpy.HandlerResult(action="ack")
 
         except InsufficientFundsError:
-            return kafpy.HandlerResult(action="nack")  # Retry
+            raise
         except InvalidTransactionError as e:
             print(f"Invalid transaction: {e}")
-            return kafpy.HandlerResult(action="dlq")  # DLQ for manual review
+            raise
         except Exception as e:
             print(f"Processing error: {e}")
-            return kafpy.HandlerResult(action="nack")
+            raise
 
     def debit_account(self, account: str, amount: Decimal):
         # Debit logic
@@ -365,7 +365,7 @@ class EventConsumer:
             return kafpy.HandlerResult(action="ack")
         except Exception as e:
             print(f"Event processing error: {e}")
-            return kafpy.HandlerResult(action="nack")
+            raise
 
 # Event sourcing configuration
 config = kafpy.ConsumerConfig(

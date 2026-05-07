@@ -113,7 +113,6 @@ impl ConsumerContext for CustomConsumerContext {
                     let topic = elem.topic();
                     let partition = elem.partition();
 
-                    // PITFALLS-4.2: Never call Python code in rebalance callbacks
                     // Get highest contiguous offset for this partition
                     if let Some(offset) = self.offset_tracker.highest_contiguous(topic, partition) {
                         let topic_owned = topic.to_string();
@@ -201,10 +200,9 @@ impl ConsumerContext for CustomConsumerContext {
                     let topic = elem.topic();
                     let partition = elem.partition();
 
-                    // PITFALLS-4.2: Never call Python code in rebalance callbacks
                     // Get the last committed offset for this partition
                     let committed = self.offset_tracker.committed_offset(topic, partition);
-                    // PITFALLS-4.1: Seek to committed + 1, not committed
+                    //  Seek to committed + 1, not committed
                     let seek_offset = committed + 1;
 
                     let topic_owned = topic.to_string();

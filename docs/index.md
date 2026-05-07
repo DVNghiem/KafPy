@@ -32,6 +32,12 @@ def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext):
 app.run()
 ```
 
+### Runtime semantics
+
+- Successful handler execution is considered processed.
+- Retry/DLQ behavior is triggered from failures (exceptions/timeouts), not from return action strings alone.
+- Prefer raising structured errors in failure paths.
+
 ## Installation
 
 See the [Installation Guide](installation.md) for detailed setup instructions.

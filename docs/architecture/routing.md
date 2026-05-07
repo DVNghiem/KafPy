@@ -1,86 +1,54 @@
 # Routing
 
-KafPy routes messages to Python handlers through a configurable routing chain with precedence-based evaluation.
+KafPy routes messages through a precedence-based Rust routing chain before dispatching to handler queues.
 
 ## Routing Chain Architecture
 
 ```mermaid
 graph TD
-    MSG[Incoming Message] --> CTX[RoutingContext<br/>topic, key, headers, payload]
-
-    CTX --> CHAIN[RoutingChain<br/>Ordered Router List]
-
-    subgraph Routers
-        TP[TopicPatternRouter<br/>Regex on topic name]
-        HR[HeaderRouter<br/>HTTP-header-like headers]
-        KR[KeyRouter<br/>Message key routing]
-        PY[PythonRouter<br/>Dynamic Python callback]
-    end
-
-    CHAIN --> TP
-    TP -->|No match| HR
-    HR -->|No match| KR
-    KR -->|No match| PY
-    PY -->|No match| DEF[Default Handler<br/>(optional)]
-
-    TP -->|Match| DEC[RoutingDecision::Route]
-    HR -->|Match| DEC
-    KR -->|Match| DEC
-    PY -->|Match| DEC
-    DEF -->|Match| DEC
-
-    DEC --> EXEC[Execute Handler<br/>at HandlerId]
+    messageIn[IncomingMessage] --> routingContext[RoutingContext]
+    routingContext --> chain[RoutingChain]
+    chain --> topicRouter[TopicPatternRouter]
+    topicRouter -->|"Defer"| headerRouter[HeaderRouter]
+    headerRouter -->|"Defer"| keyRouter[KeyRouter]
+    keyRouter -->|"Defer"| pythonRouter[PythonRouter]
+    pythonRouter -->|"Defer"| fallbackHandler[FallbackHandler]
+    topicRouter -->|"Route/Drop/Reject"| decisionOut[RoutingDecision]
+    headerRouter -->|"Route/Drop/Reject"| decisionOut
+    keyRouter -->|"Route/Drop/Reject"| decisionOut
+    pythonRouter -->|"Route/Drop/Reject"| decisionOut
+    fallbackHandler --> decisionOut
+    decisionOut --> dispatchQueue[DispatchToHandlerQueue]
 ```
 
 ## Routing Precedence
 
-The routing chain evaluates in order:
+The chain evaluates in order:
 
 1. **TopicPatternRouter** — Regex match against topic name
 2. **HeaderRouter** — HTTP-header-like headers on message
 3. **KeyRouter** — Message key (bytes) lookup
 4. **PythonRouter** — Dynamic routing via Python callback
-5. **Default Handler** — Falls back if no router matches
+5. **Fallback handler** — selected when all routers defer
 
-### Configuration Example
-
-```python
-# Routing configuration
-routing_config = kafpy.RoutingConfig(
-    default_handler="default-handler",
-    routers=[
-        kafpy.TopicPatternRouter(
-            pattern=r"^orders\.",
-            handler="order-handler",
-        ),
-        kafpy.HeaderRouter(
-            header_name="x-event-type",
-            mapping={
-                "order.created": "order-created-handler",
-                "order.updated": "order-updated-handler",
-            },
-        ),
-    ],
-)
-```
+The current Python public API does not yet expose first-class routing rule builders; routing rules are assembled in the Rust runtime path.
 
 ## RoutingDecision
 
 ```mermaid
 graph LR
-    A[Message] --> DEC[RoutingDecision]
-
-    DEC --> R1[Route<br/>HandlerId]
-    DEC --> R2[Drop<br/>Fast-path]
-    DEC --> R3[Reject<br/>→ DLQ]
-    DEC --> R4[Defer<br/>→ Default]
+    messageIn[Message] --> decision[RoutingDecision]
+    decision --> route[RouteHandlerId]
+    decision --> drop[Drop]
+    decision --> reject[RejectReason]
+    decision --> defer[DeferToNext]
 ```
 
 | Decision | Description | Use Case |
 |----------|-------------|----------|
 | `Route(HandlerId)` | Route to specific handler | Normal routing |
 | `Drop` | Drop message, advance offset | Traffic shaping, sampling |
-| `Reject` | Route directly to DLQ | Validation failures |
+| `Reject` | Rejected from routing path; passed to dispatcher error path | Validation failures / callback errors |
 | `Defer` | Continue chain to next router | Partial routing |
 
 ## RoutingContext
@@ -93,8 +61,7 @@ pub struct RoutingContext<'a> {
     pub offset: i64,
     pub key: Option<&'a [u8]>,
     pub payload: Option<&'a [u8]>,
-    pub headers: &'a [(String, Option<Vec<u8>>)],  // value is Option<bytes>
-    pub handler_id: Option<HandlerId>,
+    pub headers: &'a [(String, Option<Vec<u8>>)],
 }
 
 pub struct HandlerId(String);

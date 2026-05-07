@@ -5,6 +5,10 @@
 
 use crate::routing::context::HandlerId;
 use crate::routing::context::RoutingContext;
+use crate::routing::header::HeaderRouter;
+use crate::routing::key::KeyRouter;
+use crate::routing::python_router::PythonRouter;
+use crate::routing::topic_pattern::{PatternError, TopicPatternRouter};
 use crate::routing::decision::{RejectReason, RoutingDecision};
 use crate::routing::router::Router;
 use std::sync::Arc;
@@ -12,7 +16,6 @@ use std::sync::Arc;
 /// The routing chain wires together the router types in precedence order.
 ///
 /// Routers are stored as `Arc<dyn Router>` to allow heterogeneous types in the chain.
-/// Phase 22 (Python Integration) will insert `PythonRouter` at the `python_slot` position.
 ///
 /// # Precedence order
 /// 1. TopicPatternRouter (pattern)
@@ -33,7 +36,6 @@ pub struct RoutingChain {
     topic_router: Option<Arc<dyn Router>>,
     header_router: Option<Arc<dyn Router>>,
     key_router: Option<Arc<dyn Router>>,
-    // Phase 22: Python router slot — filled via with_python_router()
     python_router: Option<Arc<dyn Router>>,
     default_handler: HandlerId,
 }
@@ -70,6 +72,64 @@ impl RoutingChain {
             // safety: caller MUST call with_default_handler()
             default_handler: HandlerId::new("__UNSET__"),
         }
+    }
+
+    /// Builds a routing chain from configured routing rules.
+    pub fn from_rules(
+        rules: &[crate::routing::config::RoutingRule],
+        default_handler: HandlerId,
+        python_callback: Option<Arc<pyo3::Py<pyo3::PyAny>>>,
+    ) -> Result<Self, PatternError> {
+        let mut sorted_rules = rules.to_vec();
+        sorted_rules.sort_by_key(|r| r.priority);
+
+        let topic_rules: Vec<_> = sorted_rules
+            .iter()
+            .filter_map(|rule| {
+                rule.topic_rule.as_ref().map(|topic_rule| {
+                    let mut topic_rule = topic_rule.clone();
+                    topic_rule.handler_id = rule.handler_id.clone();
+                    topic_rule
+                })
+            })
+            .collect();
+        let header_rules: Vec<_> = sorted_rules
+            .iter()
+            .filter_map(|rule| {
+                rule.header_rule.as_ref().map(|header_rule| {
+                    let mut header_rule = header_rule.clone();
+                    header_rule.handler_id = rule.handler_id.clone();
+                    header_rule
+                })
+            })
+            .collect();
+        let key_rules: Vec<_> = sorted_rules
+            .iter()
+            .filter_map(|rule| {
+                rule.key_rule.as_ref().map(|key_rule| {
+                    let mut key_rule = key_rule.clone();
+                    key_rule.handler_id = rule.handler_id.clone();
+                    key_rule
+                })
+            })
+            .collect();
+
+        let mut chain = RoutingChain::new().with_default_handler(default_handler);
+
+        if !topic_rules.is_empty() {
+            chain = chain.with_topic_router(TopicPatternRouter::new(topic_rules)?);
+        }
+        if !header_rules.is_empty() {
+            chain = chain.with_header_router(HeaderRouter::new(header_rules));
+        }
+        if !key_rules.is_empty() {
+            chain = chain.with_key_router(KeyRouter::new(key_rules));
+        }
+        if let Some(callback) = python_callback {
+            chain = chain.with_python_router(PythonRouter::new(callback));
+        }
+
+        Ok(chain)
     }
 
     /// Sets the topic pattern router (first in chain).
@@ -153,7 +213,7 @@ impl RoutingChain {
         // Default handler — required
         // In debug: panic if default_handler was not configured (empty string sentinel)
         // In release: return Reject(NoDefaultHandler) to avoid panicking in production
-        if self.default_handler.is_empty() {
+        if self.default_handler.as_str() == "__UNSET__" {
             debug_assert!(
                 false,
                 "RoutingChain::route() called without a default handler configured"

@@ -57,13 +57,11 @@ impl KeyRule {
     }
 }
 
-#[allow(unused)]
 pub struct KeyRouter {
     rules: Arc<[KeyRule]>,
 }
 
 impl KeyRouter {
-    #[allow(unused)]
     pub fn new(rules: Vec<KeyRule>) -> Self {
         Self {
             rules: rules.into(),

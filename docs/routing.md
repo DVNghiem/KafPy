@@ -1,53 +1,35 @@
 # Routing
 
-## Routing Modes
+KafPy runtime supports an internal precedence-based routing chain in Rust:
 
-KafPy supports multiple routing strategies:
+1. `TopicPatternRouter`
+2. `HeaderRouter`
+3. `KeyRouter`
+4. `PythonRouter` (optional callback)
+5. Default fallback handler
 
-| Mode | Description |
-|------|-------------|
-| `"default"` | Round-robin across handlers |
-| `"pattern"` | Topic pattern matching |
-| `"header"` | Route by message header |
-| `"key"` | Route by message key |
-| `"python"` | Custom Python routing logic |
+## Important status
 
-## Pattern Routing
+- The Python package currently does **not** expose a stable public API like `RoutingConfig`, `TopicPatternRouter`, `HeaderRouter`, or `KeyRouter` classes for end-user construction.
+- Routing chain construction happens inside the Rust runtime (`RoutingChain::from_rules(...)`) when routing rules are provided to the internal Rust config layer.
+- If no routing chain is configured, dispatch is by registered handler key/topic in normal consumer flow.
 
-```python
-routing = kafpy.RoutingConfig(
-    routing_mode="pattern",
-)
+## Current behavior summary
 
-@app.handler(topic="orders.*", routing=routing)
-def handle_orders(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext):
-    return kafpy.HandlerResult(action="ack")
-```
+| Decision | Meaning |
+|---|---|
+| `Route(handler_id)` | Dispatch to a specific handler |
+| `Drop` | Drop message from routing path |
+| `Reject(reason)` | Reject from routing path (handled through dispatcher failure path) |
+| `Defer` | Continue to next router; if all defer, fallback handler is used |
 
-## Header Routing
+## Python callback router
 
-```python
-routing = kafpy.RoutingConfig(
-    routing_mode="header",
-)
+When enabled, Python routing callback output is parsed as:
 
-@app.handler(topic="events", routing=routing)
-def handle_events(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext):
-    priority = ctx.headers.get("priority", "normal")
-    # Route based on priority
-    return kafpy.HandlerResult(action="ack")
-```
+- `route:<handler_id>`
+- `drop`
+- `reject:<reason>`
+- `defer`
 
-## Key Routing
-
-```python
-routing = kafpy.RoutingConfig(
-    routing_mode="key",
-)
-
-@app.handler(topic="partitioned", routing=routing)
-def handle_partitioned(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext):
-    key = msg.get_key_as_string()
-    # Route based on key
-    return kafpy.HandlerResult(action="ack")
-```
+Callback failures are converted to reject decisions with explicit reason text.

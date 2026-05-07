@@ -18,6 +18,23 @@ def handler(msg, ctx):
 
 ## Reliability
 
+### Routing in Production
+
+Keep routing predictable and cheap on the hot path:
+
+- Prefer static routers first (topic/header/key), and use Python routing only for dynamic rules that cannot be expressed statically.
+- Ensure fallback behavior is deterministic (today, fallback selection is runtime-derived when routing rules are enabled).
+- Keep routing rules mutually exclusive where possible; first-match-wins behavior is easier to reason about than overlapping rules.
+- Validate routing rules at startup (pattern/regex compilation) instead of accepting invalid rules at runtime.
+- Record clear reject reasons for post-incident replay and triage.
+
+For Python router usage:
+
+- Keep callback logic side-effect free and fast; treat it like a pure classifier.
+- Use bounded execution time (`handler_timeout_ms`) so slow callbacks cannot block consumer progress.
+- Avoid network calls inside routing callbacks; resolve external data before routing or cache it in memory.
+- Log reject reasons with stable codes (`reject:<code>`) to make alerting and dashboards actionable.
+
 ### Graceful Shutdown
 
 ```python
@@ -72,11 +89,11 @@ def handle_critical(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext):
         process_critical_data(msg)
         return kafpy.HandlerResult(action="ack")
     except UnrecoverableError:
-        # Route to DLQ for manual review
-        return kafpy.HandlerResult(action="dlq")
+        # Raise so runtime failure classification can route retry/DLQ correctly
+        raise
     except RecoverableError:
-        # Will be retried
-        return kafpy.HandlerResult(action="nack")
+        # Raise retryable error path
+        raise
 ```
 
 ## Security
@@ -221,6 +238,8 @@ def test_consumer():
 - [ ] Store secrets in environment variables
 - [ ] Configure proper retry limits
 - [ ] Implement DLQ for failed messages
+- [ ] Define deterministic routing precedence and fallback handler
+- [ ] Keep Python routing callbacks fast and side-effect free
 - [ ] Add health check endpoints
 - [ ] Set up metrics/observability
 - [ ] Configure graceful shutdown

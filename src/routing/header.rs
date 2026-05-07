@@ -13,13 +13,11 @@ pub struct HeaderRule {
     pub handler_id: crate::routing::HandlerId,
 }
 
-#[allow(unused)]
 pub(crate) struct HeaderRouter {
     rules: Arc<[HeaderRule]>,
 }
 
 impl HeaderRouter {
-    #[allow(unused)]
     pub(crate) fn new(rules: Vec<HeaderRule>) -> Self {
         Self {
             rules: rules.into(),
