@@ -33,6 +33,22 @@ The chain evaluates in order:
 
 The current Python public API does not yet expose first-class routing rule builders; routing rules are assembled in the Rust runtime path.
 
+## PythonRouter Runtime Behavior
+
+- Router callback execution is bounded by a semaphore (`KAFPY_ROUTER_CONCURRENCY`, default `4`) to reduce GIL thrash during bursts.
+- Router path emits Python-call metrics into the shared runtime sink:
+  - `kafpy.python.call_total`
+  - `kafpy.python.call_duration_seconds`
+  - `kafpy.python.queue_wait_seconds`
+  - `kafpy.python.batch_size`
+  - `kafpy.python.backpressure_total`
+
+### Callback Contracts
+
+- **Default contract**: `def route(msg: dict) -> str`
+- **Batch contract (opt-in)**: `def route(batch: list[dict]) -> list[str]`  
+  Enabled with `KAFPY_ROUTER_BATCH_MODE=true`.
+
 ## RoutingDecision
 
 ```mermaid

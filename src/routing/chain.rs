@@ -8,6 +8,7 @@ use crate::routing::context::RoutingContext;
 use crate::routing::header::HeaderRouter;
 use crate::routing::key::KeyRouter;
 use crate::routing::python_router::PythonRouter;
+use crate::observability::SharedPrometheusSink;
 use crate::routing::topic_pattern::{PatternError, TopicPatternRouter};
 use crate::routing::decision::{RejectReason, RoutingDecision};
 use crate::routing::router::Router;
@@ -79,6 +80,7 @@ impl RoutingChain {
         rules: &[crate::routing::config::RoutingRule],
         default_handler: HandlerId,
         python_callback: Option<Arc<pyo3::Py<pyo3::PyAny>>>,
+        metrics_sink: SharedPrometheusSink,
     ) -> Result<Self, PatternError> {
         let mut sorted_rules = rules.to_vec();
         sorted_rules.sort_by_key(|r| r.priority);
@@ -126,7 +128,7 @@ impl RoutingChain {
             chain = chain.with_key_router(KeyRouter::new(key_rules));
         }
         if let Some(callback) = python_callback {
-            chain = chain.with_python_router(PythonRouter::new(callback));
+            chain = chain.with_python_router(PythonRouter::new(callback, metrics_sink));
         }
 
         Ok(chain)

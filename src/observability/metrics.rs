@@ -164,6 +164,23 @@ impl SharedPrometheusSink {
         sink.register_gauge("kafpy.consumer.lag", "Consumer lag per partition");
         sink.register_counter("kafpy.dlq.messages", "Messages produced to DLQ");
         sink.register_counter("kafpy.handler.timeout_total", "Handler timeout count");
+        sink.register_counter("kafpy.python.call_total", "Python callback invocation count");
+        sink.register_histogram(
+            "kafpy.python.call_duration_seconds",
+            "Python callback duration in seconds",
+        );
+        sink.register_histogram(
+            "kafpy.python.queue_wait_seconds",
+            "Wait time before Python callback execution in seconds",
+        );
+        sink.register_histogram(
+            "kafpy.python.batch_size",
+            "Python callback batch size distribution",
+        );
+        sink.register_counter(
+            "kafpy.python.backpressure_total",
+            "Python callback backpressure/saturation count",
+        );
         // OBSV-01: Fan-out branch metrics
         sink.register_histogram(
             "kafpy.fanout.branch_duration_seconds",
@@ -353,6 +370,44 @@ impl TimeoutMetrics {
             .insert("handler_name", handler_name);
         sink.record_counter("kafpy.handler.timeout_total", &labels.as_slice());
     }
+}
+
+// ─── Python GIL/Call Metrics ──────────────────────────────────────────────────
+
+/// Metrics recorder for Rust→Python callback pressure and latency.
+pub struct PythonCallMetrics;
+
+impl PythonCallMetrics {
+    pub fn record_call(
+        sink: &dyn MetricsSink,
+        path: &str,
+        mode: &str,
+        elapsed: Duration,
+        batch_size: usize,
+    ) {
+        let labels = MetricLabels::new().insert("mode", mode).insert("path", path);
+        sink.record_counter("kafpy.python.call_total", &labels.as_slice());
+        sink.record_histogram(
+            "kafpy.python.call_duration_seconds",
+            elapsed.as_secs_f64(),
+            &labels.as_slice(),
+        );
+        sink.record_histogram(
+            "kafpy.python.batch_size",
+            batch_size as f64,
+            &labels.as_slice(),
+        );
+    }
+
+    pub fn record_queue_wait(sink: &dyn MetricsSink, path: &str, mode: &str, elapsed: Duration) {
+        let labels = MetricLabels::new().insert("mode", mode).insert("path", path);
+        sink.record_histogram(
+            "kafpy.python.queue_wait_seconds",
+            elapsed.as_secs_f64(),
+            &labels.as_slice(),
+        );
+    }
+
 }
 
 // ─── Queue Snapshot ───────────────────────────────────────────────────────────

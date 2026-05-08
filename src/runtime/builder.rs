@@ -171,7 +171,12 @@ impl RuntimeBuilder {
                         .map(|(_, meta)| Arc::clone(&meta.callback))
                 });
             let routing_chain =
-                RoutingChain::from_rules(&rust_config.routing_rules, default_handler, python_callback)
+                RoutingChain::from_rules(
+                    &rust_config.routing_rules,
+                    default_handler,
+                    python_callback,
+                    prometheus_sink.clone(),
+                )
                     .map_err(|e| ConsumerError::Subscription {
                         broker: rust_config.brokers.clone(),
                         message: format!("invalid routing rule: {e}"),
@@ -252,8 +257,21 @@ impl RuntimeBuilder {
                 Some(Arc::clone(&rayon_pool)),
             ));
 
-        // Create HandlerConcurrency with default limit of 4 per handler
-        let handler_concurrency = HandlerConcurrency::new(4);
+        // Create HandlerConcurrency with configurable default + per-handler overrides.
+        let default_handler_concurrency = std::env::var("KAFPY_HANDLER_CONCURRENCY_DEFAULT")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(4);
+        let handler_concurrency = HandlerConcurrency::new(default_handler_concurrency);
+        {
+            let handlers_guard = self.handlers.lock().unwrap();
+            for (topic, meta) in handlers_guard.iter() {
+                if let Some(limit) = meta.concurrency.filter(|v| *v > 0) {
+                    handler_concurrency.set_limit(topic, limit);
+                }
+            }
+        }
 
         // 10. Create WorkerPool with per-topic handler map
         let pool = WorkerPool::new(

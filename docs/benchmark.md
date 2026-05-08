@@ -17,6 +17,16 @@ print(f"Throughput: {result['throughput_msg_s']} msg/s")
 print(f"P99 Latency: {result['latency_p99_ms']} ms")
 ```
 
+## GIL Optimization Baseline Check
+
+For local Rust-side callback baseline comparisons (single-sync vs batch-sync handler path), run:
+
+```bash
+cargo test perf_smoke_sync_vs_batch -- --ignored --nocapture
+```
+
+This ignored test prints comparative timing and is intended as a smoke-level performance check during tuning.
+
 ## Available Scenarios
 
 | Scenario | Description |

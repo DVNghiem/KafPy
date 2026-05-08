@@ -13,7 +13,9 @@ use crate::coordinator::RetryCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
-use crate::observability::metrics::{FanOutMetrics, MetricLabels, TimeoutMetrics, ThroughputMetrics};
+use crate::observability::metrics::{
+    FanOutMetrics, MetricLabels, PythonCallMetrics, TimeoutMetrics, ThroughputMetrics,
+};
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
 use crate::python::context::ExecutionContext;
@@ -159,10 +161,25 @@ pub(crate) async fn worker_loop(
                 ctx.topic, handler.name(), ctx.topic, ctx.partition, ctx.offset, handler.mode().as_str()
             ));
             // Acquire concurrency permit — holds until end of this block
+            let queue_wait_start = std::time::Instant::now();
             let _permit = handler_concurrency.acquire(&ctx.topic).await;
+            PythonCallMetrics::record_queue_wait(
+                &prometheus_sink,
+                "handler",
+                handler.mode().as_str(),
+                queue_wait_start.elapsed(),
+            );
+            let py_call_start = std::time::Instant::now();
             let result = span
                 .in_scope(|| async { handler.invoke_mode_with_timeout(&ctx, msg.clone()).await })
                 .await;
+            PythonCallMetrics::record_call(
+                &prometheus_sink,
+                "handler",
+                handler.mode().as_str(),
+                py_call_start.elapsed(),
+                1,
+            );
             let elapsed = start.elapsed();
             logger::log("INFO", &format!(
                 "handler invoke complete handler_id={} topic={} partition={} offset={} elapsed_ms={}",

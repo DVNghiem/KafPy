@@ -34,6 +34,12 @@ impl HandlerConcurrency {
         self
     }
 
+    /// Set an explicit limit for a specific handler.
+    pub fn set_limit(&self, handler_id: &str, limit: usize) {
+        let mut guard = self.semaphores.lock();
+        guard.insert(handler_id.to_string(), Arc::new(Semaphore::new(limit)));
+    }
+
     /// Acquire a permit for the given handler_id.
     /// If no semaphore exists for this handler, creates one with the default limit.
     /// Returns an OwnedSemaphorePermit that is dropped to release the permit.

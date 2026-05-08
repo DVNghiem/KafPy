@@ -3,9 +3,11 @@
 use crate::routing::context::{HandlerId, RoutingContext};
 use crate::routing::decision::{RejectReason, RoutingDecision};
 use crate::routing::router::Router;
+use crate::{observability::metrics::PythonCallMetrics, observability::SharedPrometheusSink};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tracing::warn;
 
 /// PythonRouter wraps a Py<PyAny> callback that receives routing context.
@@ -18,17 +20,36 @@ use tracing::warn;
 /// Returns: "route:{handler_id}" | "drop" | "reject:{reason}" | "defer"
 pub struct PythonRouter {
     callback: Arc<Py<PyAny>>,
+    concurrency_gate: Arc<Semaphore>,
+    metrics_sink: SharedPrometheusSink,
+    use_batch_contract: bool,
 }
 
 impl PythonRouter {
     /// Construct with a Py<PyAny> callback.
-    pub fn new(callback: Arc<Py<PyAny>>) -> Self {
-        Self { callback }
+    pub fn new(callback: Arc<Py<PyAny>>, metrics_sink: SharedPrometheusSink) -> Self {
+        let limit = std::env::var("KAFPY_ROUTER_CONCURRENCY")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(4);
+        Self {
+            callback,
+            concurrency_gate: Arc::new(Semaphore::new(limit)),
+            metrics_sink,
+            use_batch_contract: std::env::var("KAFPY_ROUTER_BATCH_MODE")
+                .ok()
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
+        }
     }
 
     /// Build a PyDict from RoutingContext inside a Python GIL guard.
     fn call_py_and_parse(&self, ctx: &RoutingContext) -> RoutingDecision {
         let callback = Arc::clone(&self.callback);
+        let concurrency_gate = Arc::clone(&self.concurrency_gate);
+        let metrics_sink = self.metrics_sink.clone();
+        let use_batch_contract = self.use_batch_contract;
         let topic = ctx.topic.to_string();
         let partition = ctx.partition;
         let offset = ctx.offset;
@@ -40,8 +61,18 @@ impl PythonRouter {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
+        let queue_wait = std::time::Instant::now();
+        let permit = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(concurrency_gate.acquire_owned())
+                .unwrap_or_else(|_| panic!("python router semaphore closed unexpectedly"))
+        });
+        PythonCallMetrics::record_queue_wait(&metrics_sink, "router", "sync", queue_wait.elapsed());
+
         // Use block_in_place so route() (sync) can call into async spawn_blocking
         let handle = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let py_call_start = std::time::Instant::now();
             Python::attach(|py| {
                 let py_dict = PyDict::new(py);
                 let _ = py_dict.set_item("topic", topic);
@@ -55,11 +86,31 @@ impl PythonRouter {
                 }
                 let _ = py_dict.set_item("headers", headers_dict);
 
-                match callback.call1(py, (py_dict,)) {
+                let decision = match if use_batch_contract {
+                    callback.call1(py, (vec![py_dict.clone().unbind()],))
+                } else {
+                    callback.call1(py, (py_dict,))
+                } {
                     Ok(py_result) => {
-                        let s: String = py_result
-                            .extract(py)
-                            .unwrap_or_else(|_| "reject:python_router_invalid_return".to_string());
+                        let s: String = if use_batch_contract {
+                            py_result
+                                .extract::<Vec<String>>(py)
+                                .ok()
+                                .and_then(|mut v| {
+                                    if v.is_empty() {
+                                        None
+                                    } else {
+                                        Some(v.remove(0))
+                                    }
+                                })
+                                .unwrap_or_else(|| {
+                                    "reject:python_router_invalid_batch_return".to_string()
+                                })
+                        } else {
+                            py_result
+                                .extract(py)
+                                .unwrap_or_else(|_| "reject:python_router_invalid_return".to_string())
+                        };
                         Self::parse_return(s)
                     }
                     Err(py_err) => {
@@ -71,7 +122,15 @@ impl PythonRouter {
                             err_msg
                         )))
                     }
-                }
+                };
+                PythonCallMetrics::record_call(
+                    &metrics_sink,
+                    "router",
+                    "sync",
+                    py_call_start.elapsed(),
+                    1,
+                );
+                decision
             })
         });
 

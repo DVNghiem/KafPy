@@ -163,10 +163,22 @@ Additional environment variables for retry, DLQ, worker, and observability setti
 | `KAFKA_NUM_WORKERS` | Number of worker threads (default: `4`) |
 | `KAFKA_ENABLE_AUTO_OFFSET_STORE` | Enable auto offset store (default: `false`) |
 | `KAFPY_ROUTING_PY_CALLBACK_HANDLER` | Optional registered handler key used as Python routing callback when routing rules are enabled |
+| `KAFPY_HANDLER_MODE_DEFAULT` | Default handler mode when `add_handler(..., mode=None)` (e.g. `sync`, `async`, `batch_sync`, `batch_async`, `streaming_async`) |
+| `KAFPY_HANDLER_CONCURRENCY_DEFAULT` | Default per-handler execution concurrency limit in worker pool (default: `4`) |
+| `KAFPY_ROUTER_CONCURRENCY` | Concurrency limit for Python router callback execution (default: `4`) |
+| `KAFPY_ROUTER_BATCH_MODE` | Enable Python router batch callback contract (`1`/`true`) |
 
 ## Runtime wiring note
 
 `ConsumerConfig` exposes a broad API. In the current runtime builder path, only a subset is explicitly threaded into Rust config assembly before consumer startup (for example brokers/group/topics, poll/session controls, retry policy, DLQ prefix, drain timeout). Other fields may be accepted on the Python surface and still evolve in wiring coverage across releases.
+
+## GIL/Router Tuning Notes
+
+- `KAFPY_HANDLER_CONCURRENCY_DEFAULT` and per-handler `concurrency=` control Python callback pressure in worker execution.
+- `KAFPY_ROUTER_CONCURRENCY` applies bounded routing callback concurrency in `PythonRouter`.
+- `KAFPY_ROUTER_BATCH_MODE=true` switches the Python router callback contract from single-item to batch-compatible:
+  - default: callback input is a single `dict` and return is a single decision string
+  - batch mode: callback input is `List[dict]` and return is `List[str]` (current router execution extracts first result)
 
 ## Security
 

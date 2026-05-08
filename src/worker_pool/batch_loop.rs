@@ -10,7 +10,7 @@ use crate::coordinator::RetryCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
-use crate::observability::metrics::MetricLabels;
+use crate::observability::metrics::{MetricLabels, PythonCallMetrics};
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
 use crate::python::batch::BatchAccumulator;
@@ -56,9 +56,17 @@ pub(crate) async fn flush_partition_batch(
         0, // batch: attempt starts at 0
     );
     worker_pool_state.set_busy(worker_id, "shared".to_string());
+    let py_call_start = std::time::Instant::now();
     let result = span
         .in_scope(|| async { handler.invoke_mode_batch(&ctx, batch.clone()).await })
         .await;
+    PythonCallMetrics::record_call(
+        &prometheus_sink,
+        "handler",
+        handler.mode().as_str(),
+        py_call_start.elapsed(),
+        batch.len(),
+    );
     handle_batch_result_inline(
         result,
         batch,

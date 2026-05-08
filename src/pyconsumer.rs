@@ -105,11 +105,12 @@ impl PyConsumer {
     ///     topic: Kafka topic to subscribe to.
     ///     callback: Python callable invoked for each message.
     ///     mode: Optional handler mode — "sync", "async", "batch_sync", "batch_async".
-    ///           If None, defaults to "sync".
+    ///           If None, uses KAFPY_HANDLER_MODE_DEFAULT when set, otherwise "sync".
     ///     batch_max_size: Max messages per batch (batch modes only). Defaults to 100.
     ///     batch_max_wait_ms: Max wait time per batch in ms (batch modes only). Defaults to 1000.
     ///     timeout_ms: Per-handler execution timeout in ms. None uses ConsumerConfig.handler_timeout_ms.
-    ///     concurrency: Maximum concurrent executions for this handler. None = no limit.
+    ///     concurrency: Maximum concurrent executions for this handler.
+    ///                  None = global default limit (KAFPY_HANDLER_CONCURRENCY_DEFAULT or 4).
     #[pyo3(signature = (topic, callback, mode=None, batch_max_size=None, batch_max_wait_ms=None, timeout_ms=None, concurrency=None, middleware=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn add_handler(
@@ -123,7 +124,9 @@ impl PyConsumer {
         concurrency: Option<usize>,
         middleware: Option<Vec<Py<PyAny>>>,
     ) {
-        let mode = HandlerMode::from_opt_str(mode.as_deref());
+        let default_mode = std::env::var("KAFPY_HANDLER_MODE_DEFAULT").ok();
+        let resolved_mode = mode.or(default_mode);
+        let mode = HandlerMode::from_opt_str(resolved_mode.as_deref());
         let meta = HandlerMetadata::new(
             Arc::new(callback.unbind()),
             mode,

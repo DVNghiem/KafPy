@@ -9,7 +9,8 @@ KafPy minimizes GIL hold time by using dedicated boundary paths:
 
 1. **Sync handler path** uses `spawn_blocking` to isolate blocking Python callback work.
 2. **Async handler path** uses async bridge polling (`PythonAsyncFuture`) integrated with Tokio.
-3. **Rust orchestration stays outside GIL** except around callback and conversion boundaries.
+3. **Router callback path** uses bounded callback concurrency before entering the Python callback.
+4. **Rust orchestration stays outside GIL** except around callback and conversion boundaries.
 
 ```mermaid
 flowchart TB
@@ -56,6 +57,26 @@ impl PythonHandler {
     }
 }
 ```
+
+## Python Callback Pressure Controls
+
+KafPy includes bounded-execution controls to reduce GIL contention under high concurrency:
+
+- **Handler path**: per-handler semaphore control in worker execution
+  - default from `KAFPY_HANDLER_CONCURRENCY_DEFAULT` (default `4`)
+  - per-handler override via `add_handler(..., concurrency=...)`
+- **Routing path**: `KAFPY_ROUTER_CONCURRENCY` (default `4`)
+- **Handler mode defaults**: `KAFPY_HANDLER_MODE_DEFAULT` can promote async/batch modes globally
+
+## Python Callback Metrics
+
+The runtime exports callback-level metrics for GIL-pressure analysis:
+
+- `kafpy.python.call_total`
+- `kafpy.python.call_duration_seconds`
+- `kafpy.python.queue_wait_seconds`
+- `kafpy.python.batch_size`
+- `kafpy.python.backpressure_total`
 
 ## Async/Sync Bridge
 

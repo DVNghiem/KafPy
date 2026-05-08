@@ -724,3 +724,95 @@ impl PythonHandler {
         }
     }
 }
+
+#[cfg(test)]
+mod perf_tests {
+    use super::*;
+
+    fn mk_msg(offset: i64) -> OwnedMessage {
+        OwnedMessage {
+            topic: "bench".to_string(),
+            partition: 0,
+            offset,
+            key: None,
+            payload: Some(b"payload".to_vec()),
+            timestamp: crate::consumer::MessageTimestamp::NotAvailable,
+            headers: vec![],
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "perf smoke for local baseline capture"]
+    async fn perf_smoke_sync_vs_batch() {
+        pyo3::prepare_freethreaded_python();
+        let sync_handler = Python::attach(|py| {
+            let callback: Py<PyAny> = pyo3::types::PyModule::from_code(
+                py,
+                c"def cb(msg, ctx):\n    return None",
+                c"perf_sync_cb",
+                c"perf_sync_cb",
+            )
+            .unwrap()
+            .getattr("cb")
+            .unwrap()
+            .into();
+            PythonHandler::new(
+                Arc::new(callback),
+                None,
+                HandlerMode::SingleSync,
+                None,
+                None,
+                "bench-sync".to_string(),
+                None,
+                None,
+            )
+        });
+
+        let batch_handler = Python::attach(|py| {
+            let callback: Py<PyAny> = pyo3::types::PyModule::from_code(
+                py,
+                c"def cb(msgs):\n    return None",
+                c"perf_batch_cb",
+                c"perf_batch_cb",
+            )
+            .unwrap()
+            .getattr("cb")
+            .unwrap()
+            .into();
+            PythonHandler::new(
+                Arc::new(callback),
+                None,
+                HandlerMode::BatchSync,
+                Some(BatchPolicy {
+                    max_batch_size: 50,
+                    max_batch_wait_ms: 1,
+                }),
+                None,
+                "bench-batch".to_string(),
+                None,
+                None,
+            )
+        });
+
+        let ctx = ExecutionContext::new("bench".to_string(), 0, 0, 0);
+        let n = 200usize;
+
+        let sync_start = std::time::Instant::now();
+        for i in 0..n {
+            let _ = sync_handler.invoke(&ctx, mk_msg(i as i64)).await;
+        }
+        let sync_elapsed = sync_start.elapsed();
+
+        let batch_start = std::time::Instant::now();
+        let _ = batch_handler
+            .invoke_batch(&ctx, (0..n).map(|i| mk_msg(i as i64)).collect())
+            .await;
+        let batch_elapsed = batch_start.elapsed();
+
+        eprintln!(
+            "perf_smoke_sync_vs_batch sync_ms={} batch_ms={}",
+            sync_elapsed.as_millis(),
+            batch_elapsed.as_millis()
+        );
+    }
+}
