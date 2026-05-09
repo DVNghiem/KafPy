@@ -325,6 +325,24 @@ impl ConsumerDispatcher {
     }
 }
 
+// Fake OwnedMessage for testing
+#[cfg(test)]
+impl OwnedMessage {
+    pub(crate) fn fake(topic: &str, partition: i32, offset: i64) -> Self {
+        use crate::consumer::MessageTimestamp;
+
+        OwnedMessage {
+            topic: topic.to_string(),
+            partition,
+            offset,
+            key: None,
+            payload: None,
+            timestamp: MessageTimestamp::NotAvailable,
+            headers: vec![],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -422,23 +440,5 @@ mod tests {
         let a2 = a1.clone();
         assert_eq!(a1, a2);
         assert_eq!(a1.topic(), a2.topic());
-    }
-}
-
-// Fake OwnedMessage for testing
-#[cfg(test)]
-impl OwnedMessage {
-    pub(crate) fn fake(topic: &str, partition: i32, offset: i64) -> Self {
-        use crate::consumer::MessageTimestamp;
-
-        OwnedMessage {
-            topic: topic.to_string(),
-            partition,
-            offset,
-            key: None,
-            payload: None,
-            timestamp: MessageTimestamp::NotAvailable,
-            headers: vec![],
-        }
     }
 }

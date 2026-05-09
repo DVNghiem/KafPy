@@ -44,6 +44,7 @@ pub struct DlqMetadata {
 
 impl DlqMetadata {
     /// Creates a new DlqMetadata with the given fields.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         original_topic: String,
         original_partition: i32,

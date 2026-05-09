@@ -68,13 +68,13 @@ fn ctx_to_pydict<'py>(py: Python<'py>, ctx: &ExecutionContext) -> Py<PyAny> {
     let _ = dict.set_item("partition", ctx.partition);
     let _ = dict.set_item("offset", ctx.offset);
     let _ = dict.set_item("worker_id", ctx.worker_id);
-    if let Some(ref tid) = ctx.trace_id {
+    if let Some(ref tid) = ctx.trace.trace_id {
         let _ = dict.set_item("trace_id", tid);
     }
-    if let Some(ref sid) = ctx.span_id {
+    if let Some(ref sid) = ctx.trace.span_id {
         let _ = dict.set_item("span_id", sid);
     }
-    if let Some(ref flags) = ctx.trace_flags {
+    if let Some(ref flags) = ctx.trace.trace_flags {
         let _ = dict.set_item("trace_flags", flags);
     }
     dict.into()

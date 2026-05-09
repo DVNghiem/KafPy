@@ -34,8 +34,94 @@ pub struct HandlerMetadata {
     pub fan_out_config: Option<Arc<FanOutConfig>>,
 }
 
+/// Builder for `HandlerMetadata` to reduce constructor argument count.
+#[derive(Debug)]
+pub struct HandlerMetadataBuilder {
+    callback: Arc<Py<PyAny>>,
+    mode: HandlerMode,
+    batch_max_size: Option<usize>,
+    batch_max_wait_ms: Option<u64>,
+    timeout_ms: Option<u64>,
+    concurrency: Option<usize>,
+    middleware: Option<Vec<Arc<Py<PyAny>>>>,
+    fan_out_config: Option<Arc<FanOutConfig>>,
+}
+
+impl HandlerMetadataBuilder {
+    /// Creates a new builder with the required callback.
+    pub fn new(callback: Arc<Py<PyAny>>) -> Self {
+        Self {
+            callback,
+            mode: HandlerMode::default(),
+            batch_max_size: None,
+            batch_max_wait_ms: None,
+            timeout_ms: None,
+            concurrency: None,
+            middleware: None,
+            fan_out_config: None,
+        }
+    }
+
+    /// Sets the handler mode.
+    pub fn mode(mut self, mode: HandlerMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Sets the batch max size.
+    pub fn batch_max_size(mut self, batch_max_size: usize) -> Self {
+        self.batch_max_size = Some(batch_max_size);
+        self
+    }
+
+    /// Sets the batch max wait in milliseconds.
+    pub fn batch_max_wait_ms(mut self, batch_max_wait_ms: u64) -> Self {
+        self.batch_max_wait_ms = Some(batch_max_wait_ms);
+        self
+    }
+
+    /// Sets the timeout in milliseconds.
+    pub fn timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = Some(timeout_ms);
+        self
+    }
+
+    /// Sets the concurrency limit.
+    pub fn concurrency(mut self, concurrency: usize) -> Self {
+        self.concurrency = Some(concurrency);
+        self
+    }
+
+    /// Sets the middleware.
+    pub fn middleware(mut self, middleware: Vec<Arc<Py<PyAny>>>) -> Self {
+        self.middleware = Some(middleware);
+        self
+    }
+
+    /// Sets the fan-out config.
+    pub fn fan_out_config(mut self, fan_out_config: Arc<FanOutConfig>) -> Self {
+        self.fan_out_config = Some(fan_out_config);
+        self
+    }
+
+    /// Builds the `HandlerMetadata`.
+    pub fn build(self) -> HandlerMetadata {
+        HandlerMetadata {
+            callback: self.callback,
+            mode: self.mode,
+            batch_max_size: self.batch_max_size,
+            batch_max_wait_ms: self.batch_max_wait_ms,
+            timeout_ms: self.timeout_ms,
+            concurrency: self.concurrency,
+            middleware: self.middleware,
+            fan_out_config: self.fan_out_config,
+        }
+    }
+}
+
 impl HandlerMetadata {
     /// Creates a HandlerMetadata with middleware objects wrapped in Arc.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         callback: Arc<Py<PyAny>>,
         mode: HandlerMode,

@@ -285,6 +285,6 @@ mod tests {
     fn duplicate_guard_false_when_stored_lt() {
         let stored: i64 = 49;
         let highest: i64 = 50;
-        assert!(!(stored >= highest));
+        assert!(stored < highest);
     }
 }

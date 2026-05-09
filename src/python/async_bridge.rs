@@ -116,7 +116,7 @@ mod tests {
     fn test_python_async_future_new() {
         // Verify construction from a valid Python object.
         Python::attach(|py| {
-            let coro = py.None().into();
+            let coro = py.None();
             let _future = PythonAsyncFuture::new(coro);
         });
     }
@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn test_from_py_any() {
         Python::attach(|py| {
-            let coro: Py<PyAny> = py.None().into();
+            let coro: Py<PyAny> = py.None();
             let _future: PythonAsyncFuture = coro.into();
         });
     }

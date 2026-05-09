@@ -1,61 +1,12 @@
-site_name: KafPy Documentation
-site_description: High-performance Kafka client for Python
-site_url: https://kafpy.readthedocs.io/
-
-repo_name: dangvansam/kafpy
-repo_url: https://github.com/dangvansam/kafpy
-
+site_name: KafPy
 theme:
   name: material
-  palette:
-    - scheme: default
-      primary: indigo
-      accent: indigo
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
-    - scheme: slate
-      primary: indigo
-      accent: indigo
-      toggle:
-        icon: material/brightness-4
-        name: Switch to light mode
-  features:
-    - navigation.instant
-    - navigation.tracking
-    - navigation.tabs
-    - navigation.sections
-    - toc.integrate
-    - content.code.copy
-    - content.code.annotate
-
-plugins:
-  - search
-  - mermaid2:
-      version: '10'
-
-markdown_extensions:
-  - pymdownx.highlight:
-      anchor_linenums: true
-  - pymdownx.inlinehilite
-  - pymdownx.snippets
-  - pymdownx.superfences:
-      custom_fences:
-        - name: mermaid
-          class: mermaid
-          format: !!python/name:pymdownx.superfences.fence_code_format
 
 nav:
   - Home: index.md
-  - Architecture:
-    - architecture/index.md
-    - architecture/overview.md
-    - architecture/modules.md
-    - architecture/message-flow.md
-    - architecture/state-machines.md
-    - architecture/routing.md
-    - architecture/pyboundary.md
-  - API Reference: api/kafpy.md
-  - Contributing:
-    - contributing/setup.md
-    - contributing/conventions.md
+  - Installation: installation.md
+  - Tutorial: tutorial.md
+  - Guides: guides.md
+  - Best Practices: best-practices.md
+  - API Reference: api.md
+  - Contributing: contributing.md

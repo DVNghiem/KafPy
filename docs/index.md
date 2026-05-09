@@ -1,16 +1,19 @@
 # KafPy
 
-High-performance Kafka consumer & producer for Python, built with Rust using PyO3.
+KafPy is a Python library for building high-performance Kafka consumers. Built with Rust and PyO3, it combines Rust's throughput with a clean Python API for writing business logic.
 
-## Features
+## Key capabilities
 
-- **High Performance**: Built in Rust for maximum throughput and low latency
-- **Async Support**: Full support for async/await handlers
-- **Batch Processing**: Efficient batch message handling (fixed-window timer per partition)
-- **Type Safe**: Full type annotations for Python
-- **Retry & DLQ**: Built-in retry logic and dead letter queue support
+- **Handler-based API** — register functions to process messages from any topic
+- **Sync and async handlers** — use whichever model fits your code
+- **Batch processing** — process messages in configurable batches for throughput
+- **Retry and DLQ** — built-in exponential backoff with dead-letter queue routing
+- **Middleware** — logging, metrics, and custom extensions via a simple interface
+- **Prometheus metrics and OTLP tracing** — observability out of the box
+- **Fan-out and fan-in** — route messages to multiple topics or aggregate multiple sources
+- **Graceful shutdown** — drain in-flight messages before exiting
 
-## Quick Start
+## Quick start
 
 ```python
 import kafpy
@@ -25,33 +28,14 @@ consumer = kafpy.Consumer(config)
 app = kafpy.KafPy(consumer)
 
 @app.handler(topic="my-topic")
-def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext):
-    print(f"Received: {msg.get_payload_as_string()}")
+def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerResult:
+    print(f"Received: {msg.key} @ {ctx.topic}:{ctx.partition}:{ctx.offset}")
     return kafpy.HandlerResult(action="ack")
 
 app.run()
 ```
 
-### Runtime semantics
+## Next steps
 
-- Successful handler execution is considered processed.
-- Retry/DLQ behavior is triggered from failures (exceptions/timeouts), not from return action strings alone.
-- Prefer raising structured errors in failure paths.
-
-## Installation
-
-See the [Installation Guide](installation.md) for detailed setup instructions.
-
-## Documentation
-
-- [Getting Started](getting-started.md) - First steps with KafPy
-- [Configuration](configuration.md) - All configuration options
-- [Handlers](handlers.md) - Handler types and registration
-- [Consumer](consumer.md) - Consumer usage
-- [Error Handling](error-handling.md) - Retry and DLQ
-- [Benchmark](benchmark.md) - Performance benchmarking
-- [API Reference](api/kafpy.md) - Complete API documentation
-
-## License
-
-BSD-3-Clause
+- [Installation](installation.md) — install from PyPI or build from source
+- [Tutorial](tutorial.md) — build your first Kafka consumer with KafPy

@@ -18,7 +18,7 @@ use crate::observability::metrics::{
 };
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
-use crate::python::context::ExecutionContext;
+use crate::python::context::{ExecutionContext, TraceContext};
 use crate::python::execution_result::ExecutionResult;
 use crate::python::executor::Executor;
 use crate::python::handler::PythonHandler;
@@ -133,9 +133,11 @@ pub(crate) async fn worker_loop(
                 msg.partition,
                 msg.offset,
                 worker_id,
-                trace_id_for_ctx,
-                span_id_for_ctx,
-                trace_flags_for_ctx,
+                TraceContext {
+                    trace_id: trace_id_for_ctx,
+                    span_id: span_id_for_ctx,
+                    trace_flags: trace_flags_for_ctx,
+                },
                 None,
                 None,
                 String::new(),
@@ -428,9 +430,11 @@ pub(crate) async fn worker_loop(
                             ctx.partition,
                             ctx.offset,
                             worker_id,
-                            Some(trace_id.clone()),
-                            Some(branch_span_id.clone()),
-                            Some("01".to_string()),
+                            TraceContext {
+                                trace_id: Some(trace_id.clone()),
+                                span_id: Some(branch_span_id.clone()),
+                                trace_flags: Some("01".to_string()),
+                            },
                             Some(branch_id),
                             Some(fan_out_id_clone),
                             String::new(),

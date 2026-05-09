@@ -436,9 +436,7 @@ impl Default for QueueSnapshot {
 }
 
 /// No-op metrics sink used when no metrics backend is configured.
-///
 // ─── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;

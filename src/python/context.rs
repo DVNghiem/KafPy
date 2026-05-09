@@ -1,5 +1,16 @@
 //! Execution context — metadata attached to each message during execution.
 
+/// Trace context fields extracted from W3C traceparent header.
+#[derive(Debug, Clone, Default)]
+pub struct TraceContext {
+    /// W3C trace_id (32 hex chars from traceparent)
+    pub trace_id: Option<String>,
+    /// W3C span_id (16 hex chars from traceparent)
+    pub span_id: Option<String>,
+    /// W3C trace flags (e.g., "01")
+    pub trace_flags: Option<String>,
+}
+
 /// Context carried through the execution pipeline.
 #[derive(Debug, Clone)]
 pub struct ExecutionContext {
@@ -7,12 +18,8 @@ pub struct ExecutionContext {
     pub partition: i32,
     pub offset: i64,
     pub worker_id: usize,
-    /// W3C trace_id (32 hex chars from traceparent)
-    pub trace_id: Option<String>,
-    /// W3C span_id (16 hex chars from traceparent)
-    pub span_id: Option<String>,
-    /// W3C trace flags (e.g., "01")
-    pub trace_flags: Option<String>,
+    /// Trace context extracted from W3C traceparent header.
+    pub trace: TraceContext,
     /// Fan-out branch ID. None when not a fan-out branch.
     pub branch_id: Option<u64>,
     /// Fan-out dispatch ID (unique per primary message). None when not a fan-out dispatch.
@@ -33,9 +40,7 @@ impl ExecutionContext {
             partition,
             offset,
             worker_id,
-            trace_id: None,
-            span_id: None,
-            trace_flags: None,
+            trace: TraceContext::default(),
             branch_id: None,
             fan_out_id: None,
             source_topic: String::new(),
@@ -44,14 +49,13 @@ impl ExecutionContext {
     }
 
     /// Create a new ExecutionContext with trace context from W3C traceparent.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_trace(
         topic: String,
         partition: i32,
         offset: i64,
         worker_id: usize,
-        trace_id: Option<String>,
-        span_id: Option<String>,
-        trace_flags: Option<String>,
+        trace: TraceContext,
         branch_id: Option<u64>,
         fan_out_id: Option<u64>,
         source_topic: String,
@@ -62,9 +66,7 @@ impl ExecutionContext {
             partition,
             offset,
             worker_id,
-            trace_id,
-            span_id,
-            trace_flags,
+            trace,
             branch_id,
             fan_out_id,
             source_topic,

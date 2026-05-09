@@ -207,7 +207,7 @@ mod tests {
         // Use a lambda that returns "defer" since we just need a valid Arc<Py<PyAny>>
         pyo3::Python::attach(|py| {
             let callback = make_callback(py, "defer");
-            PythonRouter::new(callback);
+            PythonRouter::new(callback, SharedPrometheusSink::new());
         });
     }
 
@@ -216,7 +216,7 @@ mod tests {
         let decision = tokio::task::spawn_blocking(|| {
             Python::attach(|py| {
                 let callback = make_callback(py, "drop");
-                let router = PythonRouter::new(callback);
+                let router = PythonRouter::new(callback, SharedPrometheusSink::new());
                 router.route(&routing_ctx())
             })
         })
@@ -231,7 +231,7 @@ mod tests {
         let decision = tokio::task::spawn_blocking(|| {
             Python::attach(|py| {
                 let callback = make_callback(py, "route:my-handler");
-                let router = PythonRouter::new(callback);
+                let router = PythonRouter::new(callback, SharedPrometheusSink::new());
                 router.route(&routing_ctx())
             })
         })
@@ -249,7 +249,7 @@ mod tests {
         let decision = tokio::task::spawn_blocking(|| {
             Python::attach(|py| {
                 let callback = make_callback(py, "reject:no_match");
-                let router = PythonRouter::new(callback);
+                let router = PythonRouter::new(callback, SharedPrometheusSink::new());
                 router.route(&routing_ctx())
             })
         })
@@ -267,7 +267,7 @@ mod tests {
         let decision = tokio::task::spawn_blocking(|| {
             Python::attach(|py| {
                 let callback = make_callback(py, "defer");
-                let router = PythonRouter::new(callback);
+                let router = PythonRouter::new(callback, SharedPrometheusSink::new());
                 router.route(&routing_ctx())
             })
         })

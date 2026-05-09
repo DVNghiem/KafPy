@@ -68,13 +68,13 @@ fn ctx_to_pydict<'py>(py: Python<'py>, ctx: &ExecutionContext, msg: &OwnedMessag
     let _ = py_ctx.set_item("timestamp", ts);
     let _ = py_ctx.set_item("headers", &msg.headers);
     // Inject trace context fields if present
-    if let Some(ref tid) = ctx.trace_id {
+    if let Some(ref tid) = ctx.trace.trace_id {
         let _ = py_ctx.set_item("trace_id", tid);
     }
-    if let Some(ref sid) = ctx.span_id {
+    if let Some(ref sid) = ctx.trace.span_id {
         let _ = py_ctx.set_item("span_id", sid);
     }
-    if let Some(ref flags) = ctx.trace_flags {
+    if let Some(ref flags) = ctx.trace.trace_flags {
         let _ = py_ctx.set_item("trace_flags", flags);
     }
     // Fan-in source topic (D-06: FANIN-03)
@@ -168,8 +168,89 @@ pub struct PythonHandler {
     fan_out: Option<Arc<FanOutConfig>>,
 }
 
+/// Builder for `PythonHandler` to reduce constructor argument count.
+#[derive(Debug, Clone)]
+pub struct PythonHandlerBuilder {
+    callback: Arc<Py<PyAny>>,
+    retry_policy: Option<RetryPolicy>,
+    mode: HandlerMode,
+    batch_policy: Option<BatchPolicy>,
+    handler_timeout: Option<Duration>,
+    name: String,
+    rayon_pool: Option<Arc<RayonPool>>,
+    middleware: Option<Vec<Arc<Py<PyAny>>>>,
+}
+
+impl PythonHandlerBuilder {
+    /// Creates a new builder with the required callback and name.
+    pub fn new(callback: Arc<Py<PyAny>>, name: String) -> Self {
+        Self {
+            callback,
+            retry_policy: None,
+            mode: HandlerMode::default(),
+            batch_policy: None,
+            handler_timeout: None,
+            name,
+            rayon_pool: None,
+            middleware: None,
+        }
+    }
+
+    /// Sets the retry policy.
+    pub fn retry_policy(mut self, retry_policy: RetryPolicy) -> Self {
+        self.retry_policy = Some(retry_policy);
+        self
+    }
+
+    /// Sets the handler mode.
+    pub fn mode(mut self, mode: HandlerMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Sets the batch policy.
+    pub fn batch_policy(mut self, batch_policy: BatchPolicy) -> Self {
+        self.batch_policy = Some(batch_policy);
+        self
+    }
+
+    /// Sets the handler timeout.
+    pub fn handler_timeout(mut self, handler_timeout: Duration) -> Self {
+        self.handler_timeout = Some(handler_timeout);
+        self
+    }
+
+    /// Sets the Rayon pool.
+    pub fn rayon_pool(mut self, rayon_pool: Arc<RayonPool>) -> Self {
+        self.rayon_pool = Some(rayon_pool);
+        self
+    }
+
+    /// Sets the middleware.
+    pub fn middleware(mut self, middleware: Vec<Arc<Py<PyAny>>>) -> Self {
+        self.middleware = Some(middleware);
+        self
+    }
+
+    /// Builds the `PythonHandler`.
+    pub fn build(self) -> PythonHandler {
+        PythonHandler {
+            callback: self.callback,
+            retry_policy: self.retry_policy,
+            mode: self.mode,
+            batch_policy: self.batch_policy,
+            handler_timeout: self.handler_timeout,
+            name: self.name,
+            rayon_pool: self.rayon_pool,
+            middleware: self.middleware,
+            fan_out: None,
+        }
+    }
+}
+
 impl PythonHandler {
     /// Wraps a Python callable stored as `Arc<Py<PyAny>>` (GIL-independent, Send+Sync).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         callback: Arc<Py<PyAny>>,
         retry_policy: Option<RetryPolicy>,
@@ -198,6 +279,7 @@ impl PythonHandler {
     /// If a handler invocation takes longer than `timeout`, it will be cancelled
     /// and treated as a `Terminal(HandlerPanic)` error, routing the message to
     /// DLQ or retry based on the failure classification.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_timeout(
         callback: Arc<Py<PyAny>>,
         retry_policy: Option<RetryPolicy>,
@@ -744,7 +826,7 @@ mod perf_tests {
     #[tokio::test]
     #[ignore = "perf smoke for local baseline capture"]
     async fn perf_smoke_sync_vs_batch() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         let sync_handler = Python::attach(|py| {
             let callback: Py<PyAny> = pyo3::types::PyModule::from_code(
                 py,
