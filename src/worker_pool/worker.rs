@@ -217,7 +217,7 @@ pub(crate) async fn worker_loop(
                     handler.name(),
                 );
             }
-            let _outcome = executor.execute(&ctx, &msg, &result);
+            let _ = executor.execute(&ctx, &msg, &result);
 
             match result {
                 ExecutionResult::Ok => {
@@ -385,7 +385,6 @@ pub(crate) async fn worker_loop(
                 // Clone trace context once before loop so each iteration can borrow.
                 let parent_trace_id_opt = trace_id.clone();
                 let parent_span_id_opt = span_id.clone();
-                let _parent_trace_flags_opt = trace_flags.clone();
 
                 for sink in &fan_out_config.sinks {
                     let tracker = Arc::clone(&fan_tracker);

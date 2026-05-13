@@ -397,10 +397,6 @@ impl PythonHandler {
             }
         };
 
-        // Apply handler timeout if configured
-        // Note: timeout is applied at the invoke_mode_with_timeout level.
-        // This method just passes through the result.
-        let _ = self.handler_timeout;
         result
     }
 

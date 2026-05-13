@@ -82,13 +82,3 @@ impl Executor for DefaultExecutor {
     }
 }
 
-// ─── Placeholder trait interfaces ────────────────────────────────────────────
-
-/// Placeholder for retry policy (not implemented).
-pub trait RetryExecutor: Executor {}
-
-/// Placeholder for offset tracking (not implemented).
-pub trait OffsetAck: Send + Sync {}
-
-/// Placeholder for async Python handler support (not implemented).
-pub trait AsyncHandler: Send + Sync {}

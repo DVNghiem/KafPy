@@ -1,3 +1,5 @@
+#![deny(dead_code)]
+
 use pyo3::prelude::*;
 
 pub mod config;
