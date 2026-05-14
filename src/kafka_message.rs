@@ -11,7 +11,7 @@ use crate::consumer::message::OwnedMessage;
 ///
 /// Constructed from a pure-Rust `OwnedMessage` at the PyO3 boundary.
 /// All fields are copied into owned Python objects.
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
 pub struct KafkaMessage {
     #[pyo3(get)]

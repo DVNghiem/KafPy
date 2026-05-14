@@ -4,7 +4,7 @@ use std::env;
 use crate::bindings::{PyObservabilityConfig, PyRetryPolicy};
 
 #[derive(Debug, Clone)]
-#[pyclass]
+#[pyclass(from_py_object)]
 pub struct ConsumerConfig {
     pub brokers: String,
     pub group_id: String,
@@ -43,7 +43,7 @@ pub struct ConsumerConfig {
 }
 
 #[derive(Debug, Clone)]
-#[pyclass]
+#[pyclass(from_py_object)]
 pub struct ProducerConfig {
     pub brokers: String,
     pub message_timeout_ms: u64,
@@ -386,7 +386,7 @@ fn make_producer_builder_clone(b: &ProducerConfigBuilder) -> ProducerConfigBuild
 }
 
 #[derive(Debug)]
-#[pyclass]
+#[pyclass(from_py_object)]
 pub struct ProducerConfigBuilder {
     brokers: RwLock<Option<String>>,
     message_timeout_ms: u64,
@@ -584,7 +584,7 @@ fn make_consumer_builder_clone(b: &ConsumerConfigBuilder) -> ConsumerConfigBuild
 }
 
 #[derive(Debug)]
-#[pyclass]
+#[pyclass(from_py_object)]
 pub struct ConsumerConfigBuilder {
     brokers: RwLock<Option<String>>,
     group_id: RwLock<Option<String>>,

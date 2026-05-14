@@ -24,7 +24,7 @@ use crate::retry::policy::RetryPolicy;
 /// - max_delay_ms: 30000
 /// - jitter_factor: 0.1
 #[derive(Debug, Clone)]
-#[pyclass]
+#[pyclass(from_py_object)]
 pub struct PyRetryPolicy {
     /// Maximum number of retry attempts before routing to DLQ.
     #[pyo3(get)]
@@ -100,7 +100,7 @@ impl PyRetryPolicy {
 /// - sampling_ratio: 1.0
 /// - log_format: "pretty"
 #[derive(Debug, Clone)]
-#[pyclass]
+#[pyclass(from_py_object)]
 pub struct PyObservabilityConfig {
     /// OTLP exporter endpoint (e.g., "http://localhost:4317").
     /// None means tracing is disabled.
@@ -168,7 +168,7 @@ impl PyObservabilityConfig {
 
 /// High-level failure category for classifying message processing errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[pyclass(eq, eq_int)]
+#[pyclass(from_py_object, eq, eq_int)]
 pub enum PyFailureCategory {
     /// Transient failures that may succeed on retry (e.g., network timeout).
     Retryable,
@@ -204,7 +204,7 @@ impl From<RustFailureCategory> for PyFailureCategory {
 /// Represents the classification of why a message failed processing,
 /// used for retry and DLQ routing decisions.
 #[derive(Debug, Clone)]
-#[pyclass]
+#[pyclass(from_py_object)]
 pub struct PyFailureReason {
     /// The failure category (Retryable, Terminal, or NonRetryable).
     #[pyo3(get)]

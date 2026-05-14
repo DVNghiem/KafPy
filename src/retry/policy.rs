@@ -1,4 +1,3 @@
-use rand::Rng;
 use std::time::Duration;
 
 /// Retry policy configuration for message processing.
@@ -83,8 +82,7 @@ impl RetrySchedule {
         // Apply jitter: multiplier = 1 - jitter_factor + rng * jitter_factor * 2
         // This gives range [1 - jitter_factor, 1 + jitter_factor]
         let jitter_multiplier = {
-            let mut rng = rand::thread_rng();
-            let jitter: f64 = rng.gen_range(0.0..1.0);
+            let jitter: f64 = rand::random();
             1.0 - self.jitter_factor + jitter * self.jitter_factor * 2.0
         };
 
