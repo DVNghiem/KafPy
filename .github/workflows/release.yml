@@ -34,8 +34,9 @@ jobs:
           args: --release --out dist --find-interpreter
           sccache: 'true'
           manylinux: auto
-          # cmake must be installed inside the manylinux container, not on the host runner
-          before-script-linux: pip install cmake
+          # librdkafka 2.12.x unconditionally includes curl/curl.h even with WITH_CURL=OFF;
+          # headers must be present at compile time even though curl is not linked.
+          before-script-linux: pip install cmake && yum install -y libcurl-devel
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -65,8 +66,9 @@ jobs:
           args: --release --out dist --find-interpreter
           sccache: 'true'
           manylinux: musllinux_1_2
-          # musllinux containers are Alpine-based; use apk, not dnf/yum
-          before-script-linux: apk add --no-cache cmake
+          # rust-musl-cross containers are Debian-based (not Alpine); use apt-get.
+          # curl headers needed at compile time due to librdkafka 2.12.x unconditional include.
+          before-script-linux: pip install cmake && apt-get install -y --no-install-recommends libcurl4-openssl-dev
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:

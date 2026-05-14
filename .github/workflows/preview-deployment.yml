@@ -34,7 +34,7 @@ jobs:
           args: --release --out dist --find-interpreter
           sccache: 'true'
           manylinux: auto
-          before-script-linux: pip install cmake
+          before-script-linux: pip install cmake && yum install -y libcurl-devel
 
   musllinux:
     runs-on: ${{ matrix.platform.runner }}
@@ -59,7 +59,7 @@ jobs:
           args: --release --out dist --find-interpreter
           sccache: 'true'
           manylinux: musllinux_1_2
-          before-script-linux: apk add --no-cache cmake
+          before-script-linux: pip install cmake && apt-get install -y --no-install-recommends libcurl4-openssl-dev
 
   windows:
     runs-on: ${{ matrix.platform.runner }}
@@ -83,25 +83,25 @@ jobs:
           args: --release --out dist --find-interpreter
           sccache: 'true'
 
-  macos:
-    runs-on: ${{ matrix.platform.runner }}
-    strategy:
-      matrix:
-        platform:
-          - runner: macos-13
-            target: x86_64
-          - runner: macos-14
-            target: aarch64
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-      - name: Install cmake
-        run: brew install cmake
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.platform.target }}
-          args: --release --out dist --find-interpreter
-          sccache: 'true'
+  # macos:
+  #   runs-on: ${{ matrix.platform.runner }}
+  #   strategy:
+  #     matrix:
+  #       platform:
+  #         - runner: macos-13
+  #           target: x86_64
+  #         - runner: macos-14
+  #           target: aarch64
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: '3.x'
+  #     - name: Install cmake
+  #       run: brew install cmake
+  #     - name: Build wheels
+  #       uses: PyO3/maturin-action@v1
+  #       with:
+  #         target: ${{ matrix.platform.target }}
+  #         args: --release --out dist --find-interpreter
+  #         sccache: 'true'
