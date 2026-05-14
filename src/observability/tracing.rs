@@ -4,7 +4,7 @@
 //! but logs through Python. The tracing spans are zero-cost when no subscriber
 //! is configured, and Python logging handles output formatting.
 
-use tracing::Span;
+use crate::log::{Span, info_span};
 
 /// Span extension trait for KafPy spans.
 ///
@@ -60,7 +60,7 @@ impl KafpySpanExt for Span {
         mode: &str,
         attempt: u32,
     ) -> Span {
-        tracing::info_span!(
+        info_span!(
             "kafpy.handler.invoke",
             handler_id = handler_id,
             handler_name = handler_name,
@@ -79,7 +79,7 @@ impl KafpySpanExt for Span {
         offset: i64,
         routing_decision: &str,
     ) -> Span {
-        tracing::info_span!(
+        info_span!(
             "kafpy.dispatch.process",
             topic = topic,
             partition = partition,
@@ -89,7 +89,7 @@ impl KafpySpanExt for Span {
     }
 
     fn kafpy_dlq_route(&self, handler_id: &str, reason: &str, partition: i32) -> Span {
-        tracing::info_span!(
+        info_span!(
             "kafpy.dlq.route",
             handler_id = handler_id,
             reason = reason,
@@ -104,7 +104,7 @@ impl KafpySpanExt for Span {
         parent_trace_id: Option<&str>,
         parent_span_id: Option<&str>,
     ) -> Span {
-        tracing::info_span!(
+        info_span!(
             "kafpy.fanout.branch",
             fan_out_id = %fan_out_id,
             branch_name = %branch_name,

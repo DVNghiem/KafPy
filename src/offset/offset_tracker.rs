@@ -12,6 +12,7 @@
 
 use crate::consumer::ConsumerRunner;
 use crate::failure::{FailureCategory, FailureReason};
+use crate::log::{info, warn};
 use parking_lot::Mutex;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
@@ -310,7 +311,7 @@ impl OffsetCoordinator for OffsetTracker {
 
             for &offset in &failed_offsets {
                 // OffsetTracker does not store original payload/key — log as limitation
-                tracing::warn!(
+                warn!(
                     topic = %topic,
                     partition = partition,
                     offset = offset,
@@ -333,7 +334,7 @@ impl OffsetCoordinator for OffsetTracker {
                 );
 
                 let tp = dlq_router.route(&metadata);
-                tracing::info!(
+                info!(
                     topic = %topic,
                     partition = partition,
                     offset = offset,

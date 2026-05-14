@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
-use tracing::warn;
+use crate::log::warn;
 
 /// PythonRouter wraps a Py<PyAny> callback that receives routing context.
 ///

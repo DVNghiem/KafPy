@@ -8,7 +8,7 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{debug, error, warn};
+use crate::log::{debug, error, warn};
 
 use super::metadata::DlqMetadata;
 use crate::consumer::config::ConsumerConfig;

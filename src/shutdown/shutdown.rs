@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use crate::log::{debug, info};
 
 /// Phase of the shutdown lifecycle.
 ///
@@ -69,7 +69,7 @@ impl ShutdownCoordinator {
     /// * `drain_timeout_secs` — seconds to wait for worker drain before force-abort
     pub fn new(drain_timeout_secs: u64) -> Self {
         let drain_timeout = Duration::from_secs(drain_timeout_secs);
-        tracing::debug!(
+        debug!(
             drain_timeout_secs = drain_timeout_secs,
             "ShutdownCoordinator created"
         );

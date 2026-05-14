@@ -10,6 +10,7 @@ use crate::dispatcher::{DispatchOutcome, Dispatcher, QueueManager};
 use crate::observability::tracing::KafpySpanExt;
 use crate::routing::chain::RoutingChain;
 use crate::routing::context::RoutingContext;
+use crate::log::{debug, error, info, warn, Span};
 use crate::routing::decision::RoutingDecision;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -96,7 +97,7 @@ impl ConsumerDispatcher {
                     let partition = msg.partition;
                     let offset = msg.offset;
                     // Dispatch inside span; routing_decision is derived from outcome
-                    let span = tracing::Span::current().kafpy_dispatch_process(
+                    let span = Span::current().kafpy_dispatch_process(
                         &topic,
                         partition,
                         offset,
@@ -118,7 +119,7 @@ impl ConsumerDispatcher {
                             queue_name: _,
                             reason: _,
                         }) => {
-                            tracing::Span::current().record("routing_decision", "backpressure");
+                            Span::current().record("routing_decision", "backpressure");
                             if let Some(BackpressureAction::PausePartition {
                                 topic: pause_topic,
                                 ..
@@ -126,14 +127,14 @@ impl ConsumerDispatcher {
                             {
                                 match self.pause_partition(&pause_topic) {
                                     Ok(()) => {
-                                        tracing::warn!(
+                                        warn!(
                                             "paused topic '{}' due to backpressure",
                                             pause_topic
                                         );
                                         self.paused_topics.lock().insert(pause_topic.clone());
                                     }
                                     Err(e) => {
-                                        tracing::error!(
+                                        error!(
                                             "failed to pause topic '{}': {}",
                                             pause_topic,
                                             e
@@ -143,17 +144,17 @@ impl ConsumerDispatcher {
                             }
                         }
                         Err(DispatchError::HandlerNotRegistered { topic: t }) => {
-                            tracing::Span::current().record("routing_decision", "not_registered");
-                            tracing::debug!("no handler for topic '{}', skipping", t);
+                            Span::current().record("routing_decision", "not_registered");
+                            debug!("no handler for topic '{}', skipping", t);
                         }
                         Err(e) => {
-                            tracing::Span::current().record("routing_decision", "queue_closed");
-                            tracing::error!("dispatch error: {}", e);
+                            Span::current().record("routing_decision", "queue_closed");
+                            error!("dispatch error: {}", e);
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::error!("consumer error: {}", e);
+                    error!("consumer error: {}", e);
                 }
             }
         }
@@ -179,7 +180,7 @@ impl ConsumerDispatcher {
                 // Debug: log handlers map contents before send
                 {
                     let guard = qm.handlers.lock();
-                    tracing::debug!(handler_id = %handler_id, topics = ?guard.keys().collect::<Vec<_>>(), "route_with_chain: handlers in QM");
+                    debug!(handler_id = %handler_id, topics = ?guard.keys().collect::<Vec<_>>(), "route_with_chain: handlers in QM");
                 }
                 match qm.send_to_handler_by_id(&handler_id, msg) {
                     Ok(outcome) => (Ok(outcome), None),
@@ -216,7 +217,7 @@ impl ConsumerDispatcher {
                 }
             }
             RoutingDecision::Drop => {
-                tracing::debug!("message dropped by routing chain");
+                debug!("message dropped by routing chain");
                 (
                     Err(DispatchError::HandlerNotRegistered {
                         topic: "routing-drop".to_string(),
@@ -225,7 +226,7 @@ impl ConsumerDispatcher {
                 )
             }
             RoutingDecision::Reject(reason) => {
-                tracing::warn!("message rejected by routing chain: {}", reason);
+                warn!("message rejected by routing chain: {}", reason);
                 (
                     Err(DispatchError::HandlerNotRegistered {
                         topic: "routing-reject".to_string(),
@@ -235,7 +236,7 @@ impl ConsumerDispatcher {
             }
             RoutingDecision::Defer => {
                 // Should not happen with properly configured chain, but handle gracefully
-                tracing::warn!("routing chain returned Defer with no fallback");
+                warn!("routing chain returned Defer with no fallback");
                 (
                     Err(DispatchError::HandlerNotRegistered {
                         topic: "routing-defer".to_string(),
@@ -254,9 +255,9 @@ impl ConsumerDispatcher {
         let threshold = (capacity as f64 * self.resume_threshold) as usize;
         if current_depth < threshold && self.paused_topics.lock().remove(topic) {
             if let Err(e) = self.resume_partition(topic) {
-                tracing::error!("failed to resume topic '{}': {}", topic, e);
+                error!("failed to resume topic '{}': {}", topic, e);
             } else {
-                tracing::info!(
+                info!(
                     "resumed topic '{}' (depth {} < threshold {})",
                     topic,
                     current_depth,

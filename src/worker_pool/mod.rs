@@ -8,6 +8,7 @@ use crate::execution::execution_result::ExecutionResult;
 use crate::failure::FailureReason;
 use crate::observability::metrics::HandlerMetrics;
 use crate::observability::tracing::KafpySpanExt;
+use crate::log::{info, Span};
 use crate::retry::retry_coordinator::RetryCoordinator;
 use std::sync::Arc;
 
@@ -61,7 +62,7 @@ pub(crate) async fn handle_execution_failure(
 
     if should_retry {
         if let Some(d) = delay {
-            tracing::info!(
+            info!(
                 topic = %ctx.topic, partition = ctx.partition, offset = ctx.offset,
                 attempt = retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset),
                 delay_ms = d.as_millis(), "scheduling retry"
@@ -102,7 +103,7 @@ pub(crate) async fn handle_execution_failure(
             None,
         );
 
-        let dlq_span = tracing::Span::current().kafpy_dlq_route(
+        let dlq_span = Span::current().kafpy_dlq_route(
             ctx.topic.as_str(),
             &reason.to_string(),
             ctx.partition,

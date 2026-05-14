@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tokio::time::interval;
-use tracing::{debug, error};
+use crate::log::{debug, error, info};
 
 use crate::consumer::runner::ConsumerRunner;
 use crate::offset::offset_tracker::OffsetTracker;
@@ -143,9 +143,9 @@ impl OffsetCommitter {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                 } => {
-                    tracing::info!("coordinator entering finalizing phase, committing final offsets");
+                    info!("coordinator entering finalizing phase, committing final offsets");
                     self.process_ready_partitions().await;
-                    tracing::info!("final offsets committed, committer shutting down");
+                    info!("final offsets committed, committer shutting down");
                     break;
                 }
                 // Watch channel signal — a topic-partition has new data ready

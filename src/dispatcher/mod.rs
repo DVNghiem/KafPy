@@ -31,6 +31,7 @@ pub use crate::consumer::OwnedMessage;
 pub use backpressure::{BackpressureAction, DefaultBackpressurePolicy, PauseOnFullPolicy};
 pub use consumer_dispatcher::ConsumerDispatcher;
 pub use error::DispatchError;
+use crate::log::info;
 use queue_manager::QueueManager;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -166,9 +167,9 @@ impl Dispatcher {
         let partition = message.partition;
         let offset = message.offset;
 
-        tracing::info!(topic = %topic, "send_with_policy_and_signal ENTER");
+        info!(topic = %topic, "send_with_policy_and_signal ENTER");
         let guard = self.queue_manager.handlers.lock();
-        tracing::info!(topic = %topic, n_handlers = guard.len(), entries = ?guard.keys().collect::<Vec<_>>(), "send_with_policy_and_signal: got lock");
+        info!(topic = %topic, n_handlers = guard.len(), entries = ?guard.keys().collect::<Vec<_>>(), "send_with_policy_and_signal: got lock");
         let entry = guard
             .get(&topic)
             .unwrap_or_else(|| panic!("no handler for topic '{}'", topic.clone()));

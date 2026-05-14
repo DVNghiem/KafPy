@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt};
-use tracing::{debug, error, info};
+use crate::log::{debug, error, info};
 
 /// The consumer runner owns the consumer and drives the async message loop.
 ///

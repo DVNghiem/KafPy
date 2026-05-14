@@ -6,6 +6,7 @@
 
 use crate::execution::context::ExecutionContext;
 use crate::execution::execution_result::ExecutionResult;
+use crate::log::{error, info, info_span};
 use crate::middleware::HandlerMiddleware;
 use std::time::Duration;
 
@@ -31,7 +32,7 @@ impl Default for Logging {
 impl HandlerMiddleware for Logging {
     fn before(&self, ctx: &ExecutionContext) {
         // Create a span to mark handler start — zero-cost if no subscriber
-        let _span = tracing::info_span!(
+        let _span = info_span!(
             "kafpy.middleware.logging",
             handler_id = %ctx.topic,
             topic = %ctx.topic,
@@ -40,7 +41,7 @@ impl HandlerMiddleware for Logging {
         )
         .entered();
 
-        tracing::info!(
+        info!(
             handler_id = %ctx.topic,
             topic = %ctx.topic,
             partition = ctx.partition,
@@ -50,7 +51,7 @@ impl HandlerMiddleware for Logging {
     }
 
     fn after(&self, ctx: &ExecutionContext, result: &ExecutionResult, elapsed: Duration) {
-        tracing::info!(
+        info!(
             handler_id = %ctx.topic,
             topic = %ctx.topic,
             partition = ctx.partition,
@@ -62,7 +63,7 @@ impl HandlerMiddleware for Logging {
     }
 
     fn on_error(&self, ctx: &ExecutionContext, result: &ExecutionResult) {
-        tracing::error!(
+        error!(
             handler_id = %ctx.topic,
             topic = %ctx.topic,
             partition = ctx.partition,

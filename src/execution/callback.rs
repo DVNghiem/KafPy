@@ -8,6 +8,7 @@ use crate::execution::execution_result::{BatchExecutionResult, ExecutionResult, 
 use crate::failure::classifier::DefaultFailureClassifier;
 use crate::failure::FailureClassifier;
 use crate::failure::FailureReason;
+use crate::log::error;
 use crate::observability::tracing::inject_trace_context;
 use crate::retry::RetryPolicy;
 use crate::worker_pool::fan_out::FanOutConfig;
@@ -409,7 +410,7 @@ impl PythonHandler {
                 match tokio::time::timeout(timeout, self.invoke_mode(ctx, message)).await {
                     Ok(result) => result,
                     Err(_) => {
-                        tracing::error!(
+                        error!(
                             handler_id = %ctx.topic,
                             topic = %ctx.topic,
                             partition = ctx.partition,
@@ -469,7 +470,7 @@ impl PythonHandler {
             Some(t) => match tokio::time::timeout(t, self.invoke_mode(ctx, message)).await {
                 Ok(result) => result,
                 Err(_) => {
-                    tracing::error!(
+                    error!(
                         handler_id = %ctx.topic,
                         topic = %ctx.topic,
                         partition = ctx.partition,

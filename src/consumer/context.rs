@@ -9,7 +9,7 @@ use rdkafka::client::ClientContext;
 use rdkafka::config::RDKafkaLogLevel;
 use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance};
 use std::sync::Arc;
-use tracing::{debug, error, info};
+use crate::log::{debug, error, info, warn};
 
 use crate::offset::offset_tracker::OffsetTracker;
 
@@ -77,13 +77,13 @@ impl ClientContext for CustomConsumerContext {
             | RDKafkaLogLevel::Alert
             | RDKafkaLogLevel::Critical
             | RDKafkaLogLevel::Error => {
-                tracing::error!(target: "librdkafka", "{} {}", fac, log_message);
+                error!(target: "librdkafka", "{} {}", fac, log_message);
             }
             RDKafkaLogLevel::Warning => {
-                tracing::warn!(target: "librdkafka", "{} {}", fac, log_message);
+                warn!(target: "librdkafka", "{} {}", fac, log_message);
             }
             RDKafkaLogLevel::Notice => {
-                tracing::info!(target: "librdkafka", "{} {}", fac, log_message);
+                info!(target: "librdkafka", "{} {}", fac, log_message);
             }
             RDKafkaLogLevel::Info => {
                 tracing::debug!(target: "librdkafka", "{} {}", fac, log_message);

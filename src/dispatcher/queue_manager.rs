@@ -16,6 +16,7 @@ use tokio::sync::Semaphore;
 
 pub use crate::consumer::OwnedMessage;
 use crate::dispatcher::error::DispatchError;
+use crate::log::{info, warn};
 use crate::routing::context::HandlerId;
 
 /// Metadata for a registered handler — tracks queue depth and inflight counts.
@@ -251,12 +252,12 @@ impl QueueManager {
                     topic: handler_id.to_string(),
                 })?;
 
-        tracing::info!(handler_id = %handler_id, topic = %topic, capacity = entry.metadata.capacity, "send_to_handler_by_id: attempting try_send");
+        info!(handler_id = %handler_id, topic = %topic, capacity = entry.metadata.capacity, "send_to_handler_by_id: attempting try_send");
         match entry.sender.try_send(message) {
             Ok(()) => {
                 entry.metadata.inc_queue_depth();
                 entry.metadata.inc_inflight();
-                tracing::info!(handler_id = %handler_id, "send_to_handler_by_id: success");
+                info!(handler_id = %handler_id, "send_to_handler_by_id: success");
                 Ok(crate::dispatcher::DispatchOutcome {
                     topic,
                     partition,
@@ -265,14 +266,14 @@ impl QueueManager {
                 })
             }
             Err(TrySendError::Full(_)) => {
-                tracing::info!(handler_id = %handler_id, "send_to_handler_by_id: Full");
+                info!(handler_id = %handler_id, "send_to_handler_by_id: Full");
                 Err(DispatchError::QueueFull {
                     queue_name: handler_id.to_string(),
                     capacity: entry.metadata.capacity,
                 })
             }
             Err(TrySendError::Closed(_)) => {
-                tracing::warn!(handler_id = %handler_id, "send_to_handler_by_id: Closed - receiver dropped!");
+                warn!(handler_id = %handler_id, "send_to_handler_by_id: Closed - receiver dropped!");
                 Err(DispatchError::QueueClosed {
                     topic: handler_id.to_string(),
                 })

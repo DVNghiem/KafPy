@@ -10,7 +10,6 @@ name = "_kafpy"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-pyo3 = []
 
 [dependencies]
 pyo3 = { version = "0.28.3", features = ["extension-module", "generate-import-lib"] }
@@ -35,6 +34,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.149"
 tdigest = "0.2"
 dotenvy = "0.15.7"
+
+arc-swap = "~1.9.1"
+log = { version = "~0.4.21", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
 rdkafka = { version = "0.39.0" }

@@ -16,6 +16,7 @@ use crate::observability::metrics::SharedPrometheusSink;
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::offset::offset_coordinator::OffsetCoordinator;
 use crate::retry::retry_coordinator::RetryCoordinator;
+use log::{error, warn};
 use crate::shutdown::ShutdownCoordinator;
 use crate::worker_pool::batch_loop::batch_worker_loop;
 use crate::worker_pool::concurrency::HandlerConcurrency;
@@ -164,7 +165,7 @@ impl WorkerPool {
                 match result {
                     Ok(()) => {} // Worker exited normally
                     Err(e) => {
-                        tracing::error!(error = ?e, "worker panicked");
+                        error!("worker panicked, initiating shutdown error {}", e);
                     }
                 }
             }
@@ -189,10 +190,7 @@ impl WorkerPool {
                 logger::log("INFO", "worker pool drained gracefully");
             }
             Err(_) => {
-                tracing::warn!(
-                    timeout_secs = drain_timeout.as_secs(),
-                    "drain timeout exceeded, forcing abort"
-                );
+                warn!("drain timeout exceeded, forcing abort after {} seconds", drain_timeout.as_secs());
                 self.join_set.abort_all();
             }
         }

@@ -7,7 +7,7 @@ use rdkafka::{
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info};
+use crate::log::{debug, error, info};
 
 use crate::config::ProducerConfig;
 

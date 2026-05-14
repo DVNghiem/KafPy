@@ -18,6 +18,7 @@ use crate::observability::tracing::KafpySpanExt;
 use crate::offset::offset_coordinator::OffsetCoordinator;
 use crate::retry::retry_coordinator::RetryCoordinator;
 use crate::worker_pool::state::BatchState;
+use crate::log::{debug, error, info, warn, Span};
 use crate::worker_pool::HANDLER_METRICS;
 
 /// Flushes a single partition batch through the Python handler.
@@ -44,7 +45,7 @@ pub(crate) async fn flush_partition_batch(
     }
     let topic = batch[0].topic.clone();
     let ctx = ExecutionContext::new(topic.clone(), partition, batch[0].offset, worker_id);
-    let span = tracing::Span::current().kafpy_handler_invoke(
+    let span = Span::current().kafpy_handler_invoke(
         topic.as_str(),
         handler.name(),
         topic.as_str(),
@@ -103,7 +104,7 @@ pub(crate) async fn batch_worker_loop(
     worker_pool_state: Arc<WorkerPoolState>,
     prometheus_sink: crate::observability::SharedPrometheusSink,
 ) {
-    tracing::info!(worker_id = worker_id, "batch worker started");
+    info!(worker_id = worker_id, "batch worker started");
 
     let batch_policy = handler
         .batch_policy()
@@ -229,7 +230,7 @@ pub(crate) async fn batch_worker_loop(
                     }
                     None => {
                         // Channel closed — drain accumulator and exit
-                        tracing::info!(
+                        info!(
                             worker_id = worker_id,
                             "batch worker: channel closed, draining"
                         );
@@ -257,7 +258,7 @@ pub(crate) async fn batch_worker_loop(
 
             // Branch 3: Shutdown signal — flush all and exit
             _ = shutdown_token.cancelled() => {
-                tracing::info!(
+                info!(
                     worker_id = worker_id,
                     "batch worker: shutdown signal, draining"
                 );
@@ -283,7 +284,7 @@ pub(crate) async fn batch_worker_loop(
         }
     }
 
-    tracing::info!(worker_id = worker_id, "batch worker stopped");
+    info!(worker_id = worker_id, "batch worker stopped");
 }
 
 /// Handle the result of a batch invocation — inline version that owns the batch messages.
@@ -328,7 +329,7 @@ pub(crate) async fn handle_batch_result_inline(
                 retry_coordinator.record_success(topic, partition, offset);
                 queue_manager.ack(topic, 1);
                 offset_coordinator.record_ack(topic, partition, offset);
-                tracing::debug!(
+                debug!(
                     topic = %topic,
                     partition = partition,
                     offset = offset,
@@ -346,7 +347,7 @@ pub(crate) async fn handle_batch_result_inline(
 
             // EXEC-10: All messages in batch flow to RetryCoordinator
             // We have access to the original batch messages here for routing
-            tracing::warn!(
+            warn!(
                 topic = %topic,
                 partition = partition,
                 reason = %reason,
@@ -364,7 +365,7 @@ pub(crate) async fn handle_batch_result_inline(
                     // Retry scheduling would require re-enqueuing — for batch mode,
                     // we schedule retry with the original message payload
                     if let Some(d) = delay {
-                        tracing::info!(
+                        info!(
                             topic = %topic,
                             partition = partition,
                             offset = msg.offset,
@@ -393,13 +394,13 @@ pub(crate) async fn handle_batch_result_inline(
                         None,
                     );
 
-                    let dlq_span = tracing::Span::current().kafpy_dlq_route(
+                    let dlq_span = Span::current().kafpy_dlq_route(
                         topic,
                         &reason.to_string(),
                         partition,
                     );
                     let tp = dlq_span.in_scope(|| dlq_router.route(&metadata));
-                    tracing::error!(
+                    error!(
                         topic = %topic,
                         partition = partition,
                         offset = msg.offset,
@@ -436,7 +437,7 @@ pub(crate) async fn handle_batch_result_inline(
                 .insert("partition", partition.to_string());
             HANDLER_METRICS.record_batch_size(&prometheus_sink, &batch_size_labels, batch.len());
 
-            tracing::warn!(
+            warn!(
                 topic = %topic,
                 partition = partition,
                 "PartialFailure not implemented in v1.6 — treating as error"

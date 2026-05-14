@@ -26,6 +26,7 @@ use crate::worker_pool::fan_out::{BranchResult, FanOutTracker};
 use crate::worker_pool::handle_execution_failure;
 use crate::worker_pool::state::WorkerState;
 use crate::worker_pool::ExecutionAction;
+use crate::log::{debug, trace, warn};
 use crate::worker_pool::HANDLER_METRICS;
 
 /// Worker loop — polls messages and invokes the Python handler.
@@ -44,7 +45,7 @@ fn handler_for_topic<'a>(
     topic: &str,
 ) -> &'a Arc<PythonHandler> {
     handlers.get(topic).unwrap_or_else(|| {
-        tracing::warn!(topic = %topic, "no handler registered for topic, using first available");
+        warn!(topic = %topic, "no handler registered for topic, using first available");
         handlers.values().next().expect("handler map is empty")
     })
 }
@@ -64,7 +65,7 @@ async fn poll_for_work(
 ) -> Option<OwnedMessage> {
     select! {
         Some(msg) = rx.recv() => {
-            tracing::trace!(
+            trace!(
                 worker_id = worker_id,
                 topic = %msg.topic,
                 partition = msg.partition,
@@ -102,7 +103,7 @@ async fn handle_execution_result(
 ) -> Option<ExecutionAction> {
     match result {
         ExecutionResult::Ok => {
-            tracing::debug!(
+            debug!(
                 worker_id = worker_id,
                 topic = %ctx.topic,
                 partition = ctx.partition,
@@ -119,7 +120,7 @@ async fn handle_execution_result(
             ref exception,
             ..
         } => {
-            tracing::warn!(
+            warn!(
                 worker_id = worker_id,
                 topic = %ctx.topic,
                 partition = ctx.partition,
@@ -145,7 +146,7 @@ async fn handle_execution_result(
             Some(action)
         }
         ExecutionResult::Rejected { ref reason, .. } => {
-            tracing::warn!(
+            warn!(
                 worker_id = worker_id,
                 topic = %ctx.topic,
                 partition = ctx.partition,
@@ -172,7 +173,7 @@ async fn handle_execution_result(
             Some(action)
         }
         ExecutionResult::Timeout { ref info } => {
-            tracing::warn!(
+            warn!(
                 worker_id = worker_id,
                 topic = %ctx.topic,
                 partition = ctx.partition,
@@ -222,7 +223,7 @@ async fn process_fan_out(
 
     // FANOUT-02: Check if fan-out slots are exhausted
     if fan_out_config.is_exhausted() {
-        tracing::warn!(
+        warn!(
             topic = %msg.topic,
             max_fan_out = fan_out_config.max_fan_out,
             "fan-out slots exhausted, returning backpressure"
@@ -347,7 +348,7 @@ async fn process_fan_out(
     let metrics_sink = prometheus_sink.clone();
     tokio::spawn(async move {
         let branch_results = fan_tracker.wait_all().await;
-        tracing::debug!(
+        debug!(
             fan_out_id = fan_out_id,
             branch_count = branch_results.results.len(),
             "all fan-out branches completed"
