@@ -5,4 +5,4 @@
 #[allow(clippy::module_inception)]
 pub mod shutdown;
 
-pub use shutdown::{ShutdownCoordinator, ShutdownPhase};
+pub use shutdown::ShutdownCoordinator;

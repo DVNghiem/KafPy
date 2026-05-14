@@ -313,12 +313,9 @@ impl PyConsumer {
     }
 }
 
-// ─── Internal methods (not PyO3 wrapped) ───────────────────────────────────────
-
 impl PyConsumer {
     /// Internal method used by FanOutBuilderRust to register a sink handler
     /// with an attached FanOutConfig.
-    #[allow(unsafe_code)]
     pub fn add_handler_with_fan_out(
         &mut self,
         topic: String,
@@ -364,8 +361,6 @@ impl PyConsumer {
             .collect()
     }
 }
-
-// ─── Runtime Snapshot FFI ─────────────────────────────────────────────────────
 
 use crate::observability::runtime_snapshot::{
     get_callback_registry, get_current_snapshot, RuntimeSnapshot, WorkerState as ObsWorkerState,

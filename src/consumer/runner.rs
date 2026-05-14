@@ -2,7 +2,7 @@ use crate::consumer::config::ConsumerConfig;
 use crate::consumer::context::CustomConsumerContext;
 use crate::consumer::error::ConsumerError;
 use crate::consumer::message::OwnedMessage;
-use crate::coordinator::ShutdownCoordinator;
+use crate::shutdown::ShutdownCoordinator;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::error::KafkaError;
 use std::sync::Arc;
@@ -45,7 +45,7 @@ impl ConsumerRunner {
     pub fn new(
         config: ConsumerConfig,
         coordinator: Option<Arc<ShutdownCoordinator>>,
-        offset_tracker: Arc<crate::coordinator::OffsetTracker>,
+        offset_tracker: Arc<crate::offset::offset_tracker::OffsetTracker>,
     ) -> Result<Self, ConsumerError> {
         let context = CustomConsumerContext::new(offset_tracker);
         let consumer: StreamConsumer<CustomConsumerContext> = config

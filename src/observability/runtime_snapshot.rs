@@ -222,7 +222,7 @@ pub fn get_callback_registry() -> Option<Arc<StatusCallbackRegistry>> {
 pub struct RuntimeSnapshotTask {
     snapshot: RwLock<RuntimeSnapshot>,
     queue_manager: Option<Arc<crate::dispatcher::queue_manager::QueueManager>>,
-    offset_tracker: Option<Arc<crate::coordinator::OffsetTracker>>,
+    offset_tracker: Option<Arc<crate::offset::offset_tracker::OffsetTracker>>,
     worker_pool_state: Option<Arc<WorkerPoolState>>,
     poll_interval: Duration,
     shutdown_token: CancellationToken,
@@ -245,7 +245,7 @@ impl RuntimeSnapshotTask {
     /// Spawn the background polling task and store as global singleton.
     pub(crate) fn spawn(
         queue_manager: Option<Arc<crate::dispatcher::queue_manager::QueueManager>>,
-        offset_tracker: Option<Arc<crate::coordinator::OffsetTracker>>,
+        offset_tracker: Option<Arc<crate::offset::offset_tracker::OffsetTracker>>,
         worker_pool_state: Option<Arc<WorkerPoolState>>,
         poll_interval: Duration,
         metrics_sink: SharedPrometheusSink,

@@ -5,12 +5,13 @@
 //! on revocation (cooperative-sticky strategy) and seeks to committed+1
 //! on assignment.
 
-use crate::coordinator::OffsetTracker;
 use rdkafka::client::ClientContext;
 use rdkafka::config::RDKafkaLogLevel;
 use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance};
 use std::sync::Arc;
 use tracing::{debug, error, info};
+
+use crate::offset::offset_tracker::OffsetTracker;
 
 /// Custom consumer context that intercepts rebalance events.
 ///

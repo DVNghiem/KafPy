@@ -343,7 +343,7 @@ impl PythonHandler {
     ) -> ExecutionResult {
         let result = match self.mode() {
             HandlerMode::SingleSync => self.invoke(ctx, message).await,
-            HandlerMode::SingleAsync => self.invoke_async(ctx, message).await,
+            HandlerMode::SingleAsync => self.invoke_async(message).await,
             HandlerMode::BatchSync => {
                 let result = self.invoke_batch(ctx, vec![message]).await;
                 match result {
@@ -361,7 +361,7 @@ impl PythonHandler {
                 }
             }
             HandlerMode::BatchAsync => {
-                let result = self.invoke_batch_async(ctx, vec![message]).await;
+                let result = self.invoke_batch_async(vec![message]).await;
                 match result {
                     BatchExecutionResult::AllSuccess(_) => ExecutionResult::Ok,
                     BatchExecutionResult::AllFailure(reason) => ExecutionResult::Error {
@@ -630,7 +630,6 @@ impl PythonHandler {
     /// GIL release on each poll. The GIL is held only during coroutine.send(None).
     pub async fn invoke_async(
         &self,
-        _ctx: &ExecutionContext,
         message: OwnedMessage,
     ) -> ExecutionResult {
         let callback = Arc::clone(&self.callback);
@@ -659,7 +658,6 @@ impl PythonHandler {
     /// Returns BatchExecutionResult instead of ExecutionResult.
     pub async fn invoke_batch_async(
         &self,
-        _ctx: &ExecutionContext,
         messages: Vec<OwnedMessage>,
     ) -> BatchExecutionResult {
         let callback = Arc::clone(&self.callback);
@@ -714,7 +712,7 @@ impl PythonHandler {
     ) -> BatchExecutionResult {
         match self.mode() {
             HandlerMode::BatchSync => self.invoke_batch(ctx, messages).await,
-            HandlerMode::BatchAsync => self.invoke_batch_async(ctx, messages).await,
+            HandlerMode::BatchAsync => self.invoke_batch_async(messages).await,
             _ => unreachable!("invoke_mode_batch only valid for batch modes"),
         }
     }
@@ -792,12 +790,12 @@ mod perf_tests {
 
         let sync_start = std::time::Instant::now();
         for i in 0..n {
-            let _ = sync_handler.invoke(&ctx, mk_msg(i as i64)).await;
+            sync_handler.invoke(&ctx, mk_msg(i as i64)).await;
         }
         let sync_elapsed = sync_start.elapsed();
 
         let batch_start = std::time::Instant::now();
-        let _ = batch_handler
+        batch_handler
             .invoke_batch(&ctx, (0..n).map(|i| mk_msg(i as i64)).collect())
             .await;
         let batch_elapsed = batch_start.elapsed();

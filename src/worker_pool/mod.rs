@@ -1,6 +1,5 @@
 //! WorkerPool — manages N Tokio workers polling handler queues.
 
-use crate::coordinator::RetryCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
@@ -9,6 +8,7 @@ use crate::execution::execution_result::ExecutionResult;
 use crate::failure::FailureReason;
 use crate::observability::metrics::HandlerMetrics;
 use crate::observability::tracing::KafpySpanExt;
+use crate::retry::retry_coordinator::RetryCoordinator;
 use std::sync::Arc;
 
 pub(crate) static HANDLER_METRICS: HandlerMetrics = HandlerMetrics;

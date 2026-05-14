@@ -4,9 +4,7 @@ use pyo3::prelude::*;
 
 pub mod bindings;
 pub mod config;
-// Unified error re-exports (errors.rs remains internal as PyError)
-pub mod error;
-pub(crate) mod errors;
+
 pub mod kafka_message;
 pub mod producer;
 
@@ -23,9 +21,6 @@ pub mod execution;
 pub mod worker_pool;
 
 // Internal-only modules — not exposed to Python, used within Rust crate
-
-// Offset commit coordinator — per-topic-partition ack tracking with highest-contiguous-offset
-pub(crate) mod coordinator;
 
 // Failure classification — structured failure taxonomy for retry/DLQ handling
 pub(crate) mod failure;

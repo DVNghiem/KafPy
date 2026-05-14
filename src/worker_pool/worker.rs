@@ -8,21 +8,20 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::coordinator::OffsetCoordinator;
-use crate::coordinator::RetryCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
 use crate::execution::callback::PythonHandler;
 use crate::execution::context::{ExecutionContext, TraceContext};
 use crate::execution::execution_result::ExecutionResult;
-use crate::execution::logger;
 use crate::failure::FailureReason;
 use crate::observability::metrics::{
     FanOutMetrics, MetricLabels, PythonCallMetrics, ThroughputMetrics, TimeoutMetrics,
 };
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
+use crate::offset::offset_coordinator::OffsetCoordinator;
+use crate::retry::retry_coordinator::RetryCoordinator;
 use crate::worker_pool::fan_out::{BranchResult, FanOutTracker};
 use crate::worker_pool::handle_execution_failure;
 use crate::worker_pool::state::WorkerState;
@@ -82,7 +81,6 @@ async fn poll_for_work(
             Some(msg)
         }
         _ = shutdown_token.cancelled() => {
-            logger::log("INFO", &format!("worker stopped (cancelled, idle) worker_id={}", worker_id));
             None
         }
     }
@@ -435,7 +433,6 @@ pub(crate) async fn worker_loop(
     prometheus_sink: crate::observability::SharedPrometheusSink,
     handler_concurrency: crate::worker_pool::HandlerConcurrency,
 ) {
-    logger::log("INFO", &format!("worker started worker_id={}", worker_id));
 
     let mut state = WorkerState::Idle;
 
@@ -513,10 +510,15 @@ pub(crate) async fn worker_loop(
                 handler.mode().as_str(),
                 1, // attempt: will be corrected in failure path after record_failure
             );
-            logger::log("INFO", &format!(
-                "handler invoke start handler_id={} handler_name={} topic={} partition={} offset={} mode={}",
-                ctx.topic, handler.name(), ctx.topic, ctx.partition, ctx.offset, handler.mode().as_str()
-            ));
+            tracing::info!(
+                handler_id = %ctx.topic,
+                handler_name = %handler.name(),
+                topic = %ctx.topic,
+                partition = ctx.partition,
+                offset = ctx.offset,
+                mode = %handler.mode().as_str(),
+                "handler invoke start"
+            );
             // Acquire concurrency permit — holds until end of this block
             let queue_wait_start = std::time::Instant::now();
             let _permit = handler_concurrency.acquire(&ctx.topic).await;
@@ -538,10 +540,14 @@ pub(crate) async fn worker_loop(
                 1,
             );
             let elapsed = start.elapsed();
-            logger::log("INFO", &format!(
-                "handler invoke complete handler_id={} topic={} partition={} offset={} elapsed_ms={}",
-                ctx.topic, ctx.topic, ctx.partition, ctx.offset, elapsed.as_millis() as u64
-            ));
+            tracing::info!(
+                handler_id = %ctx.topic,
+                topic = %ctx.topic,
+                partition = ctx.partition,
+                offset = ctx.offset,
+                elapsed_ms = elapsed.as_millis() as u64,
+                "handler invoke complete"
+            );
             HANDLER_METRICS.record_invocation(&prometheus_sink, &invocation_labels);
             HANDLER_METRICS.record_latency(&prometheus_sink, &invocation_labels, elapsed);
             ThroughputMetrics::record_throughput(
@@ -594,12 +600,9 @@ pub(crate) async fn worker_loop(
             }
 
             if shutdown_token.is_cancelled() {
-                logger::log(
-                    "INFO",
-                    &format!(
-                        "worker stopped (cancelled after message) worker_id={}",
-                        worker_id
-                    ),
+                tracing::info!(
+                    worker_id = worker_id,
+                    "worker stopped (cancelled after message)"
                 );
                 worker_pool_state.set_idle(worker_id);
                 break;
@@ -629,7 +632,6 @@ pub(crate) async fn worker_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coordinator::OffsetCoordinator;
     use crate::dispatcher::queue_manager::QueueManager;
     use crate::dispatcher::OwnedMessage;
     use crate::dlq::router::DefaultDlqRouter;
@@ -703,8 +705,8 @@ mod tests {
                 rx,
                 make_handler_map(),
                 Arc::new(QueueManager::new()),
-                Arc::new(crate::coordinator::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,
-                Arc::new(crate::coordinator::RetryCoordinator::with_policy(
+                Arc::new(crate::offset::offset_tracker::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,
+                Arc::new(crate::retry::retry_coordinator::RetryCoordinator::with_policy(
                     crate::retry::RetryPolicy::default(),
                 )),
                 dummy_dlq_producer(),
@@ -730,8 +732,8 @@ mod tests {
             rx,
             make_handler_map(),
             Arc::new(QueueManager::new()),
-            Arc::new(crate::coordinator::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,
-            Arc::new(crate::coordinator::RetryCoordinator::with_policy(
+            Arc::new(crate::offset::offset_tracker::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,
+            Arc::new(crate::retry::retry_coordinator::RetryCoordinator::with_policy(
                 crate::retry::RetryPolicy::default(),
             )),
             dummy_dlq_producer(),

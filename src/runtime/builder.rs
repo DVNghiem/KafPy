@@ -21,9 +21,6 @@ use crate::config::ConsumerConfig;
 use crate::consumer::error::ConsumerError;
 use crate::consumer::runtime::HandlerMetadata;
 use crate::consumer::{ConsumerConfigBuilder, ConsumerRunner};
-use crate::coordinator::{
-    CommitConfig, OffsetCommitter, OffsetTracker, RetryCoordinator, ShutdownCoordinator,
-};
 use crate::dispatcher::consumer_dispatcher::ConsumerDispatcher;
 use crate::dispatcher::DefaultBackpressurePolicy;
 use crate::dlq::produce::SharedDlqProducer;
@@ -33,7 +30,11 @@ use crate::execution::callback::PythonHandler;
 use crate::execution::logger;
 use crate::observability::metrics::SharedPrometheusSink;
 use crate::observability::runtime_snapshot::RuntimeSnapshotTask;
+use crate::offset::commit_task::{CommitConfig, OffsetCommitter, TopicPartition};
+use crate::offset::offset_tracker::OffsetTracker;
+use crate::retry::retry_coordinator::RetryCoordinator;
 use crate::routing::chain::RoutingChain;
+use crate::shutdown::ShutdownCoordinator;
 use crate::worker_pool::concurrency::HandlerConcurrency;
 use crate::worker_pool::pool::WorkerPool;
 use std::collections::HashMap;
@@ -291,7 +292,7 @@ impl RuntimeBuilder {
             CommitConfig::default(),
             Arc::clone(&coordinator),
         );
-        let (tx, rx) = watch::channel(crate::coordinator::TopicPartition::new("", 0));
+        let (tx, rx) = watch::channel(TopicPartition::new("", 0));
         let committer_handle = tokio::spawn(async move {
             committer.run(rx).await;
         });

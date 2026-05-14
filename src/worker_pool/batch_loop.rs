@@ -5,8 +5,6 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::coordinator::OffsetCoordinator;
-use crate::coordinator::RetryCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
@@ -17,6 +15,8 @@ use crate::execution::execution_result::BatchExecutionResult;
 use crate::observability::metrics::{MetricLabels, PythonCallMetrics};
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
+use crate::offset::offset_coordinator::OffsetCoordinator;
+use crate::retry::retry_coordinator::RetryCoordinator;
 use crate::worker_pool::state::BatchState;
 use crate::worker_pool::HANDLER_METRICS;
 

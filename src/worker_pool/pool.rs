@@ -7,9 +7,6 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::coordinator::OffsetCoordinator;
-use crate::coordinator::RetryCoordinator;
-use crate::coordinator::ShutdownCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqRouter, SharedDlqProducer};
@@ -17,6 +14,9 @@ use crate::execution::callback::PythonHandler;
 use crate::execution::logger;
 use crate::observability::metrics::SharedPrometheusSink;
 use crate::observability::runtime_snapshot::WorkerPoolState;
+use crate::offset::offset_coordinator::OffsetCoordinator;
+use crate::retry::retry_coordinator::RetryCoordinator;
+use crate::shutdown::ShutdownCoordinator;
 use crate::worker_pool::batch_loop::batch_worker_loop;
 use crate::worker_pool::concurrency::HandlerConcurrency;
 use crate::worker_pool::worker::worker_loop;
@@ -207,7 +207,6 @@ impl WorkerPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coordinator::OffsetCoordinator;
     use crate::dispatcher::queue_manager::QueueManager;
     use crate::dlq::router::DefaultDlqRouter;
     use pyo3::prelude::*;
@@ -263,14 +262,14 @@ mod tests {
             vec![rx],
             dummy_handlers(),
             Arc::new(QueueManager::new()),
-            Arc::new(crate::coordinator::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,
-            Arc::new(crate::coordinator::RetryCoordinator::with_policy(
+            Arc::new(crate::offset::offset_tracker::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,
+            Arc::new(crate::retry::retry_coordinator::RetryCoordinator::with_policy(
                 crate::retry::RetryPolicy::default(),
             )),
             dummy_dlq_producer(),
             dummy_dlq_router(),
             CancellationToken::new(),
-            std::sync::Arc::new(crate::coordinator::ShutdownCoordinator::new(30)),
+            std::sync::Arc::new(crate::shutdown::ShutdownCoordinator::new(30)),
             crate::observability::metrics::SharedPrometheusSink::new(),
             crate::worker_pool::HandlerConcurrency::new(4),
         );
