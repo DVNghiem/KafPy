@@ -1,8 +1,8 @@
 //! Execution policy — pluggable strategies for handling execution results.
 
 use crate::dispatcher::OwnedMessage;
-use crate::python::context::ExecutionContext;
-use crate::python::execution_result::ExecutionResult;
+use crate::execution::context::ExecutionContext;
+use crate::execution::execution_result::ExecutionResult;
 
 /// Outcome of an executor's decision on what to do after execution.
 #[derive(Debug, Clone)]

@@ -1,4 +1,3 @@
-// src/observability/metrics.rs
 // MetricsSink trait, PrometheusSink, PrometheusExporter, HandlerMetrics, QueueSnapshot, FanOutMetrics
 
 use std::collections::HashMap;
@@ -44,14 +43,10 @@ impl MetricLabels {
     }
 }
 
-// ─── Latency Histogram Buckets (OBS-04) ────────────────────────────────────────
-
-/// Latency histogram buckets in seconds for OBS-04.
+/// Latency histogram buckets in seconds
 const LATENCY_BUCKETS: [f64; 12] = [
     0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
 ];
-
-// ─── Prometheus Sink ────────────────────────────────────────────────────────────
 
 /// Thread-safe Prometheus metrics sink implementing `MetricsSink`.
 ///
@@ -225,8 +220,6 @@ impl MetricsSink for SharedPrometheusSink {
 }
 
 
-// ─── Handler Metrics ───────────────────────────────────────────────────────────
-
 /// Wraps handler invocation counter, latency histogram, error counter, and batch size histogram.
 pub struct HandlerMetrics;
 
@@ -256,9 +249,7 @@ impl HandlerMetrics {
     }
 }
 
-// ─── Throughput Metrics (OBS-03) ───────────────────────────────────────────────
-
-/// Throughput metrics recorder — OBS-03.
+/// Throughput metrics recorder
 pub struct ThroughputMetrics;
 
 impl ThroughputMetrics {
@@ -272,9 +263,7 @@ impl ThroughputMetrics {
     }
 }
 
-// ─── Consumer Lag Metrics (OBS-05) ─────────────────────────────────────────────
-
-/// Consumer lag metrics recorder — OBS-05.
+/// Consumer lag metrics recorder
 pub struct ConsumerLagMetrics;
 
 impl ConsumerLagMetrics {
@@ -287,9 +276,7 @@ impl ConsumerLagMetrics {
     }
 }
 
-// ─── Queue Depth Metrics (OBS-06) ─────────────────────────────────────────────
-
-/// Queue depth metrics recorder — OBS-06.
+/// Queue depth metrics recorder
 pub struct QueueMetrics;
 
 impl QueueMetrics {
@@ -300,9 +287,8 @@ impl QueueMetrics {
     }
 }
 
-// ─── DLQ Metrics (OBS-07) ─────────────────────────────────────────────────────
 
-/// DLQ metrics recorder — OBS-07.
+/// DLQ metrics recorder
 pub struct DlqMetrics;
 
 impl DlqMetrics {
@@ -356,7 +342,6 @@ impl FanOutMetrics {
     }
 }
 
-// ─── Timeout Metrics (TMOUT-03) ───────────────────────────────────────────────
 
 /// Timeout metrics recorder — TMOUT-03.
 pub struct TimeoutMetrics;
@@ -372,7 +357,6 @@ impl TimeoutMetrics {
     }
 }
 
-// ─── Python GIL/Call Metrics ──────────────────────────────────────────────────
 
 /// Metrics recorder for Rust→Python callback pressure and latency.
 pub struct PythonCallMetrics;
@@ -409,8 +393,6 @@ impl PythonCallMetrics {
     }
 
 }
-
-// ─── Queue Snapshot ───────────────────────────────────────────────────────────
 
 /// Snapshot of queue depth and inflight message counts.
 /// Polling-based: updated by background task every 10s, not per-message.

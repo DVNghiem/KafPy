@@ -6,7 +6,7 @@
 
 use crate::failure::FailureReason;
 use crate::failure::TerminalKind;
-use crate::python::execution_result::ExecutionResult;
+use crate::execution::execution_result::ExecutionResult;
 use pyo3::exceptions::{PyStopAsyncIteration, PyStopIteration};
 use pyo3::prelude::*;
 use std::future::Future;

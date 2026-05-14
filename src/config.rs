@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 use std::env;
 
-use crate::pyconfig::{PyObservabilityConfig, PyRetryPolicy};
+use crate::bindings::{PyObservabilityConfig, PyRetryPolicy};
 
 #[derive(Debug, Clone)]
 #[pyclass]

@@ -18,11 +18,11 @@ use crate::observability::metrics::{
 };
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
-use crate::python::context::{ExecutionContext, TraceContext};
-use crate::python::execution_result::ExecutionResult;
-use crate::python::executor::Executor;
-use crate::python::handler::PythonHandler;
-use crate::python::logger;
+use crate::execution::context::{ExecutionContext, TraceContext};
+use crate::execution::execution_result::ExecutionResult;
+use crate::execution::executor::Executor;
+use crate::execution::callback::PythonHandler;
+use crate::execution::logger;
 use crate::failure::FailureReason;
 use crate::worker_pool::fan_out::{BranchResult, FanOutTracker};
 use crate::worker_pool::handle_execution_failure;
@@ -556,12 +556,12 @@ mod tests {
     use crate::dispatcher::OwnedMessage;
     use crate::dlq::router::DefaultDlqRouter;
     use crate::observability::runtime_snapshot::WorkerPoolState;
-    use crate::python::DefaultExecutor;
+    use crate::execution::DefaultExecutor;
     use pyo3::prelude::*;
     use std::sync::Arc;
 
     fn make_handler_map() -> Arc<HashMap<String, Arc<PythonHandler>>> {
-        use crate::python::handler::HandlerMode;
+        use crate::execution::callback::HandlerMode;
         let handler = Python::attach(|py| {
             let py_none = py.None();
             Arc::new(PythonHandler::new(

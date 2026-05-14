@@ -6,9 +6,9 @@ use crate::failure::classifier::DefaultFailureClassifier;
 use crate::failure::FailureClassifier;
 use crate::failure::FailureReason;
 use crate::observability::tracing::inject_trace_context;
-use crate::python::async_bridge::PythonAsyncFuture;
-use crate::python::context::ExecutionContext;
-use crate::python::execution_result::{BatchExecutionResult, ExecutionResult, TimeoutInfo};
+use crate::execution::async_bridge::PythonAsyncFuture;
+use crate::execution::context::ExecutionContext;
+use crate::execution::execution_result::{BatchExecutionResult, ExecutionResult, TimeoutInfo};
 use crate::rayon_pool::RayonPool;
 use crate::retry::RetryPolicy;
 use crate::worker_pool::fan_out::FanOutConfig;
@@ -337,7 +337,7 @@ impl PythonHandler {
         ctx: &ExecutionContext,
         initial_message: OwnedMessage,
     ) -> ExecutionResult {
-        use crate::python::streaming::StreamingHandler;
+        use crate::execution::streaming::StreamingHandler;
         let handler = StreamingHandler::new(Arc::clone(&self.callback));
         handler.invoke_streaming(ctx, initial_message).await
     }
@@ -410,7 +410,7 @@ impl PythonHandler {
         ctx: &ExecutionContext,
         message: OwnedMessage,
     ) -> ExecutionResult {
-        use crate::middleware::python::build_middleware_chain;
+        use crate::middleware::build_middleware_chain;
         use crate::observability::metrics::SharedPrometheusSink;
 
         let start = std::time::Instant::now();
@@ -470,7 +470,7 @@ impl PythonHandler {
         message: OwnedMessage,
         timeout: Option<std::time::Duration>,
     ) -> ExecutionResult {
-        use crate::middleware::python::build_middleware_chain;
+        use crate::middleware::build_middleware_chain;
         use crate::observability::metrics::SharedPrometheusSink;
 
         let start = std::time::Instant::now();

@@ -1,4 +1,3 @@
-// src/observability/mod.rs
 // Module re-exports for observability infrastructure
 
 pub mod config;

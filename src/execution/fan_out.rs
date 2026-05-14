@@ -3,8 +3,8 @@
 //! Called by `PyConsumer::register_fanout` to attach a fan-out group to one or more
 //! sink topics, all sharing the same Python handler callable.
 
-use crate::pyconsumer::PyConsumer;
-use crate::python::handler::{HandlerMode, PythonHandler};
+use crate::consumer::runtime::PyConsumer;
+use crate::execution::callback::{HandlerMode, PythonHandler};
 use crate::worker_pool::fan_out::FanOutConfig;
 use std::sync::Arc;
 use std::time::Duration;

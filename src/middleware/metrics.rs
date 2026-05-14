@@ -9,8 +9,8 @@
 
 use crate::middleware::HandlerMiddleware;
 use crate::observability::metrics::{HandlerMetrics, MetricLabels, SharedPrometheusSink, ThroughputMetrics};
-use crate::python::context::ExecutionContext;
-use crate::python::execution_result::ExecutionResult;
+use crate::execution::context::ExecutionContext;
+use crate::execution::execution_result::ExecutionResult;
 use std::time::Duration;
 
 /// Built-in metrics middleware — MIDW-03.

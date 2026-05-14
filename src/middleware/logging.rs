@@ -5,8 +5,8 @@
 //! Zero-cost when no tracing subscriber is configured.
 
 use crate::middleware::HandlerMiddleware;
-use crate::python::context::ExecutionContext;
-use crate::python::execution_result::ExecutionResult;
+use crate::execution::context::ExecutionContext;
+use crate::execution::execution_result::ExecutionResult;
 use std::time::Duration;
 
 /// Built-in logging middleware — MIDW-02.

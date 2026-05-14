@@ -15,9 +15,9 @@ use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqRouter, SharedDlqProducer};
 use crate::observability::metrics::SharedPrometheusSink;
 use crate::observability::runtime_snapshot::WorkerPoolState;
-use crate::python::executor::Executor;
-use crate::python::handler::PythonHandler;
-use crate::python::logger;
+use crate::execution::executor::Executor;
+use crate::execution::callback::PythonHandler;
+use crate::execution::logger;
 use crate::worker_pool::batch_loop::batch_worker_loop;
 use crate::worker_pool::concurrency::HandlerConcurrency;
 use crate::worker_pool::worker::worker_loop;
@@ -72,8 +72,8 @@ impl WorkerPool {
         let all_batch = handlers.values().all(|h| {
             matches!(
                 h.mode(),
-                crate::python::handler::HandlerMode::BatchSync
-                    | crate::python::handler::HandlerMode::BatchAsync
+                crate::execution::callback::HandlerMode::BatchSync
+                    | crate::execution::callback::HandlerMode::BatchAsync
             )
         });
 
@@ -219,12 +219,12 @@ mod tests {
     use crate::coordinator::OffsetCoordinator;
     use crate::dispatcher::queue_manager::QueueManager;
     use crate::dlq::router::DefaultDlqRouter;
-    use crate::python::DefaultExecutor;
+    use crate::execution::DefaultExecutor;
     use pyo3::prelude::*;
     use std::sync::Arc;
 
     fn dummy_handlers() -> HashMap<String, Arc<PythonHandler>> {
-        use crate::python::handler::HandlerMode;
+        use crate::execution::callback::HandlerMode;
         let handler = Python::attach(|py| {
             let py_none = py.None();
             Arc::new(PythonHandler::new(

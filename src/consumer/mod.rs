@@ -35,6 +35,7 @@ pub mod context;
 pub mod error;
 pub mod message;
 pub mod runner;
+pub mod runtime;
 
 pub use config::{
     AutoOffsetReset, ConsumerConfig, ConsumerConfigBuilder, PartitionAssignmentStrategy,

@@ -13,11 +13,11 @@ use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
 use crate::observability::metrics::{MetricLabels, PythonCallMetrics};
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
-use crate::python::batch::BatchAccumulator;
-use crate::python::context::ExecutionContext;
-use crate::python::execution_result::BatchExecutionResult;
-use crate::python::executor::Executor;
-use crate::python::handler::PythonHandler;
+use crate::execution::batch::BatchAccumulator;
+use crate::execution::context::ExecutionContext;
+use crate::execution::execution_result::BatchExecutionResult;
+use crate::execution::executor::Executor;
+use crate::execution::callback::PythonHandler;
 use crate::worker_pool::state::BatchState;
 use crate::worker_pool::HANDLER_METRICS;
 

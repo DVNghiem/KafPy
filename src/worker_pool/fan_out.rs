@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
 
 use crate::dispatcher::backpressure::BackpressureAction;
-use crate::python::handler::PythonHandler;
+use crate::execution::callback::PythonHandler;
 
 // ─── Branch Result ────────────────────────────────────────────────────────────
 
@@ -373,7 +373,7 @@ impl FanOutSlotManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::python::handler::HandlerMode;
+    use crate::execution::callback::HandlerMode;
     use pyo3::prelude::*;
 
     fn make_dummy_handler(name: &str) -> Arc<PythonHandler> {

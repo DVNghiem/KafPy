@@ -2,14 +2,13 @@
 
 use pyo3::prelude::*;
 
+pub mod bindings;
 pub mod config;
 // Unified error re-exports (errors.rs remains internal as PyError)
 pub mod error;
 pub(crate) mod errors;
 pub mod kafka_message;
-pub mod produce;
-pub mod pyconfig;
-pub mod pyconsumer;
+pub mod producer;
 
 // Pure Rust Kafka consumer core — no PyO3 dependencies
 pub mod consumer;
@@ -17,8 +16,8 @@ pub mod consumer;
 // Pure Rust Kafka dispatcher — routes OwnedMessage to per-handler bounded channels
 pub mod dispatcher;
 
-// Python execution lane — PythonHandler, Executor trait, ExecutionResult
-pub mod python;
+// Callback execution lane — PythonHandler, Executor trait, ExecutionResult
+pub mod execution;
 
 // Worker pool — N Tokio workers polling handler queues, invoking Python callbacks
 pub mod worker_pool;
@@ -58,8 +57,8 @@ pub mod middleware;
 
 use kafka_message::KafkaMessage;
 // logging::Logger removed — using Python logging
-use produce::PyProducer;
-use pyconsumer::PyConsumer;
+use producer::PyProducer;
+use consumer::runtime::PyConsumer;
 
 #[pymodule]
 fn _kafpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -69,15 +68,15 @@ fn _kafpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyProducer>()?;
     m.add_class::<config::ConsumerConfig>()?;
     m.add_class::<config::ProducerConfig>()?;
-    m.add_class::<pyconfig::PyRetryPolicy>()?;
-    m.add_class::<pyconfig::PyObservabilityConfig>()?;
-    m.add_class::<pyconfig::PyFailureCategory>()?;
-    m.add_class::<pyconfig::PyFailureReason>()?;
+    m.add_class::<bindings::PyRetryPolicy>()?;
+    m.add_class::<bindings::PyObservabilityConfig>()?;
+    m.add_class::<bindings::PyFailureCategory>()?;
+    m.add_class::<bindings::PyFailureReason>()?;
 
     // Fan-out and fan-in registration result types
-    m.add_class::<pyconsumer::FanOutRegistration>()?;
-    m.add_function(wrap_pyfunction!(pyconsumer::get_runtime_snapshot, m.py())?)?;
-    m.add_function(wrap_pyfunction!(pyconsumer::register_status_callback, m.py())?)?;
+    m.add_class::<consumer::runtime::FanOutRegistration>()?;
+    m.add_function(wrap_pyfunction!(consumer::runtime::get_runtime_snapshot, m.py())?)?;
+    m.add_function(wrap_pyfunction!(consumer::runtime::register_status_callback, m.py())?)?;
 
     Ok(())
 }
@@ -94,7 +93,7 @@ where
     crate::routing::key::KeyRouter: Send + Sync,
     crate::routing::header::HeaderRouter: Send + Sync,
     crate::routing::topic_pattern::TopicPatternRouter: Send + Sync,
-    crate::routing::python_router::PythonRouter: Send + Sync,
+    crate::routing::callback_router::PythonRouter: Send + Sync,
 {
 }
 

@@ -1,5 +1,5 @@
 use super::reason::{FailureReason, NonRetryableKind, RetryableKind, TerminalKind};
-use crate::python::ExecutionContext;
+use crate::execution::ExecutionContext;
 use pyo3::PyErr;
 
 /// Trait for classifying Python exceptions into FailureReason

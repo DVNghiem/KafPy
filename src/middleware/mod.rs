@@ -6,11 +6,11 @@
 pub mod chain;
 pub mod logging;
 pub mod metrics;
-pub mod python;
+pub mod callback;
 pub mod traits;
 
 pub use chain::MiddlewareChain;
 pub use logging::Logging;
 pub use metrics::Metrics;
-pub use python::{build_middleware_chain, PythonMiddleware};
+pub use callback::{build_middleware_chain, PythonMiddleware};
 pub use traits::HandlerMiddleware;

@@ -1,7 +1,5 @@
 //! Runtime introspection via periodic snapshot — zero hot-path overhead.
 //!
-//! ## Design (OBS-27 through OBS-32)
-//!
 //! - **RuntimeSnapshot**: Holds worker_pool status, queue depths per handler,
 //!   accumulator states, and consumer_lag_summary. Updated every 10s by
 //!   `RuntimeSnapshotTask`, never on the hot path.
@@ -98,8 +96,6 @@ pub struct PartitionLagInfo {
     pub committed_offset: i64,
 }
 
-// ─── WorkerPoolState ─────────────────────────────────────────────────────────
-
 /// Shared state for worker pool introspection.
 ///
 /// worker_loop updates its current handler_id and partition when processing.
@@ -172,8 +168,6 @@ impl WorkerPoolState {
 
 }
 
-// ─── StatusCallbackRegistry ──────────────────────────────────────────────────
-
 /// Registry for Python status callbacks.
 ///
 /// Python can register a callback function that is invoked on every
@@ -201,8 +195,6 @@ impl Default for StatusCallbackRegistry {
         Self::new()
     }
 }
-
-// ─── RuntimeSnapshotTask ───────────────────────────────────────────────────
 
 /// Global singleton holder for the runtime snapshot task.
 ///

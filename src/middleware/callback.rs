@@ -10,8 +10,8 @@
 
 use crate::middleware::{HandlerMiddleware, Logging, Metrics, MiddlewareChain};
 use crate::observability::metrics::SharedPrometheusSink;
-use crate::python::context::ExecutionContext;
-use crate::python::execution_result::ExecutionResult;
+use crate::execution::context::ExecutionContext;
+use crate::execution::execution_result::ExecutionResult;
 use pyo3::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;

@@ -5,10 +5,10 @@
 
 use crate::dispatcher::OwnedMessage;
 use crate::failure::{FailureReason, TerminalKind};
-use crate::python::async_bridge::PythonAsyncFuture;
-use crate::python::context::ExecutionContext;
-use crate::python::execution_result::ExecutionResult;
-use crate::python::handler::message_to_pydict;
+use crate::execution::async_bridge::PythonAsyncFuture;
+use crate::execution::context::ExecutionContext;
+use crate::execution::execution_result::ExecutionResult;
+use crate::execution::callback::message_to_pydict;
 use std::sync::Arc;
 
 use pyo3::prelude::*;

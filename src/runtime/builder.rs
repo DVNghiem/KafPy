@@ -30,10 +30,10 @@ use crate::dlq::router::DefaultDlqRouter;
 use crate::dlq::DlqRouter;
 use crate::observability::metrics::SharedPrometheusSink;
 use crate::observability::runtime_snapshot::RuntimeSnapshotTask;
-use crate::pyconsumer::HandlerMetadata;
-use crate::python::handler::PythonHandler;
-use crate::python::logger;
-use crate::python::{DefaultExecutor, Executor};
+use crate::consumer::runtime::HandlerMetadata;
+use crate::execution::callback::PythonHandler;
+use crate::execution::logger;
+use crate::execution::{DefaultExecutor, Executor};
 use crate::rayon_pool::RayonPool;
 use crate::routing::chain::RoutingChain;
 use crate::worker_pool::concurrency::HandlerConcurrency;
@@ -50,7 +50,7 @@ use tokio_util::sync::CancellationToken;
 pub struct RuntimeBuilder {
     config: ConsumerConfig,
     handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
-    fan_out_handlers: HashMap<String, std::sync::Arc<crate::python::handler::PythonHandler>>,
+        fan_out_handlers: HashMap<String, std::sync::Arc<crate::execution::callback::PythonHandler>>,
     shutdown_token: CancellationToken,
 }
 
@@ -59,7 +59,7 @@ impl RuntimeBuilder {
     pub fn new(
         config: ConsumerConfig,
         handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
-        fan_out_handlers: HashMap<String, std::sync::Arc<crate::python::handler::PythonHandler>>,
+    fan_out_handlers: HashMap<String, std::sync::Arc<crate::execution::callback::PythonHandler>>,
         shutdown_token: CancellationToken,
     ) -> Self {
         Self {
@@ -221,7 +221,7 @@ impl RuntimeBuilder {
                     // Resolve batch config
                     let batch_policy =
                         meta.batch_max_size
-                            .map(|max_size| crate::python::handler::BatchPolicy {
+                            .map(|max_size| crate::execution::callback::BatchPolicy {
                                 max_batch_size: max_size,
                                 max_batch_wait_ms: meta.batch_max_wait_ms.unwrap_or(1000),
                             });

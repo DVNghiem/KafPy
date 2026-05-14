@@ -3,8 +3,8 @@
 //! Middleware wraps Python handler invocation to add logging, metrics, retries,
 //! and other cross-cutting behavior without duplicating handler code.
 
-use crate::python::context::ExecutionContext;
-use crate::python::execution_result::ExecutionResult;
+use crate::execution::context::ExecutionContext;
+use crate::execution::execution_result::ExecutionResult;
 use std::time::Duration;
 
 /// User-implemented middleware trait for cross-cutting handler concerns.

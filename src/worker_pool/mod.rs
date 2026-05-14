@@ -7,8 +7,8 @@ use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
 use crate::failure::FailureReason;
 use crate::observability::metrics::HandlerMetrics;
 use crate::observability::tracing::KafpySpanExt;
-use crate::python::context::ExecutionContext;
-use crate::python::execution_result::ExecutionResult;
+use crate::execution::context::ExecutionContext;
+use crate::execution::execution_result::ExecutionResult;
 use std::sync::Arc;
 
 pub(crate) static HANDLER_METRICS: HandlerMetrics = HandlerMetrics;

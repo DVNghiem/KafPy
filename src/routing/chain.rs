@@ -7,7 +7,7 @@ use crate::routing::context::HandlerId;
 use crate::routing::context::RoutingContext;
 use crate::routing::header::HeaderRouter;
 use crate::routing::key::KeyRouter;
-use crate::routing::python_router::PythonRouter;
+use crate::routing::callback_router::PythonRouter;
 use crate::observability::SharedPrometheusSink;
 use crate::routing::topic_pattern::{PatternError, TopicPatternRouter};
 use crate::routing::decision::{RejectReason, RoutingDecision};

@@ -9,12 +9,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::config::ConsumerConfig;
-use crate::python::handler::HandlerMode;
+        use crate::execution::callback::HandlerMode;
 use crate::runtime::RuntimeBuilder;
 use crate::worker_pool::fan_out::FanOutConfig;
 
 /// FanOutHandler is a PythonHandler with FanOutConfig attached.
-type FanOutHandler = crate::python::handler::PythonHandler;
+type FanOutHandler = crate::execution::callback::PythonHandler;
 
 /// Per-handler metadata stored alongside the callback.
 #[derive(Debug, Clone)]
@@ -292,7 +292,7 @@ impl PyConsumer {
         max_fan_out: Option<u8>,
         timeout_ms: Option<u64>,
     ) -> PyResult<FanOutRegistration> {
-        use crate::python::fan_out_bridge::FanOutBuilderRust;
+        use crate::execution::fan_out::FanOutBuilderRust;
         use std::sync::Arc;
 
         let mode = HandlerMode::from_opt_str(None); // sync by default
@@ -326,7 +326,7 @@ impl PyConsumer {
         handler: std::sync::Arc<FanOutHandler>,
         fan_out_config: FanOutConfig,
     ) {
-        use crate::python::handler::HandlerMode;
+use crate::execution::callback::HandlerMode;
         use std::sync::Arc;
 
         // For fan-out sinks, the actual handler with FanOutConfig is stored in
