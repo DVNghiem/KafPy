@@ -59,7 +59,7 @@ jobs:
           args: --release --out dist --find-interpreter
           sccache: 'true'
           manylinux: musllinux_1_2
-          before-script-linux: pip install cmake && apt-get install -y --no-install-recommends libcurl4-openssl-dev
+          before-script-linux: pip install cmake && apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev
 
   windows:
     runs-on: ${{ matrix.platform.runner }}
