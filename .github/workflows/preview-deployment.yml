@@ -34,6 +34,9 @@ jobs:
           python-version: 3.x
       - name: Install cmake
         run: pip install cmake
+      - name: Install dependencies
+        run: |
+          yum install -y libcurl-devel
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -60,6 +63,9 @@ jobs:
           python-version: 3.x
       - name: Install cmake
         run: pip install cmake
+      - name: Install dependencies
+        run: |
+          yum install -y libcurl-devel
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
