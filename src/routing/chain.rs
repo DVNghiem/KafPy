@@ -3,15 +3,15 @@
 //! Per D-04: an explicit `default_handler: HandlerId` is REQUIRED.
 //! If the chain reaches the end with Defer: panic in debug, Reject(NoDefaultHandler) in release.
 
+use crate::observability::SharedPrometheusSink;
+use crate::routing::callback_router::PythonRouter;
 use crate::routing::context::HandlerId;
 use crate::routing::context::RoutingContext;
+use crate::routing::decision::{RejectReason, RoutingDecision};
 use crate::routing::header::HeaderRouter;
 use crate::routing::key::KeyRouter;
-use crate::routing::callback_router::PythonRouter;
-use crate::observability::SharedPrometheusSink;
-use crate::routing::topic_pattern::{PatternError, TopicPatternRouter};
-use crate::routing::decision::{RejectReason, RoutingDecision};
 use crate::routing::router::Router;
+use crate::routing::topic_pattern::{PatternError, TopicPatternRouter};
 use std::sync::Arc;
 
 /// The routing chain wires together the router types in precedence order.

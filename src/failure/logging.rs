@@ -1,5 +1,5 @@
-use crate::failure::{FailureCategory, FailureReason};
 use crate::execution::ExecutionContext;
+use crate::failure::{FailureCategory, FailureReason};
 
 /// Log a failure with structured context through Python's logging module.
 ///

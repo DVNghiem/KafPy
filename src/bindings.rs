@@ -13,8 +13,6 @@ use crate::observability::config::{
 };
 use crate::retry::policy::RetryPolicy;
 
-// ─── PyRetryPolicy ────────────────────────────────────────────────────────────
-
 /// Retry policy configuration for message processing.
 ///
 /// Uses milliseconds for delay values (Python-friendly) and converts
@@ -92,8 +90,6 @@ impl PyRetryPolicy {
     }
 }
 
-// ─── PyObservabilityConfig ─────────────────────────────────────────────────────
-
 /// Observability configuration for metrics and tracing.
 ///
 /// When `otlp_endpoint` is None, tracing is disabled (zero-cost).
@@ -170,8 +166,6 @@ impl PyObservabilityConfig {
     }
 }
 
-// ─── PyFailureCategory ──────────────────────────────────────────────────────────
-
 /// High-level failure category for classifying message processing errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[pyclass(eq, eq_int)]
@@ -204,8 +198,6 @@ impl From<RustFailureCategory> for PyFailureCategory {
         }
     }
 }
-
-// ─── PyFailureReason ────────────────────────────────────────────────────────────
 
 /// A specific failure reason with its category and human-readable description.
 ///

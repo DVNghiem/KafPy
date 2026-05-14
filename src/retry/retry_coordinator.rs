@@ -31,9 +31,6 @@ pub enum RetryState {
 }
 
 impl RetryState {
-
-
-
     /// Returns the attempt count (only valid for Retrying state, 0 for Exhausted).
     pub fn attempt(&self) -> usize {
         match self {
@@ -120,7 +117,9 @@ impl RetryCoordinator {
                     let delay = schedule.next_delay(new_attempt - 1); // attempt 1 = first retry delay
 
                     // Update to new retry state with incremented attempt
-                    let new_state = RetryState::Retrying { attempt: new_attempt };
+                    let new_state = RetryState::Retrying {
+                        attempt: new_attempt,
+                    };
                     entry.insert(new_state);
 
                     (true, false, Some(delay))

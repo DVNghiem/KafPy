@@ -38,7 +38,6 @@ pub struct ConsumerConfig {
     pub default_retry_policy: RetryPolicy,
     pub dlq_topic_prefix: String,
     pub drain_timeout_secs: u64,
-    pub rayon_pool_size: usize,
     pub routing_rules: Vec<RoutingRule>,
 }
 
@@ -98,7 +97,6 @@ pub struct ConsumerConfigBuilder {
     default_retry_policy: RetryPolicy,
     dlq_topic_prefix: String,
     drain_timeout_secs: u64,
-    rayon_pool_size: Option<u32>,
     routing_rules: Vec<RoutingRule>,
 }
 
@@ -226,15 +224,6 @@ impl ConsumerConfigBuilder {
         self
     }
 
-    /// Sets the Rayon thread pool size for sync handler dispatch.
-    ///
-    /// Default: `num_cpus::get().saturating_sub(2).max(2)` threads.
-    /// Valid range: 1-256. Values outside this range cause build() to error.
-    pub fn rayon_pool_size(mut self, size: u32) -> Self {
-        self.rayon_pool_size = Some(size);
-        self
-    }
-
     /// Adds a routing rule. Rules are evaluated in priority order (lower first).
     ///
     /// # Example
@@ -264,18 +253,6 @@ impl ConsumerConfigBuilder {
             return Err(BuildError::NoTopics);
         }
 
-        // Validate rayon_pool_size range if set
-        if let Some(size) = self.rayon_pool_size {
-            if size == 0 || size > 256 {
-                return Err(BuildError::InvalidField("rayon_pool_size must be 1-256"));
-            }
-        }
-
-        // Compute default rayon pool size: leave at least 2 threads for Tokio
-        let rayon_pool_size = self.rayon_pool_size.map(|s| s as usize).unwrap_or_else(|| {
-            std::cmp::max(num_cpus::get().saturating_sub(2), 2)
-        });
-
         Ok(ConsumerConfig {
             brokers,
             group_id,
@@ -297,7 +274,6 @@ impl ConsumerConfigBuilder {
             default_retry_policy: self.default_retry_policy,
             dlq_topic_prefix: self.dlq_topic_prefix,
             drain_timeout_secs: self.drain_timeout_secs,
-            rayon_pool_size,
             routing_rules: self.routing_rules,
         })
     }

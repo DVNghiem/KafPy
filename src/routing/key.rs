@@ -67,7 +67,6 @@ impl KeyRouter {
             rules: rules.into(),
         }
     }
-
 }
 
 impl Router for KeyRouter {

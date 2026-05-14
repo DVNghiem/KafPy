@@ -19,7 +19,9 @@ pub struct MiddlewareChain {
 impl MiddlewareChain {
     /// Creates a new empty middleware chain.
     pub fn new() -> Self {
-        Self { middleware: Vec::new() }
+        Self {
+            middleware: Vec::new(),
+        }
     }
 
     /// Add middleware to the chain. Returns self for builder-style chaining.

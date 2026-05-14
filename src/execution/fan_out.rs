@@ -6,9 +6,9 @@
 use crate::consumer::runtime::PyConsumer;
 use crate::execution::callback::{HandlerMode, PythonHandler};
 use crate::worker_pool::fan_out::FanOutConfig;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Global counter for generating unique fan_out_ids.
 static FAN_OUT_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -78,7 +78,6 @@ impl FanOutBuilderRust {
                 None, // batch_policy
                 timeout,
                 format!("{}[{}]", self.group_name, sink_topic),
-                None, // rayon_pool
                 None, // middleware
             );
 
@@ -126,7 +125,13 @@ impl HandlerModeRust {
 }
 
 impl From<HandlerModeRust> for HandlerMode {
-    fn from(_: HandlerModeRust) -> Self {
-        HandlerMode::SingleSync
+    fn from(mode: HandlerModeRust) -> Self {
+        match mode {
+            HandlerModeRust::SingleSync => HandlerMode::SingleSync,
+            HandlerModeRust::SingleAsync => HandlerMode::SingleAsync,
+            HandlerModeRust::BatchSync => HandlerMode::BatchSync,
+            HandlerModeRust::BatchAsync => HandlerMode::BatchAsync,
+            HandlerModeRust::StreamingAsync => HandlerMode::StreamingAsync,
+        }
     }
 }

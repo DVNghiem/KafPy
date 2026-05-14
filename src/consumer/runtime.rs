@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::config::ConsumerConfig;
-        use crate::execution::callback::HandlerMode;
+use crate::execution::callback::HandlerMode;
 use crate::runtime::RuntimeBuilder;
 use crate::worker_pool::fan_out::FanOutConfig;
 
@@ -311,7 +311,6 @@ impl PyConsumer {
             sink_topics,
         })
     }
-
 }
 
 // ─── Internal methods (not PyO3 wrapped) ───────────────────────────────────────
@@ -326,7 +325,7 @@ impl PyConsumer {
         handler: std::sync::Arc<FanOutHandler>,
         fan_out_config: FanOutConfig,
     ) {
-use crate::execution::callback::HandlerMode;
+        use crate::execution::callback::HandlerMode;
         use std::sync::Arc;
 
         // For fan-out sinks, the actual handler with FanOutConfig is stored in

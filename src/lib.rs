@@ -51,18 +51,15 @@ pub(crate) mod routing;
 // Runtime assembly — RuntimeBuilder for composing pure-Rust consumer core
 pub(crate) mod runtime;
 
-pub mod rayon_pool;
-
 pub mod middleware;
 
 use kafka_message::KafkaMessage;
 // logging::Logger removed — using Python logging
-use producer::PyProducer;
 use consumer::runtime::PyConsumer;
+use producer::PyProducer;
 
 #[pymodule]
 fn _kafpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
-
     m.add_class::<KafkaMessage>()?;
     m.add_class::<PyConsumer>()?;
     m.add_class::<PyProducer>()?;
@@ -75,8 +72,14 @@ fn _kafpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Fan-out and fan-in registration result types
     m.add_class::<consumer::runtime::FanOutRegistration>()?;
-    m.add_function(wrap_pyfunction!(consumer::runtime::get_runtime_snapshot, m.py())?)?;
-    m.add_function(wrap_pyfunction!(consumer::runtime::register_status_callback, m.py())?)?;
+    m.add_function(wrap_pyfunction!(
+        consumer::runtime::get_runtime_snapshot,
+        m.py()
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        consumer::runtime::register_status_callback,
+        m.py()
+    )?)?;
 
     Ok(())
 }

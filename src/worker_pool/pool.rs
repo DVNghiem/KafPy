@@ -13,11 +13,10 @@ use crate::coordinator::ShutdownCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqRouter, SharedDlqProducer};
-use crate::observability::metrics::SharedPrometheusSink;
-use crate::observability::runtime_snapshot::WorkerPoolState;
-use crate::execution::executor::Executor;
 use crate::execution::callback::PythonHandler;
 use crate::execution::logger;
+use crate::observability::metrics::SharedPrometheusSink;
+use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::worker_pool::batch_loop::batch_worker_loop;
 use crate::worker_pool::concurrency::HandlerConcurrency;
 use crate::worker_pool::worker::worker_loop;
@@ -44,7 +43,7 @@ impl WorkerPool {
     /// Create a new WorkerPool with `n_workers` tasks.
     ///
     /// Each worker gets its own receiver from `receivers`. The `handler` is
-    /// shared across all workers via `Arc`. Uses `DefaultExecutor` (EXEC-04).
+    /// shared across all workers via `Arc`.
     /// The `shutdown_token` is supplied by the owner (Consumer) so that
     /// `stop()` can cancel all workers by cancelling the shared token.
     #[allow(clippy::too_many_arguments)]
@@ -52,7 +51,6 @@ impl WorkerPool {
         n_workers: usize,
         receivers: Vec<mpsc::Receiver<OwnedMessage>>,
         handlers: HashMap<String, Arc<PythonHandler>>,
-        executor: Arc<dyn Executor>,
         queue_manager: Arc<QueueManager>,
         offset_coordinator: Arc<dyn OffsetCoordinator>,
         retry_coordinator: Arc<RetryCoordinator>,
@@ -83,7 +81,6 @@ impl WorkerPool {
         // Zip workers with receivers — receivers is consumed here
         for (worker_id, rx) in receivers.into_iter().enumerate().take(n_workers) {
             let handlers = Arc::clone(&handlers_arc);
-            let executor = Arc::clone(&executor);
             let queue_manager = Arc::clone(&queue_manager);
             let token = shutdown_token.clone();
             let offset_coordinator = offset_coordinator.clone();
@@ -103,7 +100,6 @@ impl WorkerPool {
                 join_set.spawn(batch_worker_loop(
                     rx,
                     first_handler,
-                    executor,
                     queue_manager,
                     offset_coordinator,
                     retry_coordinator,
@@ -118,7 +114,6 @@ impl WorkerPool {
                 join_set.spawn(worker_loop(
                     rx,
                     handlers,
-                    executor,
                     queue_manager,
                     offset_coordinator,
                     retry_coordinator,
@@ -201,8 +196,6 @@ impl WorkerPool {
                 self.join_set.abort_all();
             }
         }
-        // SYNC-03: Drain the Rayon pool as part of shutdown coordination
-        self.coordinator.drain_rayon().await;
         // LSC-03: Flush pending retries to DLQ before finalizing
         self.offset_coordinator
             .flush_failed_to_dlq(&self.dlq_router, &self.dlq_producer);
@@ -211,15 +204,12 @@ impl WorkerPool {
     }
 }
 
-// ─── Tests ───────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::coordinator::OffsetCoordinator;
     use crate::dispatcher::queue_manager::QueueManager;
     use crate::dlq::router::DefaultDlqRouter;
-    use crate::execution::DefaultExecutor;
     use pyo3::prelude::*;
     use std::sync::Arc;
 
@@ -234,7 +224,6 @@ mod tests {
                 None,
                 None,
                 "test".to_string(),
-                None,
                 None,
             ))
         });
@@ -273,7 +262,6 @@ mod tests {
             3,
             vec![rx],
             dummy_handlers(),
-            Arc::new(DefaultExecutor),
             Arc::new(QueueManager::new()),
             Arc::new(crate::coordinator::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,
             Arc::new(crate::coordinator::RetryCoordinator::with_policy(

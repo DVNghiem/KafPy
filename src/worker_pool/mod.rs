@@ -4,11 +4,11 @@ use crate::coordinator::RetryCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
+use crate::execution::context::ExecutionContext;
+use crate::execution::execution_result::ExecutionResult;
 use crate::failure::FailureReason;
 use crate::observability::metrics::HandlerMetrics;
 use crate::observability::tracing::KafpySpanExt;
-use crate::execution::context::ExecutionContext;
-use crate::execution::execution_result::ExecutionResult;
 use std::sync::Arc;
 
 pub(crate) static HANDLER_METRICS: HandlerMetrics = HandlerMetrics;
@@ -22,8 +22,6 @@ pub mod state;
 pub mod worker;
 
 pub use concurrency::HandlerConcurrency;
-
-// ─── Execution Action ─────────────────────────────────────────────────────────
 
 /// Result of failure handling — returned by `handle_execution_failure`.
 #[derive(Debug)]
@@ -52,7 +50,9 @@ pub(crate) async fn handle_execution_failure(
     let reason = match result {
         ExecutionResult::Error { reason, .. } => reason.clone(),
         ExecutionResult::Rejected { reason, .. } => reason.clone(),
-        ExecutionResult::Timeout { .. } => FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
+        ExecutionResult::Timeout { .. } => {
+            FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic)
+        }
         ExecutionResult::Ok => unreachable!("handle_execution_failure called with Ok result"),
     };
 

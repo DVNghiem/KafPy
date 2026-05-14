@@ -4,9 +4,9 @@
 //! Uses Python logging (via kafpy logger) so output goes to user's configured handler.
 //! Zero-cost when no tracing subscriber is configured.
 
-use crate::middleware::HandlerMiddleware;
 use crate::execution::context::ExecutionContext;
 use crate::execution::execution_result::ExecutionResult;
+use crate::middleware::HandlerMiddleware;
 use std::time::Duration;
 
 /// Built-in logging middleware — MIDW-02.

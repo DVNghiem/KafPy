@@ -10,14 +10,13 @@ use crate::coordinator::RetryCoordinator;
 use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
+use crate::execution::batch::BatchAccumulator;
+use crate::execution::callback::PythonHandler;
+use crate::execution::context::ExecutionContext;
+use crate::execution::execution_result::BatchExecutionResult;
 use crate::observability::metrics::{MetricLabels, PythonCallMetrics};
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
-use crate::execution::batch::BatchAccumulator;
-use crate::execution::context::ExecutionContext;
-use crate::execution::execution_result::BatchExecutionResult;
-use crate::execution::executor::Executor;
-use crate::execution::callback::PythonHandler;
 use crate::worker_pool::state::BatchState;
 use crate::worker_pool::HANDLER_METRICS;
 
@@ -33,7 +32,6 @@ pub(crate) async fn flush_partition_batch(
     handler: Arc<PythonHandler>,
     worker_id: usize,
     worker_pool_state: Arc<WorkerPoolState>,
-    executor: Arc<dyn Executor>,
     queue_manager: Arc<QueueManager>,
     offset_coordinator: Arc<dyn OffsetCoordinator>,
     retry_coordinator: Arc<RetryCoordinator>,
@@ -72,8 +70,6 @@ pub(crate) async fn flush_partition_batch(
         batch,
         &topic,
         partition,
-        &ctx,
-        executor,
         queue_manager,
         offset_coordinator,
         retry_coordinator,
@@ -93,16 +89,10 @@ pub(crate) async fn flush_partition_batch(
 /// - Cancellation: flush all and exit
 ///
 /// Backpressure is applied per-batch: if QueueManager::get_inflight() >= capacity,
-/// flush current batch first then block (D-03).
-///
-/// Per D-01: BatchAccumulator is a dedicated struct (separate from worker_loop).
-/// Per D-02: Fixed-window timer — deadline set on first message, never recalculated.
-/// Per D-04: Inline iteration for batch results in this function.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn batch_worker_loop(
     mut rx: mpsc::Receiver<OwnedMessage>,
     handler: Arc<PythonHandler>,
-    executor: Arc<dyn Executor>,
     queue_manager: Arc<QueueManager>,
     offset_coordinator: Arc<dyn OffsetCoordinator>,
     retry_coordinator: Arc<RetryCoordinator>,
@@ -148,7 +138,6 @@ pub(crate) async fn batch_worker_loop(
                             Arc::clone(&handler),
                             worker_id,
                             Arc::clone(&worker_pool_state),
-                            Arc::clone(&executor),
                             Arc::clone(&queue_manager),
                             Arc::clone(&offset_coordinator),
                             Arc::clone(&retry_coordinator),
@@ -180,7 +169,6 @@ pub(crate) async fn batch_worker_loop(
                                                 Arc::clone(&handler),
                                                 worker_id,
                                                 Arc::clone(&worker_pool_state),
-                                                Arc::clone(&executor),
                                                 Arc::clone(&queue_manager),
                                                 Arc::clone(&offset_coordinator),
                                                 Arc::clone(&retry_coordinator),
@@ -204,7 +192,6 @@ pub(crate) async fn batch_worker_loop(
                                     Arc::clone(&handler),
                                     worker_id,
                                     Arc::clone(&worker_pool_state),
-                                    Arc::clone(&executor),
                                     Arc::clone(&queue_manager),
                                     Arc::clone(&offset_coordinator),
                                     Arc::clone(&retry_coordinator),
@@ -229,7 +216,6 @@ pub(crate) async fn batch_worker_loop(
                                     Arc::clone(&handler),
                                     worker_id,
                                     Arc::clone(&worker_pool_state),
-                                    Arc::clone(&executor),
                                     Arc::clone(&queue_manager),
                                     Arc::clone(&offset_coordinator),
                                     Arc::clone(&retry_coordinator),
@@ -253,10 +239,9 @@ pub(crate) async fn batch_worker_loop(
                                 partition,
                                 batch,
                                 Arc::clone(&handler),
-                                worker_id,
-                                Arc::clone(&worker_pool_state),
-                                Arc::clone(&executor),
-                                Arc::clone(&queue_manager),
+                                    worker_id,
+                                    Arc::clone(&worker_pool_state),
+                                    Arc::clone(&queue_manager),
                                 Arc::clone(&offset_coordinator),
                                 Arc::clone(&retry_coordinator),
                                 Arc::clone(&dlq_producer),
@@ -284,7 +269,6 @@ pub(crate) async fn batch_worker_loop(
                         Arc::clone(&handler),
                         worker_id,
                         Arc::clone(&worker_pool_state),
-                        Arc::clone(&executor),
                         Arc::clone(&queue_manager),
                         Arc::clone(&offset_coordinator),
                         Arc::clone(&retry_coordinator),
@@ -304,7 +288,6 @@ pub(crate) async fn batch_worker_loop(
 
 /// Handle the result of a batch invocation — inline version that owns the batch messages.
 ///
-/// Per D-04: Inline iteration in worker_loop.
 /// AllSuccess → record_ack per message individually.
 /// AllFailure → record_failure per message individually (routes to RetryCoordinator).
 #[allow(clippy::too_many_arguments)]
@@ -313,13 +296,11 @@ pub(crate) async fn handle_batch_result_inline(
     batch: Vec<OwnedMessage>,
     topic: &str,
     partition: i32,
-    _ctx: &ExecutionContext,
-    _executor: Arc<dyn Executor>,
     queue_manager: Arc<QueueManager>,
     offset_coordinator: Arc<dyn OffsetCoordinator>,
     retry_coordinator: Arc<RetryCoordinator>,
-    _dlq_producer: Arc<SharedDlqProducer>,
-    _dlq_router: Arc<dyn DlqRouter>,
+    dlq_producer: Arc<SharedDlqProducer>,
+    dlq_router: Arc<dyn DlqRouter>,
     prometheus_sink: crate::observability::SharedPrometheusSink,
 ) {
     match result {
@@ -417,7 +398,7 @@ pub(crate) async fn handle_batch_result_inline(
                         &reason.to_string(),
                         partition,
                     );
-                    let tp = dlq_span.in_scope(|| _dlq_router.route(&metadata));
+                    let tp = dlq_span.in_scope(|| dlq_router.route(&metadata));
                     tracing::error!(
                         topic = %topic,
                         partition = partition,
@@ -429,7 +410,7 @@ pub(crate) async fn handle_batch_result_inline(
                     );
 
                     // Fire-and-forget
-                    _dlq_producer.produce_async(
+                    dlq_producer.produce_async(
                         tp.topic.clone(),
                         tp.partition,
                         msg.payload.clone().unwrap_or_default(),

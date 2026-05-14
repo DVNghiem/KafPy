@@ -104,7 +104,7 @@ try:
     # New PyO3-exposed types
     from ._kafpy import PyRetryPolicy, PyObservabilityConfig
     from ._kafpy import PyFailureCategory, PyFailureReason
-except ModuleNotFoundError:
+except (ModuleNotFoundError, ImportError):
     ProducerConfig = None  # type: ignore
     Producer = None  # type: ignore
     run_scenario_py = None  # type: ignore

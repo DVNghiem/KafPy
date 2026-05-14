@@ -2,14 +2,13 @@
 
 use crate::consumer::MessageTimestamp;
 use crate::dispatcher::OwnedMessage;
+use crate::execution::async_bridge::PythonAsyncFuture;
+use crate::execution::context::ExecutionContext;
+use crate::execution::execution_result::{BatchExecutionResult, ExecutionResult, TimeoutInfo};
 use crate::failure::classifier::DefaultFailureClassifier;
 use crate::failure::FailureClassifier;
 use crate::failure::FailureReason;
 use crate::observability::tracing::inject_trace_context;
-use crate::execution::async_bridge::PythonAsyncFuture;
-use crate::execution::context::ExecutionContext;
-use crate::execution::execution_result::{BatchExecutionResult, ExecutionResult, TimeoutInfo};
-use crate::rayon_pool::RayonPool;
 use crate::retry::RetryPolicy;
 use crate::worker_pool::fan_out::FanOutConfig;
 use std::collections::HashMap;
@@ -158,8 +157,6 @@ pub struct PythonHandler {
     handler_timeout: Option<Duration>,
     /// Human-readable handler name for observability (typically the topic).
     name: String,
-    /// Rayon pool for offloading sync handler work. None means use spawn_blocking directly.
-    rayon_pool: Option<Arc<RayonPool>>,
     /// Middleware class objects to be executed around handler invocation.
     /// Arc-wrapped for GIL-safe access. Chain is built at invocation time.
     middleware: Option<Vec<Arc<Py<PyAny>>>>,
@@ -177,7 +174,6 @@ pub struct PythonHandlerBuilder {
     batch_policy: Option<BatchPolicy>,
     handler_timeout: Option<Duration>,
     name: String,
-    rayon_pool: Option<Arc<RayonPool>>,
     middleware: Option<Vec<Arc<Py<PyAny>>>>,
 }
 
@@ -191,7 +187,6 @@ impl PythonHandlerBuilder {
             batch_policy: None,
             handler_timeout: None,
             name,
-            rayon_pool: None,
             middleware: None,
         }
     }
@@ -220,12 +215,6 @@ impl PythonHandlerBuilder {
         self
     }
 
-    /// Sets the Rayon pool.
-    pub fn rayon_pool(mut self, rayon_pool: Arc<RayonPool>) -> Self {
-        self.rayon_pool = Some(rayon_pool);
-        self
-    }
-
     /// Sets the middleware.
     pub fn middleware(mut self, middleware: Vec<Arc<Py<PyAny>>>) -> Self {
         self.middleware = Some(middleware);
@@ -241,7 +230,6 @@ impl PythonHandlerBuilder {
             batch_policy: self.batch_policy,
             handler_timeout: self.handler_timeout,
             name: self.name,
-            rayon_pool: self.rayon_pool,
             middleware: self.middleware,
             fan_out: None,
         }
@@ -258,7 +246,6 @@ impl PythonHandler {
         batch_policy: Option<BatchPolicy>,
         handler_timeout: Option<Duration>,
         name: String,
-        rayon_pool: Option<Arc<RayonPool>>,
         middleware: Option<Vec<Arc<Py<PyAny>>>>,
     ) -> Self {
         Self {
@@ -268,7 +255,6 @@ impl PythonHandler {
             batch_policy,
             handler_timeout,
             name,
-            rayon_pool,
             middleware,
             fan_out: None,
         }
@@ -287,7 +273,6 @@ impl PythonHandler {
         batch_policy: Option<BatchPolicy>,
         handler_timeout: Option<Duration>,
         name: String,
-        rayon_pool: Option<Arc<RayonPool>>,
         middleware: Option<Vec<Arc<Py<PyAny>>>>,
     ) -> Self {
         Self {
@@ -297,7 +282,6 @@ impl PythonHandler {
             batch_policy,
             handler_timeout,
             name,
-            rayon_pool,
             middleware,
             fan_out: None,
         }
@@ -392,9 +376,7 @@ impl PythonHandler {
                     },
                 }
             }
-            HandlerMode::StreamingAsync => {
-                self.invoke_streaming(ctx, message).await
-            }
+            HandlerMode::StreamingAsync => self.invoke_streaming(ctx, message).await,
         };
 
         result
@@ -484,28 +466,26 @@ impl PythonHandler {
 
         let effective_timeout = timeout.or(self.handler_timeout);
         let result = match effective_timeout {
-            Some(t) => {
-                match tokio::time::timeout(t, self.invoke_mode(ctx, message)).await {
-                    Ok(result) => result,
-                    Err(_) => {
-                        tracing::error!(
-                            handler_id = %ctx.topic,
-                            topic = %ctx.topic,
-                            partition = ctx.partition,
-                            offset = ctx.offset,
-                            timeout_ms = t.as_millis() as u64,
-                            "handler timed out after {}ms",
-                            t.as_millis()
-                        );
-                        ExecutionResult::Timeout {
-                            info: TimeoutInfo {
-                                timeout_ms: t.as_millis() as u64,
-                                last_processed_offset: None,
-                            },
-                        }
+            Some(t) => match tokio::time::timeout(t, self.invoke_mode(ctx, message)).await {
+                Ok(result) => result,
+                Err(_) => {
+                    tracing::error!(
+                        handler_id = %ctx.topic,
+                        topic = %ctx.topic,
+                        partition = ctx.partition,
+                        offset = ctx.offset,
+                        timeout_ms = t.as_millis() as u64,
+                        "handler timed out after {}ms",
+                        t.as_millis()
+                    );
+                    ExecutionResult::Timeout {
+                        info: TimeoutInfo {
+                            timeout_ms: t.as_millis() as u64,
+                            last_processed_offset: None,
+                        },
                     }
                 }
-            }
+            },
             None => self.invoke_mode(ctx, message).await,
         };
 
@@ -524,12 +504,10 @@ impl PythonHandler {
     /// Invokes the Python callable with the given message.
     ///
     /// Uses `spawn_blocking` to release the Tokio thread. GIL acquired only
-    /// inside `Python::with_gil`. When a RayonPool is configured, dispatches
-    /// to the Rayon work-stealing pool to avoid blocking the Tokio poll cycle.
+    /// inside `Python::with_gil`.
     pub async fn invoke(&self, ctx: &ExecutionContext, message: OwnedMessage) -> ExecutionResult {
         let callback = Arc::clone(&self.callback);
         let ctx_clone = ctx.clone();
-        let rayon_pool = self.rayon_pool.clone();
 
         // Extract W3C trace context from message headers before crossing GIL boundary
         let header_map: std::collections::HashMap<String, String> = message
@@ -544,97 +522,36 @@ impl PythonHandler {
         let mut trace_context = std::collections::HashMap::new();
         inject_trace_context(&header_map, &mut trace_context);
 
-        // Clone trace_context before the conditional to avoid use-after-move
-        let trace_context_for_rayon = trace_context.clone();
-        let trace_context_for_tokio = trace_context;
-
-        let result = if let Some(pool) = rayon_pool {
-            // Dispatch to Rayon pool — closure MUST NOT call any Tokio APIs
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            pool.spawn(move || {
-                // On Rayon thread — safe to do CPU preprocessing here.
-                // MUST NOT call tokio::spawn, Handle::current(), or any Tokio sync primitive.
-                // Use std::thread::spawn for Python GIL calls (no tokio runtime on Rayon threads).
-                let thread_result = std::thread::spawn(move || {
-                    Python::attach(|py| {
-                        let py_msg = message_to_pydict(py, &message, Some(&trace_context_for_rayon));
-                        let py_ctx = ctx_to_pydict(py, &ctx_clone, &message);
-                        match callback.call(py, (py_msg, py_ctx), None) {
-                            Ok(_) => ExecutionResult::Ok,
-                            Err(py_err) => {
-                                let classifier = DefaultFailureClassifier;
-                                let reason = classifier.classify(&py_err, &ctx_clone);
-                                let exception = py_err
-                                    .get_type(py)
-                                    .name()
-                                    .map(|s| s.to_string())
-                                    .unwrap_or_else(|_| "Unknown".to_string());
-                                let traceback = py_err.to_string();
-                                ExecutionResult::Error {
-                                    reason,
-                                    exception,
-                                    traceback,
-                                }
-                            }
-                        }
-                    })
-                })
-                .join();
-                // Send the thread result back to Tokio via oneshot channel
-                let _ = tx.send(thread_result);
-            });
-            // Receive from Rayon pool
-            match rx.await {
-                Ok(thread_result) => match thread_result {
-                    Ok(result) => result,
-                    Err(_) => ExecutionResult::Error {
-                        reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
-                        exception: "Panic".to_string(),
-                        traceback: "python handler thread panicked".to_string(),
-                    },
-                },
-                Err(_) => ExecutionResult::Error {
-                    reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
-                    exception: "Panic".to_string(),
-                    traceback: "rayon pool task panicked (sender dropped)".to_string(),
-                },
-            }
-        } else {
-            // Fallback: use spawn_blocking directly (no Rayon pool configured)
-            tokio::task::spawn_blocking(move || {
-                Python::attach(|py| {
-                    let py_msg = message_to_pydict(py, &message, Some(&trace_context_for_tokio));
-                    let py_ctx = ctx_to_pydict(py, &ctx_clone, &message);
-                    match callback.call(py, (py_msg, py_ctx), None) {
-                        Ok(_) => ExecutionResult::Ok,
-                        Err(py_err) => {
-                            let classifier = DefaultFailureClassifier;
-                            let reason = classifier.classify(&py_err, &ctx_clone);
-                            let exception = py_err
-                                .get_type(py)
-                                .name()
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|_| "Unknown".to_string());
-                            let traceback = py_err.to_string();
-                            ExecutionResult::Error {
-                                reason,
-                                exception,
-                                traceback,
-                            }
+        tokio::task::spawn_blocking(move || {
+            Python::attach(|py| {
+                let py_msg = message_to_pydict(py, &message, Some(&trace_context));
+                let py_ctx = ctx_to_pydict(py, &ctx_clone, &message);
+                match callback.call(py, (py_msg, py_ctx), None) {
+                    Ok(_) => ExecutionResult::Ok,
+                    Err(py_err) => {
+                        let classifier = DefaultFailureClassifier;
+                        let reason = classifier.classify(&py_err, &ctx_clone);
+                        let exception = py_err
+                            .get_type(py)
+                            .name()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|_| "Unknown".to_string());
+                        let traceback = py_err.to_string();
+                        ExecutionResult::Error {
+                            reason,
+                            exception,
+                            traceback,
                         }
                     }
-                })
+                }
             })
-            .await
-            .unwrap_or_else(|_| ExecutionResult::Error {
-                reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
-                exception: "Panic".to_string(),
-                traceback: "spawn_blocking task panicked".to_string(),
-            })
-        };
-
-        // Both branches already return ExecutionResult
-        result
+        })
+        .await
+        .unwrap_or_else(|_| ExecutionResult::Error {
+            reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
+            exception: "Panic".to_string(),
+            traceback: "spawn_blocking task panicked".to_string(),
+        })
     }
 
     /// Invokes the Python handler with a batch of messages via spawn_blocking.
@@ -842,7 +759,6 @@ mod perf_tests {
                 None,
                 "bench-sync".to_string(),
                 None,
-                None,
             )
         });
 
@@ -867,7 +783,6 @@ mod perf_tests {
                 }),
                 None,
                 "bench-batch".to_string(),
-                None,
                 None,
             )
         });

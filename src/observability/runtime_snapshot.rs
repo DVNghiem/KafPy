@@ -165,7 +165,6 @@ impl WorkerPoolState {
     pub fn get_states(&self) -> HashMap<usize, WorkerStatus> {
         self.states.read().clone()
     }
-
 }
 
 /// Registry for Python status callbacks.
@@ -271,7 +270,6 @@ impl RuntimeSnapshotTask {
 
         task
     }
-
 
     /// Returns a cheap clone of the current snapshot.
     pub fn get_snapshot(&self) -> RuntimeSnapshot {

@@ -58,9 +58,7 @@ impl SharedDlqProducer {
             }
         });
 
-        Ok(Self {
-            send_tx,
-        })
+        Ok(Self { send_tx })
     }
 
     fn create_producer(

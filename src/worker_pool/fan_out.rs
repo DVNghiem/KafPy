@@ -11,8 +11,6 @@ use tokio::sync::Semaphore;
 use crate::dispatcher::backpressure::BackpressureAction;
 use crate::execution::callback::PythonHandler;
 
-// ─── Branch Result ────────────────────────────────────────────────────────────
-
 /// Result of a single fan-out sink branch execution.
 #[derive(Debug, Clone)]
 pub enum BranchResult {
@@ -34,8 +32,6 @@ pub struct BranchResults {
     pub results: Vec<(u64, BranchResult)>,
 }
 
-// ─── Sink Config ──────────────────────────────────────────────────────────────
-
 /// Sink configuration holding topic and handler for a single fan-out branch.
 #[derive(Clone)]
 pub struct SinkConfig {
@@ -55,8 +51,6 @@ impl std::fmt::Debug for SinkConfig {
             .finish()
     }
 }
-
-// ─── Fan-Out Configuration ────────────────────────────────────────────────────
 
 /// Fan-out configuration attached to a handler.
 ///
@@ -88,8 +82,6 @@ impl FanOutConfig {
             .unwrap_or(false)
     }
 }
-
-// ─── Callback Registry ─────────────────────────────────────────────────────────
 
 /// Type alias for branch completion callbacks.
 type BranchCallback = Box<dyn Fn(BranchResult) + Send + Sync>;
@@ -149,8 +141,6 @@ impl CallbackRegistry {
     }
 }
 
-// ─── Fan-Out Tracker ─────────────────────────────────────────────────────────
-
 /// FanOutTracker tracks in-flight branches for a single message dispatch.
 ///
 /// # Fields
@@ -197,8 +187,17 @@ impl FanOutTracker {
     }
 
     /// Register a sink topic and handler for this fan-out tracker.
-    pub fn register_sink(&mut self, topic: String, handler: Arc<PythonHandler>, timeout: Option<std::time::Duration>) {
-        self.sinks.push(SinkConfig { topic, handler, timeout });
+    pub fn register_sink(
+        &mut self,
+        topic: String,
+        handler: Arc<PythonHandler>,
+        timeout: Option<std::time::Duration>,
+    ) {
+        self.sinks.push(SinkConfig {
+            topic,
+            handler,
+            timeout,
+        });
     }
 
     /// Returns the number of registered sinks.
@@ -236,7 +235,8 @@ impl FanOutTracker {
 
     /// Decrement inflight count (called when a branch completes).
     pub fn release_slot(&self) {
-        self.inflight.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.inflight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Returns the current inflight count.
@@ -271,7 +271,9 @@ impl FanOutTracker {
             let mut results = self.results.lock().expect("poisoned");
             results.push((branch_id, result));
         }
-        let prev = self.completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let prev = self
+            .completed
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if prev + 1 >= self.total.load(std::sync::atomic::Ordering::SeqCst) {
             self.notify.notify_waiters();
         }
@@ -297,8 +299,6 @@ impl FanOutTracker {
         &self.sinks
     }
 }
-
-// ─── Fan-Out Slot Manager ─────────────────────────────────────────────────────
 
 /// Semaphore-based slot manager for bounded fan-out concurrency.
 ///
@@ -368,8 +368,6 @@ impl FanOutSlotManager {
     }
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,21 +375,18 @@ mod tests {
     use pyo3::prelude::*;
 
     fn make_dummy_handler(name: &str) -> Arc<PythonHandler> {
-        Arc::new(
-            Python::attach(|py| {
-                let py_none = py.None();
-                PythonHandler::new(
-                    py_none.into(),
-                    None,
-                    HandlerMode::SingleSync,
-                    None,
-                    None,
-                    name.to_string(),
-                    None,
-                    None,
-                )
-            }),
-        )
+        Arc::new(Python::attach(|py| {
+            let py_none = py.None();
+            PythonHandler::new(
+                py_none.into(),
+                None,
+                HandlerMode::SingleSync,
+                None,
+                None,
+                name.to_string(),
+                None,
+            )
+        }))
     }
 
     #[test]
@@ -470,7 +465,10 @@ mod tests {
 
         registry.emit(branch_id, BranchResult::Ok);
         assert!(*called.lock().unwrap());
-        assert!(matches!(*result_received.lock().unwrap(), Some(BranchResult::Ok)));
+        assert!(matches!(
+            *result_received.lock().unwrap(),
+            Some(BranchResult::Ok)
+        ));
     }
 
     #[test]

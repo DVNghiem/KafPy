@@ -8,10 +8,10 @@
 //! is passed to add_handler, we detect the type name and create the appropriate
 //! Rust middleware. Custom Python middleware is wrapped in PythonMiddleware.
 
-use crate::middleware::{HandlerMiddleware, Logging, Metrics, MiddlewareChain};
-use crate::observability::metrics::SharedPrometheusSink;
 use crate::execution::context::ExecutionContext;
 use crate::execution::execution_result::ExecutionResult;
+use crate::middleware::{HandlerMiddleware, Logging, Metrics, MiddlewareChain};
+use crate::observability::metrics::SharedPrometheusSink;
 use pyo3::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;

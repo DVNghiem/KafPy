@@ -4,9 +4,9 @@
 //! This is the core async infrastructure for Phase 26 — all async Python handler execution
 //! flows through this bridge.
 
+use crate::execution::execution_result::ExecutionResult;
 use crate::failure::FailureReason;
 use crate::failure::TerminalKind;
-use crate::execution::execution_result::ExecutionResult;
 use pyo3::exceptions::{PyStopAsyncIteration, PyStopIteration};
 use pyo3::prelude::*;
 use std::future::Future;

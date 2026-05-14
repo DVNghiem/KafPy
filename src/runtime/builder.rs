@@ -8,7 +8,7 @@
 //! 4. `runner_arc` → `ConsumerDispatcher::new`
 //! 5. Collect receivers from handlers
 //! 6. `handlers` → `PythonHandler::new`
-//! 7. `executor`, `queue_manager`, `retry_coordinator`
+//! 7. `queue_manager`, `retry_coordinator`
 //! 8. `dlq_producer`, `dlq_router`
 //! 9. `ShutdownCoordinator`
 //! 10. `WorkerPool::new` with all dependencies
@@ -19,6 +19,7 @@
 
 use crate::config::ConsumerConfig;
 use crate::consumer::error::ConsumerError;
+use crate::consumer::runtime::HandlerMetadata;
 use crate::consumer::{ConsumerConfigBuilder, ConsumerRunner};
 use crate::coordinator::{
     CommitConfig, OffsetCommitter, OffsetTracker, RetryCoordinator, ShutdownCoordinator,
@@ -28,13 +29,10 @@ use crate::dispatcher::DefaultBackpressurePolicy;
 use crate::dlq::produce::SharedDlqProducer;
 use crate::dlq::router::DefaultDlqRouter;
 use crate::dlq::DlqRouter;
-use crate::observability::metrics::SharedPrometheusSink;
-use crate::observability::runtime_snapshot::RuntimeSnapshotTask;
-use crate::consumer::runtime::HandlerMetadata;
 use crate::execution::callback::PythonHandler;
 use crate::execution::logger;
-use crate::execution::{DefaultExecutor, Executor};
-use crate::rayon_pool::RayonPool;
+use crate::observability::metrics::SharedPrometheusSink;
+use crate::observability::runtime_snapshot::RuntimeSnapshotTask;
 use crate::routing::chain::RoutingChain;
 use crate::worker_pool::concurrency::HandlerConcurrency;
 use crate::worker_pool::pool::WorkerPool;
@@ -50,7 +48,7 @@ use tokio_util::sync::CancellationToken;
 pub struct RuntimeBuilder {
     config: ConsumerConfig,
     handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
-        fan_out_handlers: HashMap<String, std::sync::Arc<crate::execution::callback::PythonHandler>>,
+    fan_out_handlers: HashMap<String, std::sync::Arc<crate::execution::callback::PythonHandler>>,
     shutdown_token: CancellationToken,
 }
 
@@ -59,7 +57,10 @@ impl RuntimeBuilder {
     pub fn new(
         config: ConsumerConfig,
         handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
-    fan_out_handlers: HashMap<String, std::sync::Arc<crate::execution::callback::PythonHandler>>,
+        fan_out_handlers: HashMap<
+            String,
+            std::sync::Arc<crate::execution::callback::PythonHandler>,
+        >,
         shutdown_token: CancellationToken,
     ) -> Self {
         Self {
@@ -113,12 +114,6 @@ impl RuntimeBuilder {
 
         let default_retry_policy = rust_config.default_retry_policy.clone();
 
-        // Create Rayon pool for sync handler offloading
-        let rayon_pool = Arc::new(
-            RayonPool::new(rust_config.rayon_pool_size)
-                .expect("failed to create rayon thread pool"),
-        );
-
         // 2. Create SharedPrometheusSink (before DLQ producer so it can be threaded in)
         let prometheus_sink = SharedPrometheusSink::new();
 
@@ -134,11 +129,7 @@ impl RuntimeBuilder {
         let offset_tracker: Arc<OffsetTracker> = Arc::new(OffsetTracker::new());
 
         // 4. Create ConsumerRunner with CustomConsumerContext
-        let runner = ConsumerRunner::new(
-            rust_config.clone(),
-            None,
-            Arc::clone(&offset_tracker),
-        )?;
+        let runner = ConsumerRunner::new(rust_config.clone(), None, Arc::clone(&offset_tracker))?;
 
         // 5. Wire ConsumerRunner into OffsetTracker
         let runner_arc: Arc<ConsumerRunner> = Arc::new(runner);
@@ -170,17 +161,16 @@ impl RuntimeBuilder {
                         .find(|(id, _)| id == &handler_id)
                         .map(|(_, meta)| Arc::clone(&meta.callback))
                 });
-            let routing_chain =
-                RoutingChain::from_rules(
-                    &rust_config.routing_rules,
-                    default_handler,
-                    python_callback,
-                    prometheus_sink.clone(),
-                )
-                    .map_err(|e| ConsumerError::Subscription {
-                        broker: rust_config.brokers.clone(),
-                        message: format!("invalid routing rule: {e}"),
-                    })?;
+            let routing_chain = RoutingChain::from_rules(
+                &rust_config.routing_rules,
+                default_handler,
+                python_callback,
+                prometheus_sink.clone(),
+            )
+            .map_err(|e| ConsumerError::Subscription {
+                broker: rust_config.brokers.clone(),
+                message: format!("invalid routing rule: {e}"),
+            })?;
             dispatcher = dispatcher.with_routing_chain(Arc::new(routing_chain));
         }
         logger::log(
@@ -219,12 +209,12 @@ impl RuntimeBuilder {
                         .or(default_handler_timeout);
 
                     // Resolve batch config
-                    let batch_policy =
-                        meta.batch_max_size
-                            .map(|max_size| crate::execution::callback::BatchPolicy {
-                                max_batch_size: max_size,
-                                max_batch_wait_ms: meta.batch_max_wait_ms.unwrap_or(1000),
-                            });
+                    let batch_policy = meta.batch_max_size.map(|max_size| {
+                        crate::execution::callback::BatchPolicy {
+                            max_batch_size: max_size,
+                            max_batch_wait_ms: meta.batch_max_wait_ms.unwrap_or(1000),
+                        }
+                    });
 
                     let handler = Arc::new(PythonHandler::new(
                         meta.callback.clone(),
@@ -233,7 +223,6 @@ impl RuntimeBuilder {
                         batch_policy,
                         timeout,
                         topic.clone(),
-                        Some(Arc::clone(&rayon_pool)),
                         meta.middleware.clone(),
                     ));
                     (topic.clone(), handler)
@@ -241,8 +230,7 @@ impl RuntimeBuilder {
                 .collect()
         };
 
-        // 7. Create executor, queue_manager, retry_coordinator
-        let executor_arc: Arc<dyn Executor> = Arc::new(DefaultExecutor);
+        // 7. Create queue_manager, retry_coordinator
         let queue_manager_arc = dispatcher.queue_manager();
         let retry_coordinator: Arc<RetryCoordinator> =
             Arc::new(RetryCoordinator::new(&rust_config));
@@ -250,12 +238,10 @@ impl RuntimeBuilder {
         // Read num_workers from PyO3 config if provided, otherwise default to 4
         let n_workers = self.config.num_workers.unwrap_or(4) as usize;
 
-        // 9. Create shutdown coordinator with rayon pool for drain coordination
-        let coordinator: Arc<ShutdownCoordinator> =
-            Arc::new(ShutdownCoordinator::with_rayon_pool(
-                rust_config.drain_timeout_secs,
-                Some(Arc::clone(&rayon_pool)),
-            ));
+        // 9. Create shutdown coordinator
+        let coordinator: Arc<ShutdownCoordinator> = Arc::new(ShutdownCoordinator::new(
+            rust_config.drain_timeout_secs,
+        ));
 
         // Create HandlerConcurrency with configurable default + per-handler overrides.
         let default_handler_concurrency = std::env::var("KAFPY_HANDLER_CONCURRENCY_DEFAULT")
@@ -278,7 +264,6 @@ impl RuntimeBuilder {
             n_workers,
             receivers,
             handler_map,
-            executor_arc,
             queue_manager_arc.clone(),
             offset_tracker.clone(),
             retry_coordinator,

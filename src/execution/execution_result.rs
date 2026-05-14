@@ -35,9 +35,7 @@ pub enum ExecutionResult {
         reason_str: String,
     },
     /// Handler invocation timed out — carries TimeoutInfo so DLQ metadata can be enriched.
-    Timeout {
-        info: TimeoutInfo,
-    },
+    Timeout { info: TimeoutInfo },
 }
 
 impl ExecutionResult {

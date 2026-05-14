@@ -23,7 +23,6 @@ impl HeaderRouter {
             rules: rules.into(),
         }
     }
-
 }
 
 impl Router for HeaderRouter {

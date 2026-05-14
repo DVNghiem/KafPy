@@ -46,9 +46,7 @@ pub struct CustomConsumerContext {
 
 impl CustomConsumerContext {
     /// Creates a new CustomConsumerContext with the given dependencies.
-    pub fn new(
-        offset_tracker: Arc<OffsetTracker>,
-    ) -> Self {
+    pub fn new(offset_tracker: Arc<OffsetTracker>) -> Self {
         Self {
             offset_tracker,
             pause_state: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),

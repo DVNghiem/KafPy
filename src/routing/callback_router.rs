@@ -107,9 +107,9 @@ impl PythonRouter {
                                     "reject:python_router_invalid_batch_return".to_string()
                                 })
                         } else {
-                            py_result
-                                .extract(py)
-                                .unwrap_or_else(|_| "reject:python_router_invalid_return".to_string())
+                            py_result.extract(py).unwrap_or_else(|_| {
+                                "reject:python_router_invalid_return".to_string()
+                            })
                         };
                         Self::parse_return(s)
                     }
@@ -141,7 +141,9 @@ impl PythonRouter {
                 .unwrap_or_else(|_| {
                     // spawn_blocking panicked — treat as routing error
                     warn!("Python router spawn_blocking task panicked");
-                    RoutingDecision::Reject(RejectReason::Explicit("python_router_panic".to_string()))
+                    RoutingDecision::Reject(RejectReason::Explicit(
+                        "python_router_panic".to_string(),
+                    ))
                 })
         })
     }

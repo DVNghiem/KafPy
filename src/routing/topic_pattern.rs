@@ -55,7 +55,6 @@ impl TopicPatternRouter {
             compiled: compiled.into(),
         })
     }
-
 }
 
 impl Router for TopicPatternRouter {

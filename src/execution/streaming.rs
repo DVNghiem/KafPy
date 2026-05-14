@@ -4,11 +4,11 @@
 //! in a loop. Each yield is treated as a message; StopAsyncIteration signals end of stream.
 
 use crate::dispatcher::OwnedMessage;
-use crate::failure::{FailureReason, TerminalKind};
 use crate::execution::async_bridge::PythonAsyncFuture;
+use crate::execution::callback::message_to_pydict;
 use crate::execution::context::ExecutionContext;
 use crate::execution::execution_result::ExecutionResult;
-use crate::execution::callback::message_to_pydict;
+use crate::failure::{FailureReason, TerminalKind};
 use std::sync::Arc;
 
 use pyo3::prelude::*;

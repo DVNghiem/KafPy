@@ -7,10 +7,12 @@
 //! Uses existing HandlerMetrics and ThroughputMetrics types which are
 //! pre-registered in SharedPrometheusSink::new().
 
-use crate::middleware::HandlerMiddleware;
-use crate::observability::metrics::{HandlerMetrics, MetricLabels, SharedPrometheusSink, ThroughputMetrics};
 use crate::execution::context::ExecutionContext;
 use crate::execution::execution_result::ExecutionResult;
+use crate::middleware::HandlerMiddleware;
+use crate::observability::metrics::{
+    HandlerMetrics, MetricLabels, SharedPrometheusSink, ThroughputMetrics,
+};
 use std::time::Duration;
 
 /// Built-in metrics middleware — MIDW-03.
@@ -46,5 +48,14 @@ impl HandlerMiddleware for Metrics {
                 "SingleSync", // mode will be plumbed through ctx in future phases
             );
         }
+    }
+
+    fn on_error(&self, ctx: &ExecutionContext, _result: &ExecutionResult) {
+        let labels = MetricLabels::new()
+            .insert("handler_id", ctx.topic.as_str())
+            .insert("topic", ctx.topic.as_str());
+
+        // Record error metric for error path
+        HandlerMetrics.record_error(&self.sink, &labels);
     }
 }

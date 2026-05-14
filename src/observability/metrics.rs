@@ -159,7 +159,10 @@ impl SharedPrometheusSink {
         sink.register_gauge("kafpy.consumer.lag", "Consumer lag per partition");
         sink.register_counter("kafpy.dlq.messages", "Messages produced to DLQ");
         sink.register_counter("kafpy.handler.timeout_total", "Handler timeout count");
-        sink.register_counter("kafpy.python.call_total", "Python callback invocation count");
+        sink.register_counter(
+            "kafpy.python.call_total",
+            "Python callback invocation count",
+        );
         sink.register_histogram(
             "kafpy.python.call_duration_seconds",
             "Python callback duration in seconds",
@@ -218,7 +221,6 @@ impl MetricsSink for SharedPrometheusSink {
         self.inner.lock().unwrap().record_gauge(name, value, labels);
     }
 }
-
 
 /// Wraps handler invocation counter, latency histogram, error counter, and batch size histogram.
 pub struct HandlerMetrics;
@@ -287,7 +289,6 @@ impl QueueMetrics {
     }
 }
 
-
 /// DLQ metrics recorder
 pub struct DlqMetrics;
 
@@ -342,7 +343,6 @@ impl FanOutMetrics {
     }
 }
 
-
 /// Timeout metrics recorder — TMOUT-03.
 pub struct TimeoutMetrics;
 
@@ -357,7 +357,6 @@ impl TimeoutMetrics {
     }
 }
 
-
 /// Metrics recorder for Rust→Python callback pressure and latency.
 pub struct PythonCallMetrics;
 
@@ -369,7 +368,9 @@ impl PythonCallMetrics {
         elapsed: Duration,
         batch_size: usize,
     ) {
-        let labels = MetricLabels::new().insert("mode", mode).insert("path", path);
+        let labels = MetricLabels::new()
+            .insert("mode", mode)
+            .insert("path", path);
         sink.record_counter("kafpy.python.call_total", &labels.as_slice());
         sink.record_histogram(
             "kafpy.python.call_duration_seconds",
@@ -384,14 +385,15 @@ impl PythonCallMetrics {
     }
 
     pub fn record_queue_wait(sink: &dyn MetricsSink, path: &str, mode: &str, elapsed: Duration) {
-        let labels = MetricLabels::new().insert("mode", mode).insert("path", path);
+        let labels = MetricLabels::new()
+            .insert("mode", mode)
+            .insert("path", path);
         sink.record_histogram(
             "kafpy.python.queue_wait_seconds",
             elapsed.as_secs_f64(),
             &labels.as_slice(),
         );
     }
-
 }
 
 /// Snapshot of queue depth and inflight message counts.
@@ -448,5 +450,4 @@ mod tests {
         sink.record_counter("kafpy.message.throughput", &labels.as_slice());
         sink.record_gauge("kafpy.queue.depth", 5.0, &labels.as_slice());
     }
-
 }
