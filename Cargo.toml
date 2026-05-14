@@ -39,7 +39,7 @@ arc-swap = "~1.9.1"
 log = { version = "~0.4.21", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
-rdkafka = { version = "0.39.0" }
+rdkafka = { version = "0.39.0", features = ["cmake-build"] }
 
 [target.'cfg(windows)'.dependencies]
 rdkafka = { version = "0.39.0", features = ["cmake-build"] }
