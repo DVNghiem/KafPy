@@ -43,12 +43,6 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-#[cfg(unix)]
-use tokio::signal::unix::{signal, SignalKind};
-
-#[cfg(windows)]
-use tokio::signal::windows::{signal, SignalKind};
-
 /// Builder for assembling the full consumer runtime.
 ///
 /// Created in `Consumer::start()` and consumed by `build()`.
@@ -350,7 +344,9 @@ impl Runtime {
     /// Spawns a task that listens for SIGTERM. When received, initiates
     /// graceful shutdown via ShutdownCoordinator.begin_draining().
     /// Then runs the pool and waits for shutdown.
+    #[cfg(unix)]
     pub async fn run_with_sigterm(self) {
+        use tokio::signal::unix::{signal, SignalKind};
         let coordinator = Arc::clone(&self.coordinator);
 
         tokio::spawn(async move {
@@ -363,6 +359,22 @@ impl Runtime {
             let _ = coordinator.begin_draining();
         });
 
+        self.run().await;
+    }
+
+    #[cfg(windows)]
+    pub async fn run_with_sigterm(self) {
+        use tokio::signal::windows;
+        let mut ctrl_c = windows::ctrl_c()?;
+        let coordinator = Arc::clone(&self.coordinator);
+        tokio::spawn(async move {
+            ctrl_c.recv().await;
+            tracing::info!(
+                drain_timeout_secs = coordinator.drain_timeout().as_secs(),
+                "received Ctrl-C, initiating graceful shutdown"
+            );
+            let _ = coordinator.begin_draining();
+        });
         self.run().await;
     }
 }
