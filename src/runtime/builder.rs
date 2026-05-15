@@ -365,7 +365,7 @@ impl Runtime {
     #[cfg(windows)]
     pub async fn run_with_sigterm(self) {
         use tokio::signal::windows;
-        let mut ctrl_c = windows::ctrl_c()?;
+        let mut ctrl_c = windows::ctrl_c().expect("failed to register Ctrl-C handler");
         let coordinator = Arc::clone(&self.coordinator);
         tokio::spawn(async move {
             ctrl_c.recv().await;
