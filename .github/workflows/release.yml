@@ -88,11 +88,16 @@ jobs:
             fi
             CURL_H=$(find /usr/include /usr/local/include -name curl.h -path "*/curl/*" 2>/dev/null | head -1)
             [ -z "$CURL_H" ] && { mkdir -p /usr/local/include/curl; printf '#pragma once\n' > /usr/local/include/curl/curl.h; CURL_H=/usr/local/include/curl/curl.h; }
-            for TRIPLE in aarch64-linux-gnu aarch64-linux-musl armv7-linux-musleabihf; do
-              SDIR="/usr/$TRIPLE/include"
-              [ -d "$SDIR" ] || continue
-              [ -f "$SDIR/curl/curl.h" ] && continue
-              mkdir -p "$SDIR/curl" && cp -f "$CURL_H" "$SDIR/curl/curl.h"
+            # Cover both toolchain naming conventions:
+            #   Debian/Ubuntu style:    /usr/<triple>/include/
+            #   crosstool-ng style:     /usr/<triple>/<triple>/sysroot/usr/include/
+            # manylinux_2_28 aarch64 uses aarch64-unknown-linux-gnu (crosstool-ng).
+            for TRIPLE in aarch64-linux-gnu aarch64-unknown-linux-gnu aarch64-linux-musl armv7-linux-musleabihf; do
+              [ -d "/usr/$TRIPLE" ] || continue
+              for SDIR in "/usr/$TRIPLE/include" "/usr/$TRIPLE/$TRIPLE/sysroot/usr/include"; do
+                [ -f "$SDIR/curl/curl.h" ] && continue
+                mkdir -p "$SDIR/curl" && cp -f "$CURL_H" "$SDIR/curl/curl.h"
+              done
             done
           args: --release --strip --out dist -i python${{ matrix.python-version }}
           sccache: true
