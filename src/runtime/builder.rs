@@ -49,7 +49,6 @@ use tokio::signal::unix::{signal, SignalKind};
 #[cfg(windows)]
 use tokio::signal::windows::{signal, SignalKind};
 
-
 /// Builder for assembling the full consumer runtime.
 ///
 /// Created in `Consumer::start()` and consumed by `build()`.
