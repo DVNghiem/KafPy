@@ -103,6 +103,15 @@ jobs:
                 cp /usr/local/include/curl/curl.h "$SDIR/curl/curl.h"
               done
             done
+            # rust-musl-cross images are Ubuntu-based with a musl sysroot at
+            # /usr/local/musl/<target>/. The $RUST_MUSL_CROSS_TARGET env var is
+            # set by the container. The musl cross-compiler searches this sysroot
+            # for headers, not /usr/local/include or /usr/include.
+            if [ -n "${RUST_MUSL_CROSS_TARGET:-}" ] && [ -d "/usr/local/musl/${RUST_MUSL_CROSS_TARGET}" ]; then
+              MUSL_SYSROOT="/usr/local/musl/${RUST_MUSL_CROSS_TARGET}"
+              mkdir -p "${MUSL_SYSROOT}/include/curl"
+              cp /usr/local/include/curl/curl.h "${MUSL_SYSROOT}/include/curl/curl.h"
+            fi
           args: --release --strip --out dist -i python${{ matrix.python-version }}
           sccache: true
 
