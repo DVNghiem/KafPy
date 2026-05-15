@@ -43,6 +43,13 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(unix)]
+use tokio::signal::unix::{signal, SignalKind};
+
+#[cfg(windows)]
+use tokio::signal::windows::{signal, SignalKind};
+
+
 /// Builder for assembling the full consumer runtime.
 ///
 /// Created in `Consumer::start()` and consumed by `build()`.
@@ -345,8 +352,6 @@ impl Runtime {
     /// graceful shutdown via ShutdownCoordinator.begin_draining().
     /// Then runs the pool and waits for shutdown.
     pub async fn run_with_sigterm(self) {
-        use tokio::signal::unix::{signal, SignalKind};
-
         let coordinator = Arc::clone(&self.coordinator);
 
         tokio::spawn(async move {

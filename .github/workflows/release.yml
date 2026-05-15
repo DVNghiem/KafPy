@@ -75,7 +75,7 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           manylinux: ${{ matrix.platform.manylinux }}
-          before-script: ${{ matrix.platform.before-script }}
+          before-script-linux: ${{ matrix.platform.before-script }}
           args: --release --strip --out dist -i python${{ matrix.python-version }}
           sccache: true
 

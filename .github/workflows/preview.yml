@@ -33,11 +33,19 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
 
+  # PyO3 with extension-module deliberately unlinks libpython from the cdylib
+  # (Python provides it at runtime). But `cargo test` builds a standalone binary
+  # that MUST link libpython explicitly. actions/setup-python provides both the
+  # interpreter on PATH and libpython for the linker via pyo3-build-config.
   test:
     name: Rust tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -116,10 +124,10 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           manylinux: ${{ matrix.platform.manylinux }}
-          # before-script runs inside the Docker container (manylinux/musl).
+          # before-script-linux runs inside the Docker container (manylinux/musl).
           # rdkafka-sys 4.10.0 / librdkafka 2.12.1 includes curl/curl.h unconditionally,
           # even with -DWITH_CURL=0, so curl dev headers must be present.
-          before-script: ${{ matrix.platform.before-script }}
+          before-script-linux: ${{ matrix.platform.before-script }}
           args: --release --strip --out dist -i python${{ matrix.python-version }}
           sccache: true
 
