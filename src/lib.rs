@@ -2,9 +2,9 @@
 
 use pyo3::prelude::*;
 
-pub mod log;
 pub mod bindings;
 pub mod config;
+pub mod log;
 
 pub mod kafka_message;
 pub mod producer;

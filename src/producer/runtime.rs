@@ -1,3 +1,4 @@
+use crate::log::{debug, error, info};
 use pyo3::prelude::*;
 use rdkafka::{
     config::ClientConfig,
@@ -7,7 +8,6 @@ use rdkafka::{
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use crate::log::{debug, error, info};
 
 use crate::config::ProducerConfig;
 

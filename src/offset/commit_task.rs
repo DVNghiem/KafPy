@@ -3,11 +3,11 @@
 //! Receives commit signals via `tokio::sync::watch` channel and executes
 //! `store_offset` + `commit` per topic-partition with interval/batch throttling.
 
+use crate::log::{debug, error, info};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tokio::time::interval;
-use crate::log::{debug, error, info};
 
 use crate::consumer::runner::ConsumerRunner;
 use crate::offset::offset_tracker::OffsetTracker;

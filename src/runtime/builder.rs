@@ -240,9 +240,8 @@ impl RuntimeBuilder {
         let n_workers = self.config.num_workers.unwrap_or(4) as usize;
 
         // 9. Create shutdown coordinator
-        let coordinator: Arc<ShutdownCoordinator> = Arc::new(ShutdownCoordinator::new(
-            rust_config.drain_timeout_secs,
-        ));
+        let coordinator: Arc<ShutdownCoordinator> =
+            Arc::new(ShutdownCoordinator::new(rust_config.drain_timeout_secs));
 
         // Create HandlerConcurrency with configurable default + per-handler overrides.
         let default_handler_concurrency = std::env::var("KAFPY_HANDLER_CONCURRENCY_DEFAULT")

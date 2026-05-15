@@ -629,10 +629,7 @@ impl PythonHandler {
     /// Used for HandlerMode::SingleAsync. Creates a coroutine object inside
     /// Python::with_gil, then wraps it in PythonAsyncFuture which handles
     /// GIL release on each poll. The GIL is held only during coroutine.send(None).
-    pub async fn invoke_async(
-        &self,
-        message: OwnedMessage,
-    ) -> ExecutionResult {
+    pub async fn invoke_async(&self, message: OwnedMessage) -> ExecutionResult {
         let callback = Arc::clone(&self.callback);
 
         // Build the coroutine object inside with_gil — this is synchronous,
@@ -657,10 +654,7 @@ impl PythonHandler {
     /// Used for HandlerMode::BatchAsync. Builds Vec<Py<PyAny>> of message dicts inside
     /// Python::with_gil, then wraps the resulting coroutine in PythonAsyncFuture.
     /// Returns BatchExecutionResult instead of ExecutionResult.
-    pub async fn invoke_batch_async(
-        &self,
-        messages: Vec<OwnedMessage>,
-    ) -> BatchExecutionResult {
+    pub async fn invoke_batch_async(&self, messages: Vec<OwnedMessage>) -> BatchExecutionResult {
         let callback = Arc::clone(&self.callback);
 
         // Build the coroutine object inside with_gil

@@ -9,12 +9,11 @@ use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
 // Re-export tracing items for centralized logging imports
-pub use tracing::{debug, error, info, warn, trace};
-pub use tracing::{Span, info_span};
+pub use tracing::{debug, error, info, trace, warn};
+pub use tracing::{info_span, Span};
 
 /// Capacity of the async log channel. Records are dropped (not blocked) when full.
 const LOG_CHANNEL_CAPACITY: usize = 4096;
-
 
 #[derive(Clone, Debug)]
 pub struct ResetHandle(Arc<ArcSwap<CacheNode>>);
@@ -288,7 +287,12 @@ impl Logger {
 
         let level = cmp::max(
             state.top_filter,
-            state.filters.values().copied().max().unwrap_or(LevelFilter::Off),
+            state
+                .filters
+                .values()
+                .copied()
+                .max()
+                .unwrap_or(LevelFilter::Off),
         );
 
         let (sender, receiver) = mpsc::sync_channel::<OwnedRecord>(LOG_CHANNEL_CAPACITY);

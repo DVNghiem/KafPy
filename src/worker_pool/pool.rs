@@ -16,11 +16,11 @@ use crate::observability::metrics::SharedPrometheusSink;
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::offset::offset_coordinator::OffsetCoordinator;
 use crate::retry::retry_coordinator::RetryCoordinator;
-use log::{error, warn};
 use crate::shutdown::ShutdownCoordinator;
 use crate::worker_pool::batch_loop::batch_worker_loop;
 use crate::worker_pool::concurrency::HandlerConcurrency;
 use crate::worker_pool::worker::worker_loop;
+use log::{error, warn};
 
 /// WorkerPool — manages N Tokio workers via `JoinSet`.
 ///
@@ -190,7 +190,10 @@ impl WorkerPool {
                 logger::log("INFO", "worker pool drained gracefully");
             }
             Err(_) => {
-                warn!("drain timeout exceeded, forcing abort after {} seconds", drain_timeout.as_secs());
+                warn!(
+                    "drain timeout exceeded, forcing abort after {} seconds",
+                    drain_timeout.as_secs()
+                );
                 self.join_set.abort_all();
             }
         }
@@ -260,10 +263,13 @@ mod tests {
             vec![rx],
             dummy_handlers(),
             Arc::new(QueueManager::new()),
-            Arc::new(crate::offset::offset_tracker::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,
-            Arc::new(crate::retry::retry_coordinator::RetryCoordinator::with_policy(
-                crate::retry::RetryPolicy::default(),
-            )),
+            Arc::new(crate::offset::offset_tracker::OffsetTracker::new())
+                as Arc<dyn OffsetCoordinator>,
+            Arc::new(
+                crate::retry::retry_coordinator::RetryCoordinator::with_policy(
+                    crate::retry::RetryPolicy::default(),
+                ),
+            ),
             dummy_dlq_producer(),
             dummy_dlq_router(),
             CancellationToken::new(),

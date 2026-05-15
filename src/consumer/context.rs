@@ -5,11 +5,11 @@
 //! on revocation (cooperative-sticky strategy) and seeks to committed+1
 //! on assignment.
 
+use crate::log::{debug, error, info, warn};
 use rdkafka::client::ClientContext;
 use rdkafka::config::RDKafkaLogLevel;
 use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance};
 use std::sync::Arc;
-use crate::log::{debug, error, info, warn};
 
 use crate::offset::offset_tracker::OffsetTracker;
 

@@ -47,15 +47,21 @@ jobs:
           - target: x86_64
             manylinux: 2_28
             libc: manylinux
+            # AlmaLinux 8 base image
+            before-script: yum install -y libcurl-devel
           - target: aarch64
             manylinux: 2_28
             libc: manylinux
+            before-script: yum install -y libcurl-devel
           - target: x86_64
             manylinux: musllinux_1_2
             libc: musl
+            # Alpine base image
+            before-script: apk add --no-cache curl-dev
           - target: aarch64
             manylinux: musllinux_1_2
             libc: musl
+            before-script: apk add --no-cache curl-dev
     steps:
       - uses: actions/checkout@v4
 
@@ -69,6 +75,7 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           manylinux: ${{ matrix.platform.manylinux }}
+          before-script: ${{ matrix.platform.before-script }}
           args: --release --strip --out dist -i python${{ matrix.python-version }}
           sccache: true
 
@@ -139,6 +146,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Install curl dev headers (rdkafka cmake-build, Windows)
+        shell: pwsh
+        run: |
+          vcpkg install curl:x64-windows
+          "INCLUDE=C:\vcpkg\installed\x64-windows\include;$env:INCLUDE" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build wheel
         uses: PyO3/maturin-action@v1

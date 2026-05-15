@@ -28,10 +28,10 @@ pub mod error;
 pub mod queue_manager;
 
 pub use crate::consumer::OwnedMessage;
+use crate::log::info;
 pub use backpressure::{BackpressureAction, DefaultBackpressurePolicy, PauseOnFullPolicy};
 pub use consumer_dispatcher::ConsumerDispatcher;
 pub use error::DispatchError;
-use crate::log::info;
 use queue_manager::QueueManager;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;

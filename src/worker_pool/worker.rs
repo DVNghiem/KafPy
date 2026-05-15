@@ -15,6 +15,7 @@ use crate::execution::callback::PythonHandler;
 use crate::execution::context::{ExecutionContext, TraceContext};
 use crate::execution::execution_result::ExecutionResult;
 use crate::failure::FailureReason;
+use crate::log::{debug, trace, warn};
 use crate::observability::metrics::{
     FanOutMetrics, MetricLabels, PythonCallMetrics, ThroughputMetrics, TimeoutMetrics,
 };
@@ -26,7 +27,6 @@ use crate::worker_pool::fan_out::{BranchResult, FanOutTracker};
 use crate::worker_pool::handle_execution_failure;
 use crate::worker_pool::state::WorkerState;
 use crate::worker_pool::ExecutionAction;
-use crate::log::{debug, trace, warn};
 use crate::worker_pool::HANDLER_METRICS;
 
 /// Worker loop — polls messages and invokes the Python handler.
@@ -181,8 +181,7 @@ async fn handle_execution_result(
                 timeout_ms = info.timeout_ms,
                 "handler timed out"
             );
-            let reason =
-                FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic);
+            let reason = FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic);
             crate::failure::logging::log_failure(ctx, &reason, "HandlerTimeout", false);
 
             offset_coordinator.mark_failed(&ctx.topic, ctx.partition, ctx.offset, &reason);
@@ -309,11 +308,7 @@ async fn process_fan_out(
             let result = branch_span
                 .in_scope(|| async {
                     sink_handler
-                        .invoke_mode_with_timeout_override(
-                            &ctx_clone,
-                            msg_clone,
-                            sink_timeout,
-                        )
+                        .invoke_mode_with_timeout_override(&ctx_clone, msg_clone, sink_timeout)
                         .await
                 })
                 .await;
@@ -326,9 +321,7 @@ async fn process_fan_out(
                     timeout_ms: info.timeout_ms,
                 },
                 ExecutionResult::Rejected { .. } => BranchResult::Error {
-                    reason: FailureReason::Terminal(
-                        crate::failure::TerminalKind::HandlerPanic,
-                    ),
+                    reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
                     exception: "Rejected".to_string(),
                 },
             };
@@ -355,26 +348,15 @@ async fn process_fan_out(
         );
 
         // OBSV-01: Emit fan-out metrics for each branch result.
-        for (branch_result, sink_topic) in
-            branch_results.results.iter().zip(sink_topics.iter())
-        {
+        for (branch_result, sink_topic) in branch_results.results.iter().zip(sink_topics.iter()) {
             let outcome = FanOutMetrics::outcome_from_result(&branch_result.1);
-            FanOutMetrics::record_branch_completion(
-                &metrics_sink,
-                fan_out_id,
-                sink_topic,
-                outcome,
-            );
+            FanOutMetrics::record_branch_completion(&metrics_sink, fan_out_id, sink_topic, outcome);
         }
-        for (branch_result, sink_topic) in
-            branch_results.results.iter().zip(sink_topics.iter())
-        {
+        for (branch_result, sink_topic) in branch_results.results.iter().zip(sink_topics.iter()) {
             let branch_id = branch_result.0;
             if !matches!(branch_result.1, BranchResult::Ok) {
                 let (exception, _is_timeout, timeout_val) = match &branch_result.1 {
-                    BranchResult::Error { exception, .. } => {
-                        (exception.clone(), false, None)
-                    }
+                    BranchResult::Error { exception, .. } => (exception.clone(), false, None),
                     BranchResult::Timeout { timeout_ms } => (
                         format!("sink timeout after {}ms", timeout_ms),
                         true,
@@ -398,13 +380,7 @@ async fn process_fan_out(
                 let tp = dlq_router_clone.route(&dlq_meta);
                 let payload = msg_clone_for_dlq.payload.clone().unwrap_or_default();
                 let key = msg_clone_for_dlq.key.clone();
-                dlq_producer_clone.produce_async(
-                    tp.topic,
-                    tp.partition,
-                    payload,
-                    key,
-                    &dlq_meta,
-                );
+                dlq_producer_clone.produce_async(tp.topic, tp.partition, payload, key, &dlq_meta);
             }
         }
 
@@ -434,20 +410,12 @@ pub(crate) async fn worker_loop(
     prometheus_sink: crate::observability::SharedPrometheusSink,
     handler_concurrency: crate::worker_pool::HandlerConcurrency,
 ) {
-
     let mut state = WorkerState::Idle;
 
     loop {
         // Poll for a message or handle cancellation when idle
         if matches!(state, WorkerState::Idle) {
-            match poll_for_work(
-                &mut rx,
-                worker_id,
-                &shutdown_token,
-                &worker_pool_state,
-            )
-            .await
-            {
+            match poll_for_work(&mut rx, worker_id, &shutdown_token, &worker_pool_state).await {
                 Some(msg) => {
                     state = WorkerState::Processing(msg);
                 }
@@ -706,10 +674,13 @@ mod tests {
                 rx,
                 make_handler_map(),
                 Arc::new(QueueManager::new()),
-                Arc::new(crate::offset::offset_tracker::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,
-                Arc::new(crate::retry::retry_coordinator::RetryCoordinator::with_policy(
-                    crate::retry::RetryPolicy::default(),
-                )),
+                Arc::new(crate::offset::offset_tracker::OffsetTracker::new())
+                    as Arc<dyn OffsetCoordinator>,
+                Arc::new(
+                    crate::retry::retry_coordinator::RetryCoordinator::with_policy(
+                        crate::retry::RetryPolicy::default(),
+                    ),
+                ),
                 dummy_dlq_producer(),
                 dummy_dlq_router(),
                 0,
@@ -733,10 +704,13 @@ mod tests {
             rx,
             make_handler_map(),
             Arc::new(QueueManager::new()),
-            Arc::new(crate::offset::offset_tracker::OffsetTracker::new()) as Arc<dyn OffsetCoordinator>,
-            Arc::new(crate::retry::retry_coordinator::RetryCoordinator::with_policy(
-                crate::retry::RetryPolicy::default(),
-            )),
+            Arc::new(crate::offset::offset_tracker::OffsetTracker::new())
+                as Arc<dyn OffsetCoordinator>,
+            Arc::new(
+                crate::retry::retry_coordinator::RetryCoordinator::with_policy(
+                    crate::retry::RetryPolicy::default(),
+                ),
+            ),
             dummy_dlq_producer(),
             dummy_dlq_router(),
             0,

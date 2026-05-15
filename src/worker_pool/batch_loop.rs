@@ -12,13 +12,13 @@ use crate::execution::batch::BatchAccumulator;
 use crate::execution::callback::PythonHandler;
 use crate::execution::context::ExecutionContext;
 use crate::execution::execution_result::BatchExecutionResult;
+use crate::log::{debug, error, info, warn, Span};
 use crate::observability::metrics::{MetricLabels, PythonCallMetrics};
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::observability::tracing::KafpySpanExt;
 use crate::offset::offset_coordinator::OffsetCoordinator;
 use crate::retry::retry_coordinator::RetryCoordinator;
 use crate::worker_pool::state::BatchState;
-use crate::log::{debug, error, info, warn, Span};
 use crate::worker_pool::HANDLER_METRICS;
 
 /// Flushes a single partition batch through the Python handler.
@@ -394,11 +394,8 @@ pub(crate) async fn handle_batch_result_inline(
                         None,
                     );
 
-                    let dlq_span = Span::current().kafpy_dlq_route(
-                        topic,
-                        &reason.to_string(),
-                        partition,
-                    );
+                    let dlq_span =
+                        Span::current().kafpy_dlq_route(topic, &reason.to_string(), partition);
                     let tp = dlq_span.in_scope(|| dlq_router.route(&metadata));
                     error!(
                         topic = %topic,

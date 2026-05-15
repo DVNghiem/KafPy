@@ -3,9 +3,9 @@
 //! Manages a 4-phase shutdown lifecycle: Running -> Draining -> Finalizing -> Done.
 //! Each phase transition is explicit and enforced; invalid transitions panic.
 
+use crate::log::{debug, info};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use crate::log::{debug, info};
 
 /// Phase of the shutdown lifecycle.
 ///

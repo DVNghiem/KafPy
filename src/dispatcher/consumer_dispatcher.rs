@@ -7,10 +7,10 @@ use crate::consumer::OwnedMessage;
 use crate::dispatcher::backpressure::{BackpressureAction, BackpressurePolicy};
 use crate::dispatcher::error::DispatchError;
 use crate::dispatcher::{DispatchOutcome, Dispatcher, QueueManager};
+use crate::log::{debug, error, info, warn, Span};
 use crate::observability::tracing::KafpySpanExt;
 use crate::routing::chain::RoutingChain;
 use crate::routing::context::RoutingContext;
-use crate::log::{debug, error, info, warn, Span};
 use crate::routing::decision::RoutingDecision;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -127,18 +127,11 @@ impl ConsumerDispatcher {
                             {
                                 match self.pause_partition(&pause_topic) {
                                     Ok(()) => {
-                                        warn!(
-                                            "paused topic '{}' due to backpressure",
-                                            pause_topic
-                                        );
+                                        warn!("paused topic '{}' due to backpressure", pause_topic);
                                         self.paused_topics.lock().insert(pause_topic.clone());
                                     }
                                     Err(e) => {
-                                        error!(
-                                            "failed to pause topic '{}': {}",
-                                            pause_topic,
-                                            e
-                                        );
+                                        error!("failed to pause topic '{}': {}", pause_topic, e);
                                     }
                                 }
                             }
@@ -259,9 +252,7 @@ impl ConsumerDispatcher {
             } else {
                 info!(
                     "resumed topic '{}' (depth {} < threshold {})",
-                    topic,
-                    current_depth,
-                    threshold
+                    topic, current_depth, threshold
                 );
             }
         }

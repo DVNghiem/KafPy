@@ -4,11 +4,11 @@
 //! the slow-path broker produce. When the channel is full, messages are
 //! dropped (don't block the main consumer pipeline).
 
+use crate::log::{debug, error, warn};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use crate::log::{debug, error, warn};
 
 use super::metadata::DlqMetadata;
 use crate::consumer::config::ConsumerConfig;

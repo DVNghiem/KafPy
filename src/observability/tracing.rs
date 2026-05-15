@@ -4,7 +4,7 @@
 //! but logs through Python. The tracing spans are zero-cost when no subscriber
 //! is configured, and Python logging handles output formatting.
 
-use crate::log::{Span, info_span};
+use crate::log::{info_span, Span};
 
 /// Span extension trait for KafPy spans.
 ///
