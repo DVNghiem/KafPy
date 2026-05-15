@@ -136,6 +136,21 @@ jobs:
               MUSL_SYSROOT="/usr/local/musl/${RUST_MUSL_CROSS_TARGET}"
               mkdir -p "${MUSL_SYSROOT}/include/curl"
               cp /usr/local/include/curl/curl.h "${MUSL_SYSROOT}/include/curl/curl.h"
+              # rdkafka default features include libz, which causes rdkafka-sys to pass
+              # -DWITH_ZLIB=1 to cmake. In musl cross-compile mode cmake's find_library()
+              # uses CMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY with an empty root path,
+              # so it cannot find the glibc libz.a. Create a cmake toolchain file that
+              # sets the musl cross-compiler and explicitly points to the musl libz.a.
+              {
+                echo 'set(CMAKE_SYSTEM_NAME Linux)'
+                echo 'string(REGEX REPLACE "-.*" "" _MUSL_ARCH "$ENV{RUST_MUSL_CROSS_TARGET}")'
+                echo 'set(CMAKE_SYSTEM_PROCESSOR "${_MUSL_ARCH}")'
+                echo 'set(CMAKE_C_COMPILER $ENV{TARGET_CC})'
+                echo 'set(CMAKE_CXX_COMPILER $ENV{TARGET_CXX})'
+                echo "set(ZLIB_LIBRARY \"${MUSL_SYSROOT}/lib/libz.a\" CACHE FILEPATH \"\" FORCE)"
+                echo "set(ZLIB_INCLUDE_DIR \"${MUSL_SYSROOT}/include\" CACHE PATH \"\" FORCE)"
+              } > /tmp/musl-toolchain.cmake
+              export CMAKE_TOOLCHAIN_FILE=/tmp/musl-toolchain.cmake
             fi
           args: --release --strip --out dist -i python${{ matrix.python-version }}
           sccache: true
