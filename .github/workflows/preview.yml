@@ -48,15 +48,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system deps
-        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends cmake libssl-dev libcurl4-openssl-dev
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y --no-install-recommends cmake libssl-dev libcurl4-openssl-dev
+          # rdkafka-sys unconditionally includes curl/curl.h even with -DWITH_CURL=0
+          CURL_H=$(find /usr/include /usr/local/include -name curl.h -path "*/curl/*" 2>/dev/null | head -1)
+          [ -z "$CURL_H" ] && { mkdir -p /usr/local/include/curl; printf '#pragma once\n' > /usr/local/include/curl/curl.h; }
 
-      - name: Install maturin and pytest
-        run: pip install maturin pytest
+      - name: Create venv and install build deps
+        run: python -m venv .venv && .venv/bin/pip install maturin pytest
 
       - name: Build and install dev wheel
-        run: maturin develop
+        run: .venv/bin/maturin develop
 
-      - run: pytest tests/test_exceptions.py -v
+      - run: .venv/bin/pytest tests/test_exceptions.py -v
 
   # Linux wheels (glibc + musl, x86_64 + aarch64)
   build-linux:
