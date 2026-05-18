@@ -356,36 +356,36 @@ pub(crate) async fn handle_batch_result_inline(
             );
 
             for msg in batch {
-                let (should_retry, should_dlq, delay) =
+                // Record failure. In batch mode we do not retry inline: retrying a
+                // batch requires re-enqueuing through the ingestion path, which is
+                // not available here. Instead, route retryable failures directly to
+                // DLQ so the batch worker is never blocked by retry sleeps.
+                // Removing the blocking sleep here is critical for burst resilience —
+                // a sleeping batch worker cannot drain its queue.
+                let (should_retry, should_dlq, _delay) =
                     retry_coordinator.record_failure(topic, partition, msg.offset, &reason);
 
                 offset_coordinator.mark_failed(topic, partition, msg.offset, &reason);
 
-                if should_retry {
-                    // Retry scheduling would require re-enqueuing — for batch mode,
-                    // we schedule retry with the original message payload
-                    if let Some(d) = delay {
-                        info!(
+                let route_to_dlq = should_dlq || should_retry;
+
+                if route_to_dlq {
+                    let attempt = retry_coordinator.attempt_count(topic, partition, msg.offset);
+                    if should_retry {
+                        warn!(
                             topic = %topic,
                             partition = partition,
                             offset = msg.offset,
-                            delay_ms = d.as_millis(),
-                            "batch message scheduling retry"
+                            attempt = attempt,
+                            "batch message routed to DLQ (batch mode does not support inline retry)"
                         );
-                        tokio::time::sleep(d).await;
-                        // Note: In batch mode, retry re-enqueues to the front of the queue
-                        // This is handled by the queue_manager's retry mechanism
                     }
-                }
-
-                if should_dlq {
-                    // Route to DLQ
                     let metadata = DlqMetadata::new(
                         topic.to_string(),
                         partition,
                         msg.offset,
                         reason.to_string(),
-                        retry_coordinator.attempt_count(topic, partition, msg.offset) as u32,
+                        attempt as u32,
                         chrono::Utc::now(),
                         chrono::Utc::now(),
                         None,
@@ -415,13 +415,10 @@ pub(crate) async fn handle_batch_result_inline(
                         msg.key.clone(),
                         &metadata,
                     );
-
-                    // Ack the original message
-                    queue_manager.ack(topic, 1);
-                } else {
-                    // Not retrying, not DLQ — count as processed
-                    queue_manager.ack(topic, 1);
                 }
+
+                // Always ack so queue counters don't leak
+                queue_manager.ack(topic, 1);
             }
         }
     }

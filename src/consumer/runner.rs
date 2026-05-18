@@ -107,9 +107,21 @@ impl ConsumerRunner {
                                     size = owned.size_bytes(),
                                     "Message received"
                                 );
-                                if tx.send(Ok(owned)).await.is_err() {
-                                    // Receiver dropped — stop producing
-                                    break;
+                                // Guard the channel send with the shutdown signal.
+                                // Without this, a full channel (burst scenario) blocks
+                                // the Tokio task indefinitely and prevents clean shutdown.
+                                select! {
+                                    biased;
+                                    _ = shutdown_rx.recv() => {
+                                        info!("Consumer runner received shutdown signal during send");
+                                        break;
+                                    }
+                                    result = tx.send(Ok(owned)) => {
+                                        if result.is_err() {
+                                            // Receiver dropped — stop producing
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                             Err(KafkaError::MessageConsumption(err)) => {

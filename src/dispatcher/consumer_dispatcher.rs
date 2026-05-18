@@ -56,6 +56,38 @@ impl ConsumerDispatcher {
     /// Runs the dispatch loop, polling the consumer stream and
     /// dispatching each message through the dispatcher.
     pub(crate) async fn run(&self) {
+        // Populate partition handles for pause/resume before starting the loop.
+        // The consumer may not have been assigned partitions yet (assignment happens
+        // during the first poll). Retry with backoff until we get at least one partition,
+        // so the pause/resume mechanism is operational from the first message.
+        for attempt in 0..10u32 {
+            match self.populate_partitions() {
+                Ok(()) => {
+                    info!("partition handles populated (attempt {})", attempt + 1);
+                    break;
+                }
+                Err(e) => {
+                    if attempt < 9 {
+                        debug!(
+                            "partition handles not yet available (attempt {}): {}",
+                            attempt + 1,
+                            e
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            200 * (1u64 << attempt.min(4)),
+                        ))
+                        .await;
+                    } else {
+                        warn!(
+                            "could not populate partition handles after 10 attempts: {}; \
+                             backpressure-based partition pause will be unavailable",
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
         let mut stream = self.runner.stream();
         while let Some(result) = stream.next().await {
             match result {
@@ -88,6 +120,11 @@ impl ConsumerDispatcher {
                                 ..
                             }) = pause_signal
                             {
+                                // Refresh partition handles if this is the first pause
+                                // attempt and we have no handles yet (race at startup).
+                                if self.partition_handles.lock().is_empty() {
+                                    let _ = self.populate_partitions();
+                                }
                                 match self.pause_partition(&pause_topic) {
                                     Ok(()) => {
                                         warn!("paused topic '{}' due to backpressure", pause_topic);

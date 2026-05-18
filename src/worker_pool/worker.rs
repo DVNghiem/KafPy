@@ -561,7 +561,21 @@ pub(crate) async fn worker_loop(
 
             // Handle retry action — all other actions (None/Ack/Dlq) continue normally
             if let Some(ExecutionAction::Retry { delay }) = action {
-                tokio::time::sleep(delay).await;
+                // Sleep for the retry delay, but remain cancellable.
+                // Without select!, a sleeping worker cannot respond to shutdown signals
+                // during a burst where many messages are failing simultaneously.
+                select! {
+                    biased;
+                    _ = shutdown_token.cancelled() => {
+                        tracing::info!(
+                            worker_id = worker_id,
+                            "worker stopped during retry sleep (cancelled)"
+                        );
+                        worker_pool_state.set_idle(worker_id);
+                        return;
+                    }
+                    _ = tokio::time::sleep(delay) => {}
+                }
                 state = WorkerState::Processing(msg);
                 continue;
             }

@@ -155,12 +155,16 @@ impl RuntimeBuilder {
             ),
         );
         // Pair each receiver with its topic so WorkerPool can route batch workers correctly.
+        // Queue capacity: use message_batch_size * 10 as burst buffer (minimum 1000).
+        // Under 100x burst the queue fills and triggers rdkafka partition pause rather than
+        // silently dropping messages.
+        let queue_capacity = (self.config.message_batch_size * 10).max(1000);
         let topic_receivers: Vec<(String, _)> = all_handlers
             .iter()
             .map(|(topic, _)| {
                 (
                     topic.clone(),
-                    dispatcher.register_handler(topic.clone(), 100, None),
+                    dispatcher.register_handler(topic.clone(), queue_capacity, None),
                 )
             })
             .collect();

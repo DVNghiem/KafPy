@@ -28,7 +28,6 @@ pub mod error;
 pub mod queue_manager;
 
 pub use crate::consumer::OwnedMessage;
-use crate::log::info;
 pub use backpressure::{BackpressureAction, DefaultBackpressurePolicy};
 pub use consumer_dispatcher::ConsumerDispatcher;
 pub use error::DispatchError;
@@ -165,12 +164,16 @@ impl Dispatcher {
         let partition = message.partition;
         let offset = message.offset;
 
-        info!(topic = %topic, "send_with_policy_and_signal ENTER");
         let guard = self.queue_manager.handlers.lock();
-        info!(topic = %topic, n_handlers = guard.len(), entries = ?guard.keys().collect::<Vec<_>>(), "send_with_policy_and_signal: got lock");
-        let entry = guard
-            .get(&topic)
-            .unwrap_or_else(|| panic!("no handler for topic '{}'", topic.clone()));
+        let entry = match guard.get(&topic) {
+            Some(e) => e,
+            None => {
+                return (
+                    Err(DispatchError::HandlerNotRegistered { topic }),
+                    None,
+                );
+            }
+        };
 
         // DISP-15: Acquire semaphore permit BEFORE dispatch (non-blocking)
         if !entry.metadata.try_acquire_semaphore() {
@@ -179,7 +182,10 @@ impl Dispatcher {
                     queue_name: topic.clone(),
                     reason: "semaphore permit unavailable".to_string(),
                 }),
-                None,
+                Some(BackpressureAction::PausePartition {
+                    topic: topic.clone(),
+                    partition,
+                }),
             );
         }
 
@@ -202,12 +208,18 @@ impl Dispatcher {
             }
             Err(TrySendError::Full(_)) => {
                 entry.metadata.inflight.fetch_sub(1, Ordering::Relaxed);
+                // Emit PausePartition so the dispatcher can pause the rdkafka consumer.
+                // This is the primary burst-control signal — without it the consumer
+                // keeps polling and we silently drop messages.
                 (
                     Err(DispatchError::Backpressure {
                         queue_name: topic.clone(),
                         reason: "queue full".to_string(),
                     }),
-                    None,
+                    Some(BackpressureAction::PausePartition {
+                        topic: topic.clone(),
+                        partition,
+                    }),
                 )
             }
             Err(TrySendError::Closed(_)) => {
