@@ -1,8 +1,34 @@
 //! Custom CFFI Future bridge — converts Python coroutines to Tokio-compatible Futures.
 //!
-//! GIL is acquired transiently only during `coro.send(None)` and released immediately after.
-//! This is the core async infrastructure for Phase 26 — all async Python handler execution
-//! flows through this bridge.
+//! # WARNING — Not for use in production hot paths
+//!
+//! `PythonAsyncFuture` drives a Python coroutine by calling `coro.send(None)` in each
+//! `Future::poll` invocation. This has two critical problems when used directly on
+//! Tokio worker threads:
+//!
+//! 1. **GIL contention on Tokio threads**: `Python::attach()` is called during each
+//!    poll. If another thread holds the GIL, the Tokio worker thread is blocked until
+//!    the GIL is released. This can stall the entire Tokio runtime.
+//!
+//! 2. **Busy-polling**: When the coroutine yields (returns `Ok(val)`), the previous
+//!    implementation called `waker.wake_by_ref()` immediately, causing the task to be
+//!    rescheduled on the very next Tokio tick. This produces a spin loop: Tokio polls
+//!    the task → acquires GIL → coroutine yields → wakes immediately → repeat.
+//!
+//! 3. **No real asyncio event loop**: Python async I/O primitives (`asyncio.sleep`,
+//!    network calls) do not advance correctly — the coroutine is polled manually
+//!    without a running asyncio event loop. Any `await` that depends on asyncio
+//!    internals (e.g., event loop scheduling) will behave incorrectly.
+//!
+//! # Production alternative
+//!
+//! Use `spawn_blocking` + `asyncio.run()` for async Python handlers (see
+//! `PythonHandler::invoke_async` and `PythonHandler::invoke_batch_async`). This:
+//! - Frees the Tokio worker thread while Python executes
+//! - Provides a real asyncio event loop for Python async I/O
+//! - Acquires the GIL only on the blocking thread pool
+//!
+//! This module is retained for internal testing only.
 
 use crate::execution::execution_result::ExecutionResult;
 use crate::failure::FailureReason;
@@ -35,26 +61,25 @@ impl PythonAsyncFuture {
     ///
     /// # Behavior
     /// - Acquires GIL, calls `coro.send(None)`, releases GIL.
-    /// - `Ok(val)` (yielded value) → `Poll::Pending`, waker registered.
+    /// - `Ok(val)` (yielded value) → `Poll::Pending`. Does NOT call `wake_by_ref()`
+    ///   immediately. The caller is responsible for re-polling when appropriate.
+    ///   Note: without an asyncio event loop driving wakeups, this Future will never
+    ///   make progress after returning `Pending` unless the caller re-schedules it.
+    ///   This is a fundamental limitation — see module-level documentation.
     /// - `Err(StopIteration)` or `Err(StopAsyncIteration)` → `Poll::Ready(Ok)` (normal return).
     /// - `Err(any other PyErr)` → `Poll::Ready(Error { reason: Terminal(HandlerPanic), ... })`.
-    fn poll_coroutine(&mut self, cx: &mut Context<'_>) -> Poll<ExecutionResult> {
+    fn poll_coroutine(&mut self, _cx: &mut Context<'_>) -> Poll<ExecutionResult> {
         // Acquire GIL, call coro.send(None), release GIL immediately after.
         Python::attach(|py| {
             // Advance the coroutine by calling send(None)
             let result = self.coro.call_method1(py, "send", (py.None(),));
 
             match result {
-                // Coroutine yielded — it is not done yet.
-                // Instead of busy-polling with waker.wake() (which spins the CPU
-                // continuously), we use wake_by_ref() which is more efficient.
-                // The Tokio runtime will re-poll us on the next scheduler tick.
-                // This prevents GIL thrashing and CPU starvation compared to
-                // calling waker.wake() which immediately re-schedules.
-                Ok(_val) => {
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
+                // Coroutine yielded — not done yet.
+                // Return Pending without scheduling a wakeup. Without a running asyncio
+                // event loop, the correct behavior here is implementation-defined.
+                // Callers that need progress must re-poll explicitly.
+                Ok(_val) => Poll::Pending,
                 // Coroutine raised StopIteration or StopAsyncIteration — normal completion
                 Err(py_err)
                     if py_err.is_instance_of::<PyStopIteration>(py)

@@ -50,7 +50,7 @@ impl WorkerPool {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         n_workers: usize,
-        receivers: Vec<mpsc::Receiver<OwnedMessage>>,
+        receivers: Vec<(String, mpsc::Receiver<OwnedMessage>)>,
         handlers: HashMap<String, Arc<PythonHandler>>,
         queue_manager: Arc<QueueManager>,
         offset_coordinator: Arc<dyn OffsetCoordinator>,
@@ -79,8 +79,9 @@ impl WorkerPool {
         // Share the handler map across all workers via Arc
         let handlers_arc = Arc::new(handlers);
 
-        // Zip workers with receivers — receivers is consumed here
-        for (worker_id, rx) in receivers.into_iter().enumerate().take(n_workers) {
+        // Zip workers with receivers — receivers is consumed here.
+        // Each receiver is paired with its topic so batch workers get the correct handler.
+        for (worker_id, (topic, rx)) in receivers.into_iter().enumerate().take(n_workers) {
             let handlers = Arc::clone(&handlers_arc);
             let queue_manager = Arc::clone(&queue_manager);
             let token = shutdown_token.clone();
@@ -91,16 +92,14 @@ impl WorkerPool {
             let worker_pool_state = Arc::clone(&worker_pool_state);
 
             if all_batch {
-                // Need to pass handler map to batch_worker_loop for topic lookup
-                // For now, use the first handler (common case: single topic in batch mode)
-                let first_handler = handlers_arc
-                    .values()
-                    .next()
+                // Look up the correct handler for this receiver's topic.
+                let handler = handlers_arc
+                    .get(&topic)
                     .cloned()
-                    .expect("at least one handler must be registered");
+                    .expect("handler must be registered for topic");
                 join_set.spawn(batch_worker_loop(
                     rx,
-                    first_handler,
+                    handler,
                     queue_manager,
                     offset_coordinator,
                     retry_coordinator,
@@ -260,7 +259,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(1);
         let _pool = WorkerPool::new(
             3,
-            vec![rx],
+            vec![("test".to_string(), rx)],
             dummy_handlers(),
             Arc::new(QueueManager::new()),
             Arc::new(crate::offset::offset_tracker::OffsetTracker::new())

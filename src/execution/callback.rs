@@ -2,7 +2,6 @@
 
 use crate::consumer::MessageTimestamp;
 use crate::dispatcher::OwnedMessage;
-use crate::execution::async_bridge::PythonAsyncFuture;
 use crate::execution::context::ExecutionContext;
 use crate::execution::execution_result::{BatchExecutionResult, ExecutionResult, TimeoutInfo};
 use crate::failure::classifier::DefaultFailureClassifier;
@@ -564,75 +563,198 @@ impl PythonHandler {
         }
     }
 
-    /// Invokes the Python callable asynchronously via PythonAsyncFuture.
+    /// Invokes an async Python handler via `spawn_blocking` + `asyncio.run()`.
     ///
-    /// Used for HandlerMode::SingleAsync. Creates a coroutine object inside
-    /// Python::with_gil, then wraps it in PythonAsyncFuture which handles
-    /// GIL release on each poll. The GIL is held only during coroutine.send(None).
+    /// # Design
+    /// The previous implementation drove the coroutine with `PythonAsyncFuture`
+    /// directly on a Tokio worker thread. That approach was incorrect:
+    /// - `Python::attach()` on a Tokio thread blocks the thread until the GIL is free.
+    /// - `wake_by_ref()` on every yield caused busy-polling of the Tokio scheduler.
+    /// - Python asyncio I/O primitives (`asyncio.sleep`, network calls) did not
+    ///   work correctly because no asyncio event loop was running.
+    ///
+    /// The correct model: run the async handler on a dedicated blocking thread via
+    /// `spawn_blocking`. Inside that thread, `asyncio.run()` creates a real event
+    /// loop, drives the coroutine to completion, and tears it down. The Tokio worker
+    /// thread is fully free while Python executes.
+    ///
+    /// Trade-off: GIL is held for the entire handler execution (same as SingleSync),
+    /// but spawn_blocking ensures no Tokio thread is blocked. asyncio.run() provides
+    /// a real event loop so Python async I/O works correctly.
     pub async fn invoke_async(&self, message: OwnedMessage) -> ExecutionResult {
         let callback = Arc::clone(&self.callback);
 
-        // Build the coroutine object inside with_gil — this is synchronous,
-        // but the returned PythonAsyncFuture handles GIL release on each poll.
-        let coro: Py<PyAny> = Python::attach(|py| {
-            // Note: async path does not inject trace context (no spawn_blocking GIL boundary)
-            let py_msg = message_to_pydict(py, &message, None);
+        // Extract trace context in Rust before crossing the GIL boundary.
+        let header_map: HashMap<String, String> = message
+            .headers
+            .iter()
+            .filter_map(|(k, v)| {
+                v.as_ref()
+                    .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+                    .map(|val| (k.clone(), val))
+            })
+            .collect();
+        let mut trace_context = HashMap::new();
+        inject_trace_context(&header_map, &mut trace_context);
 
-            // Call the async function — returns a coroutine object.
-            // The callback IS the coroutine function, calling it returns the coroutine object.
-            callback
-                .call1(py, (py_msg,))
-                .expect("callback must be a coroutine function")
-        });
+        tokio::task::spawn_blocking(move || {
+            Python::attach(|py| {
+                let py_msg = message_to_pydict(py, &message, Some(&trace_context));
 
-        // Drive the coroutine as a Future — GIL released during await.
-        PythonAsyncFuture::from(coro).await
+                // Call the handler function — must return a coroutine object.
+                let coro = match callback.call1(py, (py_msg,)) {
+                    Ok(c) => c,
+                    Err(py_err) => {
+                        let ctx = ExecutionContext::new(
+                            message.topic.clone(),
+                            message.partition,
+                            message.offset,
+                            0,
+                        );
+                        let classifier = DefaultFailureClassifier;
+                        let reason = classifier.classify(&py_err, &ctx);
+                        let exception = py_err
+                            .get_type(py)
+                            .name()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|_| "Unknown".to_string());
+                        let traceback = py_err.to_string();
+                        return ExecutionResult::Error {
+                            reason,
+                            exception,
+                            traceback,
+                        };
+                    }
+                };
+
+                // asyncio.run() creates a fresh event loop, drives the coroutine to
+                // completion, and tears it down. This is the correct execution model
+                // for stateless async handlers. Python async I/O works correctly here.
+                let asyncio = match py.import("asyncio") {
+                    Ok(m) => m,
+                    Err(_) => {
+                        return ExecutionResult::Error {
+                            reason: FailureReason::Terminal(
+                                crate::failure::TerminalKind::HandlerPanic,
+                            ),
+                            exception: "ImportError".to_string(),
+                            traceback: "failed to import asyncio module".to_string(),
+                        };
+                    }
+                };
+
+                match asyncio.call_method1("run", (coro,)) {
+                    Ok(_) => ExecutionResult::Ok,
+                    Err(py_err) => {
+                        let ctx = ExecutionContext::new(
+                            message.topic.clone(),
+                            message.partition,
+                            message.offset,
+                            0,
+                        );
+                        let classifier = DefaultFailureClassifier;
+                        let reason = classifier.classify(&py_err, &ctx);
+                        let exception = py_err
+                            .get_type(py)
+                            .name()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|_| "Unknown".to_string());
+                        let traceback = py_err.to_string();
+                        ExecutionResult::Error {
+                            reason,
+                            exception,
+                            traceback,
+                        }
+                    }
+                }
+            })
+        })
+        .await
+        .unwrap_or_else(|_| ExecutionResult::Error {
+            reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
+            exception: "Panic".to_string(),
+            traceback: "spawn_blocking task panicked".to_string(),
+        })
     }
 
-    /// Invokes the Python callable asynchronously with a batch of messages via PythonAsyncFuture.
+    /// Invokes an async Python batch handler via `spawn_blocking` + `asyncio.run()`.
     ///
-    /// Used for HandlerMode::BatchAsync. Builds Vec<Py<PyAny>> of message dicts inside
-    /// Python::with_gil, then wraps the resulting coroutine in PythonAsyncFuture.
-    /// Returns BatchExecutionResult instead of ExecutionResult.
+    /// Used for HandlerMode::BatchAsync. Mirrors `invoke_async` but passes a
+    /// `Vec<PyDict>` to the coroutine function rather than a single dict.
+    ///
+    /// GIL is acquired once per batch inside spawn_blocking. The Tokio thread is
+    /// free for the duration. asyncio.run() provides a real event loop so Python
+    /// async I/O inside the batch handler works correctly.
     pub async fn invoke_batch_async(&self, messages: Vec<OwnedMessage>) -> BatchExecutionResult {
         let callback = Arc::clone(&self.callback);
 
-        // Build the coroutine object inside with_gil
-        let coro: Py<PyAny> = Python::attach(|py| {
-            // Note: async path does not inject trace context (no spawn_blocking GIL boundary)
-            let py_batch: Vec<Py<PyAny>> = messages
-                .iter()
-                .map(|msg| message_to_pydict(py, msg, None))
-                .collect();
+        // Extract trace context from first message headers before crossing the GIL boundary.
+        let header_map: HashMap<String, String> = messages
+            .first()
+            .map(|msg| {
+                msg.headers
+                    .iter()
+                    .filter_map(|(k, v)| {
+                        v.as_ref()
+                            .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+                            .map(|val| (k.clone(), val))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut trace_context = HashMap::new();
+        inject_trace_context(&header_map, &mut trace_context);
 
-            // Call the async batch function — returns a coroutine object.
-            callback
-                .call1(py, (py_batch,))
-                .expect("callback must be a coroutine function")
-        });
+        let result = tokio::task::spawn_blocking(move || {
+            Python::attach(|py| {
+                // Build Vec<PyDict> — one dict per message — GIL held once for the entire batch.
+                let py_batch: Vec<Py<PyAny>> = messages
+                    .iter()
+                    .map(|msg| message_to_pydict(py, msg, Some(&trace_context)))
+                    .collect();
 
-        // Drive the coroutine as a Future
-        let result = PythonAsyncFuture::from(coro).await;
+                // Call the async batch handler — must return a coroutine object.
+                let coro = match callback.call1(py, (py_batch,)) {
+                    Ok(c) => c,
+                    Err(py_err) => {
+                        let classifier = DefaultFailureClassifier;
+                        let ctx = ExecutionContext::new("unknown".to_string(), 0, 0, 0);
+                        let reason = classifier.classify(&py_err, &ctx);
+                        return BatchExecutionResult::AllFailure(reason);
+                    }
+                };
 
-        // Convert ExecutionResult to BatchExecutionResult
+                // asyncio.run() drives the coroutine on a real event loop.
+                let asyncio = match py.import("asyncio") {
+                    Ok(m) => m,
+                    Err(_) => {
+                        return BatchExecutionResult::AllFailure(FailureReason::Terminal(
+                            crate::failure::TerminalKind::HandlerPanic,
+                        ));
+                    }
+                };
+
+                match asyncio.call_method1("run", (coro,)) {
+                    Ok(_) => {
+                        let offsets: Vec<i64> = messages.iter().map(|m| m.offset).collect();
+                        BatchExecutionResult::AllSuccess(offsets)
+                    }
+                    Err(py_err) => {
+                        let classifier = DefaultFailureClassifier;
+                        let ctx = ExecutionContext::new("unknown".to_string(), 0, 0, 0);
+                        let reason = classifier.classify(&py_err, &ctx);
+                        BatchExecutionResult::AllFailure(reason)
+                    }
+                }
+            })
+        })
+        .await;
+
         match result {
-            ExecutionResult::Ok => {
-                let offsets: Vec<i64> = messages.iter().map(|m| m.offset).collect();
-                BatchExecutionResult::AllSuccess(offsets)
-            }
-            ExecutionResult::Error { reason, .. } => BatchExecutionResult::AllFailure(reason),
-            ExecutionResult::Rejected { reason: _, .. } => {
-                // Treat rejected as failure with Terminal kind
-                BatchExecutionResult::AllFailure(FailureReason::Terminal(
-                    crate::failure::TerminalKind::HandlerPanic,
-                ))
-            }
-            ExecutionResult::Timeout { .. } => {
-                // Treat timeout as failure with Terminal kind
-                BatchExecutionResult::AllFailure(FailureReason::Terminal(
-                    crate::failure::TerminalKind::HandlerPanic,
-                ))
-            }
+            Ok(r) => r,
+            Err(_) => BatchExecutionResult::AllFailure(FailureReason::Terminal(
+                crate::failure::TerminalKind::HandlerPanic,
+            )),
         }
     }
 

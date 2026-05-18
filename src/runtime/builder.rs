@@ -154,9 +154,15 @@ impl RuntimeBuilder {
                 all_handlers.iter().map(|(t, _)| t).collect::<Vec<_>>()
             ),
         );
-        let receivers: Vec<_> = all_handlers
+        // Pair each receiver with its topic so WorkerPool can route batch workers correctly.
+        let topic_receivers: Vec<(String, _)> = all_handlers
             .iter()
-            .map(|(topic, _)| dispatcher.register_handler(topic.clone(), 100, None))
+            .map(|(topic, _)| {
+                (
+                    topic.clone(),
+                    dispatcher.register_handler(topic.clone(), 100, None),
+                )
+            })
             .collect();
 
         // 6. Build per-topic PythonHandler map from registered HandlerMetadata.
@@ -234,7 +240,7 @@ impl RuntimeBuilder {
         // 10. Create WorkerPool with per-topic handler map
         let pool = WorkerPool::new(
             n_workers,
-            receivers,
+            topic_receivers,
             handler_map,
             queue_manager_arc.clone(),
             offset_tracker.clone(),
