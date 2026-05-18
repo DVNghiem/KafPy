@@ -121,10 +121,10 @@ impl SharedDlqProducer {
             }
             Err((err, _)) => {
                 error!(
-                    error = %err,
-                    topic = %msg.topic,
-                    partition = msg.partition,
-                    "Failed to deliver DLQ message"
+                    "Failed to deliver DLQ message: error={} topic={} partition={}",
+                    err,
+                    msg.topic,
+                    msg.partition
                 );
             }
         }
@@ -167,10 +167,10 @@ impl SharedDlqProducer {
         // Try to send without blocking — if channel is full, drop the message
         if self.send_tx.try_send(msg).is_err() {
             warn!(
-                topic = %metadata.original.topic,
-                partition = metadata.original.partition,
-                offset = metadata.original.offset,
-                "DLQ channel full — dropping message"
+                "DLQ channel full — dropping message: topic={} partition={} offset={}",
+                metadata.original.topic,
+                metadata.original.partition,
+                metadata.original.offset
             );
         }
     }

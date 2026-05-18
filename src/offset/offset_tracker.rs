@@ -312,11 +312,11 @@ impl OffsetCoordinator for OffsetTracker {
             for &offset in &failed_offsets {
                 // OffsetTracker does not store original payload/key — log as limitation
                 warn!(
-                    topic = %topic,
-                    partition = partition,
-                    offset = offset,
-                    reason = %reason_str,
-                    "flush_failed_to_dlq: original payload not available, producing empty DLQ message"
+                    "flush_failed_to_dlq: original payload not available, producing empty DLQ message: topic={} partition={} offset={} reason={}",
+                    topic,
+                    partition,
+                    offset,
+                    reason_str
                 );
 
                 let metadata = DlqMetadata::new(
@@ -335,12 +335,12 @@ impl OffsetCoordinator for OffsetTracker {
 
                 let tp = dlq_router.route(&metadata);
                 info!(
-                    topic = %topic,
-                    partition = partition,
-                    offset = offset,
-                    dlq_topic = %tp.topic,
-                    dlq_partition = tp.partition,
-                    "flushing failed offset to DLQ"
+                    "flushing failed offset to DLQ: topic={} partition={} offset={} dlq_topic={} dlq_partition={}",
+                    topic,
+                    partition,
+                    offset,
+                    tp.topic,
+                    tp.partition
                 );
 
                 // Fire-and-forget — don't await

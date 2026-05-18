@@ -12,10 +12,9 @@ use crate::execution::batch::BatchAccumulator;
 use crate::execution::callback::PythonHandler;
 use crate::execution::context::ExecutionContext;
 use crate::execution::execution_result::BatchExecutionResult;
-use crate::log::{debug, error, info, warn, Span};
+use crate::log::{debug, error, info, warn};
 use crate::observability::metrics::{MetricLabels, PythonCallMetrics};
 use crate::observability::runtime_snapshot::WorkerPoolState;
-use crate::observability::tracing::KafpySpanExt;
 use crate::offset::offset_coordinator::OffsetCoordinator;
 use crate::retry::retry_coordinator::RetryCoordinator;
 use crate::worker_pool::state::BatchState;
@@ -45,20 +44,9 @@ pub(crate) async fn flush_partition_batch(
     }
     let topic = batch[0].topic.clone();
     let ctx = ExecutionContext::new(topic.clone(), partition, batch[0].offset, worker_id);
-    let span = Span::current().kafpy_handler_invoke(
-        topic.as_str(),
-        handler.name(),
-        topic.as_str(),
-        partition,
-        batch[0].offset,
-        handler.mode().as_str(),
-        0, // batch: attempt starts at 0
-    );
     worker_pool_state.set_busy(worker_id, "shared".to_string());
     let py_call_start = std::time::Instant::now();
-    let result = span
-        .in_scope(|| async { handler.invoke_mode_batch(&ctx, batch.clone()).await })
-        .await;
+    let result = handler.invoke_mode_batch(&ctx, batch.clone()).await;
     PythonCallMetrics::record_call(
         &prometheus_sink,
         "handler",
@@ -104,7 +92,7 @@ pub(crate) async fn batch_worker_loop(
     worker_pool_state: Arc<WorkerPoolState>,
     prometheus_sink: crate::observability::SharedPrometheusSink,
 ) {
-    info!(worker_id = worker_id, "batch worker started");
+    info!("batch worker started: worker_id={}", worker_id);
 
     let batch_policy = handler
         .batch_policy()
@@ -231,8 +219,8 @@ pub(crate) async fn batch_worker_loop(
                     None => {
                         // Channel closed — drain accumulator and exit
                         info!(
-                            worker_id = worker_id,
-                            "batch worker: channel closed, draining"
+                            "batch worker: channel closed, draining: worker_id={}",
+                            worker_id
                         );
                         let partitions = accumulator.flush_all();
                         for (partition, batch) in partitions {
@@ -259,8 +247,8 @@ pub(crate) async fn batch_worker_loop(
             // Branch 3: Shutdown signal — flush all and exit
             _ = shutdown_token.cancelled() => {
                 info!(
-                    worker_id = worker_id,
-                    "batch worker: shutdown signal, draining"
+                    "batch worker: shutdown signal, draining: worker_id={}",
+                    worker_id
                 );
                 let partitions = accumulator.flush_all();
                 for (partition, batch) in partitions {
@@ -284,7 +272,7 @@ pub(crate) async fn batch_worker_loop(
         }
     }
 
-    info!(worker_id = worker_id, "batch worker stopped");
+    info!("batch worker stopped: worker_id={}", worker_id);
 }
 
 /// Handle the result of a batch invocation — inline version that owns the batch messages.
@@ -330,10 +318,10 @@ pub(crate) async fn handle_batch_result_inline(
                 queue_manager.ack(topic, 1);
                 offset_coordinator.record_ack(topic, partition, offset);
                 debug!(
-                    topic = %topic,
-                    partition = partition,
-                    offset = offset,
-                    "batch message acked"
+                    "batch message acked: topic={} partition={} offset={}",
+                    topic,
+                    partition,
+                    offset
                 );
             }
         }
@@ -348,11 +336,11 @@ pub(crate) async fn handle_batch_result_inline(
             // EXEC-10: All messages in batch flow to RetryCoordinator
             // We have access to the original batch messages here for routing
             warn!(
-                topic = %topic,
-                partition = partition,
-                reason = %reason,
-                batch_size = batch.len(),
-                "batch failed entirely"
+                "batch failed entirely: topic={} partition={} reason={} batch_size={}",
+                topic,
+                partition,
+                reason,
+                batch.len()
             );
 
             for msg in batch {
@@ -373,11 +361,11 @@ pub(crate) async fn handle_batch_result_inline(
                     let attempt = retry_coordinator.attempt_count(topic, partition, msg.offset);
                     if should_retry {
                         warn!(
-                            topic = %topic,
-                            partition = partition,
-                            offset = msg.offset,
-                            attempt = attempt,
-                            "batch message routed to DLQ (batch mode does not support inline retry)"
+                            "batch message routed to DLQ (batch mode does not support inline retry): topic={} partition={} offset={} attempt={}",
+                            topic,
+                            partition,
+                            msg.offset,
+                            attempt
                         );
                     }
                     let metadata = DlqMetadata::new(
@@ -394,17 +382,10 @@ pub(crate) async fn handle_batch_result_inline(
                         None,
                     );
 
-                    let dlq_span =
-                        Span::current().kafpy_dlq_route(topic, &reason.to_string(), partition);
-                    let tp = dlq_span.in_scope(|| dlq_router.route(&metadata));
+                    let tp = dlq_router.route(&metadata);
                     error!(
-                        topic = %topic,
-                        partition = partition,
-                        offset = msg.offset,
-                        dlq_topic = %tp.topic,
-                        dlq_partition = tp.partition,
-                        reason = %reason,
-                        "routing batch message to DLQ"
+                        "routing batch message to DLQ: topic={} partition={} offset={} dlq_topic={} dlq_partition={} reason={}",
+                        topic, partition, msg.offset, tp.topic, tp.partition, reason
                     );
 
                     // Fire-and-forget

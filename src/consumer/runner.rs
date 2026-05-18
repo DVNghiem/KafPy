@@ -62,9 +62,9 @@ impl ConsumerRunner {
             })?;
 
         info!(
-            topics = ?config.topics,
-            group_id = %config.group_id,
-            "Consumer subscribed"
+            "Consumer subscribed: topics={:?} group_id={}",
+            config.topics,
+            config.group_id
         );
 
         let (shutdown_tx, _) = broadcast::channel(1);
@@ -101,11 +101,11 @@ impl ConsumerRunner {
                             Ok(msg) => {
                                 let owned = OwnedMessage::from_borrowed(&msg);
                                 debug!(
-                                    topic = %owned.topic,
-                                    partition = owned.partition,
-                                    offset = owned.offset,
-                                    size = owned.size_bytes(),
-                                    "Message received"
+                                    "Message received: topic={} partition={} offset={} size={}",
+                                    owned.topic,
+                                    owned.partition,
+                                    owned.offset,
+                                    owned.size_bytes()
                                 );
                                 // Guard the channel send with the shutdown signal.
                                 // Without this, a full channel (burst scenario) blocks

@@ -6,9 +6,8 @@ use crate::dlq::{DlqMetadata, DlqRouter, SharedDlqProducer};
 use crate::execution::context::ExecutionContext;
 use crate::execution::execution_result::ExecutionResult;
 use crate::failure::FailureReason;
-use crate::log::{info, Span};
+use crate::log::{error, info};
 use crate::observability::metrics::HandlerMetrics;
-use crate::observability::tracing::KafpySpanExt;
 use crate::retry::retry_coordinator::RetryCoordinator;
 use std::sync::Arc;
 
@@ -63,9 +62,12 @@ pub(crate) async fn handle_execution_failure(
     if should_retry {
         if let Some(d) = delay {
             info!(
-                topic = %ctx.topic, partition = ctx.partition, offset = ctx.offset,
-                attempt = retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset),
-                delay_ms = d.as_millis(), "scheduling retry"
+                "scheduling retry: topic={} partition={} offset={} attempt={} delay_ms={}",
+                ctx.topic,
+                ctx.partition,
+                ctx.offset,
+                retry_coordinator.attempt_count(&ctx.topic, ctx.partition, ctx.offset),
+                d.as_millis()
             );
             return ExecutionAction::Retry { delay: d };
         }
@@ -103,13 +105,12 @@ pub(crate) async fn handle_execution_failure(
             None,
         );
 
-        let dlq_span =
-            Span::current().kafpy_dlq_route(ctx.topic.as_str(), &reason.to_string(), ctx.partition);
-        let tp = dlq_span.in_scope(|| dlq_router.route(&metadata));
-        tracing::error!(
-            topic = %ctx.topic, partition = ctx.partition, offset = ctx.offset,
-            dlq_topic = %tp.topic, dlq_partition = tp.partition,
-            reason = %reason, attempt_count = metadata.attempt_count, "routing message to DLQ"
+        let tp = dlq_router.route(&metadata);
+        error!(
+            "routing message to DLQ: topic={} partition={} offset={} dlq_topic={} dlq_partition={} reason={} attempt_count={}",
+            ctx.topic, ctx.partition, ctx.offset,
+            tp.topic, tp.partition,
+            reason, metadata.attempt_count
         );
 
         // Fire-and-forget — don't await

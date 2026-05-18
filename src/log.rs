@@ -8,9 +8,8 @@ use log::{Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
-// Re-export tracing items for centralized logging imports
-pub use tracing::{debug, error, info, trace, warn};
-pub use tracing::{info_span, Span};
+// Re-export log macros for centralized logging imports
+pub use log::{debug, error, info, trace, warn};
 
 /// Capacity of the async log channel. Records are dropped (not blocked) when full.
 const LOG_CHANNEL_CAPACITY: usize = 4096;

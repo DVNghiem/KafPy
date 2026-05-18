@@ -5,7 +5,7 @@
 //! on revocation (cooperative-sticky strategy) and seeks to committed+1
 //! on assignment.
 
-use crate::log::{debug, error, info, warn};
+use crate::log::{debug, error, info, trace, warn};
 use rdkafka::client::ClientContext;
 use rdkafka::config::RDKafkaLogLevel;
 use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance};
@@ -86,10 +86,10 @@ impl ClientContext for CustomConsumerContext {
                 info!(target: "librdkafka", "{} {}", fac, log_message);
             }
             RDKafkaLogLevel::Info => {
-                tracing::debug!(target: "librdkafka", "{} {}", fac, log_message);
+                debug!(target: "librdkafka", "{} {}", fac, log_message);
             }
             RDKafkaLogLevel::Debug => {
-                tracing::trace!(target: "librdkafka", "{} {}", fac, log_message);
+                trace!(target: "librdkafka", "{} {}", fac, log_message);
             }
         }
     }
@@ -107,7 +107,7 @@ impl ConsumerContext for CustomConsumerContext {
                     debug!("pre_rebalance: Revoke with empty list");
                     return;
                 }
-                info!(count = tpl.count(), "rebalance: partitions revoked");
+                info!("rebalance: partitions revoked: count={}", tpl.count());
                 for elem in tpl.elements() {
                     let topic = elem.topic();
                     let partition = elem.partition();
@@ -122,38 +122,38 @@ impl ConsumerContext for CustomConsumerContext {
                                 {
                                     Ok(()) => {
                                         info!(
-                                            topic = %topic,
-                                            partition = partition,
-                                            offset = offset,
-                                            "committed offset on revocation"
+                                            "committed offset on revocation: topic={} partition={} offset={}",
+                                            topic,
+                                            partition,
+                                            offset
                                         );
                                     }
                                     Err(e) => {
                                         error!(
-                                            topic = %topic,
-                                            partition = partition,
-                                            offset = offset,
-                                            error = %e,
-                                            "failed to commit offset on revocation"
+                                            "failed to commit offset on revocation: topic={} partition={} offset={} error={}",
+                                            topic,
+                                            partition,
+                                            offset,
+                                            e
                                         );
                                     }
                                 }
                             }
                             Err(e) => {
                                 error!(
-                                    topic = %topic,
-                                    partition = partition,
-                                    offset = offset,
-                                    error = %e,
-                                    "failed to store offset on revocation"
+                                    "failed to store offset on revocation: topic={} partition={} offset={} error={}",
+                                    topic,
+                                    partition,
+                                    offset,
+                                    e
                                 );
                             }
                         }
                     } else {
                         debug!(
-                            topic = %topic,
-                            partition = partition,
-                            "no committed offset to revoke"
+                            "no committed offset to revoke: topic={} partition={}",
+                            topic,
+                            partition
                         );
                     }
 
@@ -168,15 +168,12 @@ impl ConsumerContext for CustomConsumerContext {
                     return;
                 }
                 info!(
-                    count = tpl.count(),
-                    "rebalance: partitions about to be assigned"
+                    "rebalance: partitions about to be assigned: count={}",
+                    tpl.count()
                 );
             }
             Rebalance::Error(e) => {
-                error!(
-                    error = %e,
-                    "rebalance error"
-                );
+                error!("rebalance error: error={}", e);
             }
         }
     }
@@ -192,8 +189,8 @@ impl ConsumerContext for CustomConsumerContext {
                     return;
                 }
                 info!(
-                    count = tpl.count(),
-                    "rebalance: partitions assigned, seeking to committed+1"
+                    "rebalance: partitions assigned, seeking to committed+1: count={}",
+                    tpl.count()
                 );
                 for elem in tpl.elements() {
                     let topic = elem.topic();
@@ -214,20 +211,20 @@ impl ConsumerContext for CustomConsumerContext {
                     ) {
                         Ok(_) => {
                             info!(
-                                topic = %topic,
-                                partition = partition,
-                                committed_offset = committed,
-                                seek_offset = seek_offset,
-                                "seeked to committed+1 on assignment"
+                                "seeked to committed+1 on assignment: topic={} partition={} committed_offset={} seek_offset={}",
+                                topic,
+                                partition,
+                                committed,
+                                seek_offset
                             );
                         }
                         Err(e) => {
                             error!(
-                                topic = %topic,
-                                partition = partition,
-                                seek_offset = seek_offset,
-                                error = %e,
-                                "failed to seek on assignment"
+                                "failed to seek on assignment: topic={} partition={} seek_offset={} error={}",
+                                topic,
+                                partition,
+                                seek_offset,
+                                e
                             );
                         }
                     }

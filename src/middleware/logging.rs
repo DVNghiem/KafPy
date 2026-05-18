@@ -1,12 +1,11 @@
 //! Built-in logging middleware — MIDW-02.
 //!
-//! Emits tracing span events using existing kafpy_handler_invoke span fields.
-//! Uses Python logging (via kafpy logger) so output goes to user's configured handler.
-//! Zero-cost when no tracing subscriber is configured.
+//! Emits log events on handler start/complete/error via the `log` crate,
+//! which routes to Python's logging module through the KafPy logger bridge.
 
 use crate::execution::context::ExecutionContext;
 use crate::execution::execution_result::ExecutionResult;
-use crate::log::{error, info, info_span};
+use crate::log::{error, info};
 use crate::middleware::HandlerMiddleware;
 use std::time::Duration;
 
@@ -31,45 +30,24 @@ impl Default for Logging {
 
 impl HandlerMiddleware for Logging {
     fn before(&self, ctx: &ExecutionContext) {
-        // Create a span to mark handler start — zero-cost if no subscriber
-        let _span = info_span!(
-            "kafpy.middleware.logging",
-            handler_id = %ctx.topic,
-            topic = %ctx.topic,
-            partition = ctx.partition,
-            offset = ctx.offset,
-        )
-        .entered();
-
         info!(
-            handler_id = %ctx.topic,
-            topic = %ctx.topic,
-            partition = ctx.partition,
-            offset = ctx.offset,
-            "handler middleware: before"
+            "handler middleware: before: handler_id={} topic={} partition={} offset={}",
+            ctx.topic, ctx.topic, ctx.partition, ctx.offset
         );
     }
 
     fn after(&self, ctx: &ExecutionContext, result: &ExecutionResult, elapsed: Duration) {
         info!(
-            handler_id = %ctx.topic,
-            topic = %ctx.topic,
-            partition = ctx.partition,
-            offset = ctx.offset,
-            elapsed_ms = elapsed.as_millis() as u64,
-            result = %result.error_type_label(),
-            "handler middleware: after"
+            "handler middleware: after: handler_id={} topic={} partition={} offset={} elapsed_ms={} result={}",
+            ctx.topic, ctx.topic, ctx.partition, ctx.offset,
+            elapsed.as_millis(), result.error_type_label()
         );
     }
 
     fn on_error(&self, ctx: &ExecutionContext, result: &ExecutionResult) {
         error!(
-            handler_id = %ctx.topic,
-            topic = %ctx.topic,
-            partition = ctx.partition,
-            offset = ctx.offset,
-            error_type = %result.error_type_label(),
-            "handler middleware: error"
+            "handler middleware: error: handler_id={} topic={} partition={} offset={} error_type={}",
+            ctx.topic, ctx.topic, ctx.partition, ctx.offset, result.error_type_label()
         );
     }
 }

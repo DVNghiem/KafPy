@@ -70,8 +70,8 @@ impl ShutdownCoordinator {
     pub fn new(drain_timeout_secs: u64) -> Self {
         let drain_timeout = Duration::from_secs(drain_timeout_secs);
         debug!(
-            drain_timeout_secs = drain_timeout_secs,
-            "ShutdownCoordinator created"
+            "ShutdownCoordinator created: drain_timeout_secs={}",
+            drain_timeout_secs
         );
         Self {
             phase: parking_lot::Mutex::new(ShutdownPhase::Running),
@@ -106,9 +106,9 @@ impl ShutdownCoordinator {
             *phase = ShutdownPhase::Draining;
         }
         info!(
-            phase = %self.phase(),
-            drain_timeout_secs = self.drain_timeout.as_secs(),
-            "shutdown initiated, signaling components to drain"
+            "shutdown initiated, signaling components to drain: phase={} drain_timeout_secs={}",
+            self.phase(),
+            self.drain_timeout.as_secs()
         );
         (
             self.dispatcher_cancel.clone(),
@@ -135,8 +135,8 @@ impl ShutdownCoordinator {
             *phase = ShutdownPhase::Finalizing;
         }
         info!(
-            phase = %self.phase(),
-            "drain complete, entering finalization phase"
+            "drain complete, entering finalization phase: phase={}",
+            self.phase()
         );
     }
 
@@ -157,10 +157,7 @@ impl ShutdownCoordinator {
             );
             *phase = ShutdownPhase::Done;
         }
-        info!(
-            phase = %self.phase(),
-            "shutdown complete"
-        );
+        info!("shutdown complete: phase={}", self.phase());
     }
 
     /// Returns true if shutdown has completed (phase is `Done`).

@@ -7,8 +7,7 @@ use crate::consumer::OwnedMessage;
 use crate::dispatcher::backpressure::BackpressureAction;
 use crate::dispatcher::error::DispatchError;
 use crate::dispatcher::{Dispatcher, QueueManager};
-use crate::log::{debug, error, info, warn, Span};
-use crate::observability::tracing::KafpySpanExt;
+use crate::log::{debug, error, info, warn};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -93,19 +92,8 @@ impl ConsumerDispatcher {
             match result {
                 Ok(msg) => {
                     let topic = msg.topic.clone();
-                    let partition = msg.partition;
-                    let offset = msg.offset;
-                    // Dispatch inside span; outcome is recorded for tracing.
-                    let span = Span::current().kafpy_dispatch_process(
-                        &topic,
-                        partition,
-                        offset,
-                        "dispatched",
-                    );
-                    let (outcome, pause_signal) = {
-                        let _guard = span.enter();
-                        self.dispatcher.send_with_policy_and_signal(msg).await
-                    };
+                    let (outcome, pause_signal) =
+                        self.dispatcher.send_with_policy_and_signal(msg).await;
                     match outcome {
                         Ok(outcome) => {
                             self.check_resume(&topic, outcome.queue_depth);
@@ -114,7 +102,6 @@ impl ConsumerDispatcher {
                             queue_name: _,
                             reason: _,
                         }) => {
-                            Span::current().record("routing_decision", "backpressure");
                             if let Some(BackpressureAction::PausePartition {
                                 topic: pause_topic,
                                 ..
@@ -137,11 +124,9 @@ impl ConsumerDispatcher {
                             }
                         }
                         Err(DispatchError::HandlerNotRegistered { topic: t }) => {
-                            Span::current().record("routing_decision", "not_registered");
                             debug!("no handler for topic '{}', skipping", t);
                         }
                         Err(e) => {
-                            Span::current().record("routing_decision", "queue_closed");
                             error!("dispatch error: {}", e);
                         }
                     }

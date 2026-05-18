@@ -35,6 +35,7 @@ use crate::retry::retry_coordinator::RetryCoordinator;
 use crate::shutdown::ShutdownCoordinator;
 use crate::worker_pool::concurrency::HandlerConcurrency;
 use crate::worker_pool::pool::WorkerPool;
+use crate::log::info;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -334,9 +335,9 @@ impl Runtime {
         tokio::spawn(async move {
             let mut sigterm = signal(SignalKind::terminate()).unwrap();
             sigterm.recv().await;
-            tracing::info!(
-                drain_timeout_secs = coordinator.drain_timeout().as_secs(),
-                "received SIGTERM, initiating graceful shutdown"
+            info!(
+                "received SIGTERM, initiating graceful shutdown (drain_timeout_secs={})",
+                coordinator.drain_timeout().as_secs()
             );
             let _ = coordinator.begin_draining();
         });
@@ -351,9 +352,9 @@ impl Runtime {
         let coordinator = Arc::clone(&self.coordinator);
         tokio::spawn(async move {
             ctrl_c.recv().await;
-            tracing::info!(
-                drain_timeout_secs = coordinator.drain_timeout().as_secs(),
-                "received Ctrl-C, initiating graceful shutdown"
+            info!(
+                "received Ctrl-C, initiating graceful shutdown (drain_timeout_secs={})",
+                coordinator.drain_timeout().as_secs()
             );
             let _ = coordinator.begin_draining();
         });

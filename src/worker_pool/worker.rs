@@ -15,12 +15,11 @@ use crate::execution::callback::PythonHandler;
 use crate::execution::context::{ExecutionContext, TraceContext};
 use crate::execution::execution_result::ExecutionResult;
 use crate::failure::FailureReason;
-use crate::log::{debug, trace, warn};
+use crate::log::{debug, error, info, trace, warn};
 use crate::observability::metrics::{
     FanOutMetrics, MetricLabels, PythonCallMetrics, ThroughputMetrics, TimeoutMetrics,
 };
 use crate::observability::runtime_snapshot::WorkerPoolState;
-use crate::observability::tracing::KafpySpanExt;
 use crate::offset::offset_coordinator::OffsetCoordinator;
 use crate::retry::retry_coordinator::RetryCoordinator;
 use crate::worker_pool::fan_out::{BranchResult, FanOutTracker};
@@ -45,7 +44,7 @@ fn handler_for_topic<'a>(
     topic: &str,
 ) -> &'a Arc<PythonHandler> {
     handlers.get(topic).unwrap_or_else(|| {
-        warn!(topic = %topic, "no handler registered for topic, using first available");
+        warn!("no handler registered for topic, using first available: topic={}", topic);
         handlers.values().next().expect("handler map is empty")
     })
 }
@@ -66,11 +65,11 @@ async fn poll_for_work(
     select! {
         Some(msg) = rx.recv() => {
             trace!(
-                worker_id = worker_id,
-                topic = %msg.topic,
-                partition = msg.partition,
-                offset = msg.offset,
-                "worker picked up message"
+                "worker picked up message: worker_id={} topic={} partition={} offset={}",
+                worker_id,
+                msg.topic,
+                msg.partition,
+                msg.offset
             );
             worker_pool_state.set_active(
                 worker_id,
@@ -104,11 +103,11 @@ async fn handle_execution_result(
     match result {
         ExecutionResult::Ok => {
             debug!(
-                worker_id = worker_id,
-                topic = %ctx.topic,
-                partition = ctx.partition,
-                offset = ctx.offset,
-                "handler executed successfully"
+                "handler executed successfully: worker_id={} topic={} partition={} offset={}",
+                worker_id,
+                ctx.topic,
+                ctx.partition,
+                ctx.offset
             );
             retry_coordinator.record_success(&ctx.topic, ctx.partition, ctx.offset);
             queue_manager.ack(&msg.topic, 1);
@@ -121,12 +120,12 @@ async fn handle_execution_result(
             ..
         } => {
             warn!(
-                worker_id = worker_id,
-                topic = %ctx.topic,
-                partition = ctx.partition,
-                offset = ctx.offset,
-                exception = %exception,
-                "handler raised exception"
+                "handler raised exception: worker_id={} topic={} partition={} offset={} exception={}",
+                worker_id,
+                ctx.topic,
+                ctx.partition,
+                ctx.offset,
+                exception
             );
             crate::failure::logging::log_failure(ctx, reason, exception, false);
 
@@ -147,12 +146,12 @@ async fn handle_execution_result(
         }
         ExecutionResult::Rejected { ref reason, .. } => {
             warn!(
-                worker_id = worker_id,
-                topic = %ctx.topic,
-                partition = ctx.partition,
-                offset = ctx.offset,
-                reason = %reason,
-                "handler rejected message"
+                "handler rejected message: worker_id={} topic={} partition={} offset={} reason={}",
+                worker_id,
+                ctx.topic,
+                ctx.partition,
+                ctx.offset,
+                reason
             );
             let exc_name = "Rejected";
             crate::failure::logging::log_failure(ctx, reason, exc_name, false);
@@ -174,12 +173,12 @@ async fn handle_execution_result(
         }
         ExecutionResult::Timeout { ref info } => {
             warn!(
-                worker_id = worker_id,
-                topic = %ctx.topic,
-                partition = ctx.partition,
-                offset = ctx.offset,
-                timeout_ms = info.timeout_ms,
-                "handler timed out"
+                "handler timed out: worker_id={} topic={} partition={} offset={} timeout_ms={}",
+                worker_id,
+                ctx.topic,
+                ctx.partition,
+                ctx.offset,
+                info.timeout_ms
             );
             let reason = FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic);
             crate::failure::logging::log_failure(ctx, &reason, "HandlerTimeout", false);
@@ -210,7 +209,6 @@ async fn process_fan_out(
     handler: &PythonHandler,
     msg: OwnedMessage,
     trace_id: Option<String>,
-    span_id: Option<String>,
     worker_id: usize,
     dlq_producer: &Arc<SharedDlqProducer>,
     dlq_router: &Arc<dyn DlqRouter>,
@@ -223,9 +221,9 @@ async fn process_fan_out(
     // FANOUT-02: Check if fan-out slots are exhausted
     if fan_out_config.is_exhausted() {
         warn!(
-            topic = %msg.topic,
-            max_fan_out = fan_out_config.max_fan_out,
-            "fan-out slots exhausted, returning backpressure"
+            "fan-out slots exhausted, returning backpressure: topic={} max_fan_out={}",
+            msg.topic,
+            fan_out_config.max_fan_out
         );
         // Primary already ACKed above. Return backpressure signal to caller.
         // The caller (ConsumerDispatcher) will pause the partition.
@@ -250,7 +248,6 @@ async fn process_fan_out(
         .collect();
     // Clone trace context once before loop so each iteration can borrow.
     let parent_trace_id_opt = trace_id.clone();
-    let parent_span_id_opt = span_id.clone();
 
     for sink in &fan_out_config.sinks {
         let tracker = Arc::clone(&fan_tracker);
@@ -259,27 +256,16 @@ async fn process_fan_out(
         let sink_timeout = sink.timeout;
         let msg_clone = msg.clone();
         let fan_out_id_clone = fan_out_id;
-        // Clone trace context for this branch (moves into async block).
+        // Clone trace id for this branch (moves into async block).
         let trace_id_clone = parent_trace_id_opt.clone();
-        let span_id_clone = parent_span_id_opt.clone();
 
         sink_join_set.spawn(async move {
             let branch_id = tracker.register_branch();
 
-            // D-07/D-08/D-09: Create branch span and W3C traceparent for this branch.
-            // If parent trace context exists, use it as parent; otherwise generate new trace_id.
-            let parent_trace_id = trace_id_clone.as_deref();
-            let parent_span_id = span_id_clone.as_deref();
-            let branch_span = tracing::Span::current().kafpy_fanout_branch_span(
-                fan_out_id_clone,
-                sink_topic.as_str(),
-                parent_trace_id,
-                parent_span_id,
-            );
-
-            // Build W3C traceparent for this branch.
+            // D-07/D-08/D-09: Build W3C traceparent for this branch.
             // All branches of the same fan-out dispatch share the same trace_id (D-09).
             // If no parent trace_id, generate a new one.
+            let parent_trace_id = trace_id_clone.as_deref();
             let trace_id: String = match parent_trace_id {
                 Some(tid) => tid.to_string(),
                 None => {
@@ -304,12 +290,8 @@ async fn process_fan_out(
                 Some(fan_out_id_clone),
                 String::new(),
             );
-            let result = branch_span
-                .in_scope(|| async {
-                    sink_handler
-                        .invoke_mode_with_timeout_override(&ctx_clone, msg_clone, sink_timeout)
-                        .await
-                })
+            let result = sink_handler
+                .invoke_mode_with_timeout_override(&ctx_clone, msg_clone, sink_timeout)
                 .await;
             let branch_result = match result {
                 ExecutionResult::Ok => BranchResult::Ok,
@@ -341,9 +323,9 @@ async fn process_fan_out(
     tokio::spawn(async move {
         let branch_results = fan_tracker.wait_all().await;
         debug!(
-            fan_out_id = fan_out_id,
-            branch_count = branch_results.results.len(),
-            "all fan-out branches completed"
+            "all fan-out branches completed: fan_out_id={} branch_count={}",
+            fan_out_id,
+            branch_results.results.len()
         );
 
         // OBSV-01: Emit fan-out metrics for each branch result.
@@ -387,7 +369,7 @@ async fn process_fan_out(
             match result {
                 Ok(_) => {}
                 Err(e) => {
-                    tracing::error!(error = ?e, "fan-out sink task panicked");
+                    error!("fan-out sink task panicked: {:?}", e);
                 }
             }
         }
@@ -468,23 +450,9 @@ pub(crate) async fn worker_loop(
                 .insert("handler_id", ctx.topic.as_str())
                 .insert("topic", ctx.topic.as_str())
                 .insert("mode", handler.mode().as_str());
-            let span = tracing::Span::current().kafpy_handler_invoke(
-                ctx.topic.as_str(),
-                handler.name(),
-                ctx.topic.as_str(),
-                ctx.partition,
-                ctx.offset,
-                handler.mode().as_str(),
-                1, // attempt: will be corrected in failure path after record_failure
-            );
-            tracing::info!(
-                handler_id = %ctx.topic,
-                handler_name = %handler.name(),
-                topic = %ctx.topic,
-                partition = ctx.partition,
-                offset = ctx.offset,
-                mode = %handler.mode().as_str(),
-                "handler invoke start"
+            info!(
+                "handler invoke start: handler_id={} handler_name={} topic={} partition={} offset={} mode={}",
+                ctx.topic, handler.name(), ctx.topic, ctx.partition, ctx.offset, handler.mode().as_str()
             );
             // Acquire concurrency permit — holds until end of this block
             let queue_wait_start = std::time::Instant::now();
@@ -496,9 +464,7 @@ pub(crate) async fn worker_loop(
                 queue_wait_start.elapsed(),
             );
             let py_call_start = std::time::Instant::now();
-            let result = span
-                .in_scope(|| async { handler.invoke_mode_with_timeout(&ctx, msg.clone()).await })
-                .await;
+            let result = handler.invoke_mode_with_timeout(&ctx, msg.clone()).await;
             PythonCallMetrics::record_call(
                 &prometheus_sink,
                 "handler",
@@ -507,13 +473,9 @@ pub(crate) async fn worker_loop(
                 1,
             );
             let elapsed = start.elapsed();
-            tracing::info!(
-                handler_id = %ctx.topic,
-                topic = %ctx.topic,
-                partition = ctx.partition,
-                offset = ctx.offset,
-                elapsed_ms = elapsed.as_millis() as u64,
-                "handler invoke complete"
+            info!(
+                "handler invoke complete: handler_id={} topic={} partition={} offset={} elapsed_ms={}",
+                ctx.topic, ctx.topic, ctx.partition, ctx.offset, elapsed.as_millis()
             );
             HANDLER_METRICS.record_invocation(&prometheus_sink, &invocation_labels);
             HANDLER_METRICS.record_latency(&prometheus_sink, &invocation_labels, elapsed);
@@ -524,13 +486,9 @@ pub(crate) async fn worker_loop(
                 handler.mode().as_str(),
             );
             if !result.is_ok() {
-                tracing::error!(
-                    handler_id = %ctx.topic,
-                    topic = %ctx.topic,
-                    partition = ctx.partition,
-                    offset = ctx.offset,
-                    error_type = result.error_type_label(),
-                    "handler invoke error"
+                error!(
+                    "handler invoke error: handler_id={} topic={} partition={} offset={} error_type={}",
+                    ctx.topic, ctx.topic, ctx.partition, ctx.offset, result.error_type_label()
                 );
                 let error_labels = MetricLabels::new()
                     .insert("handler_id", ctx.topic.as_str())
@@ -567,10 +525,7 @@ pub(crate) async fn worker_loop(
                 select! {
                     biased;
                     _ = shutdown_token.cancelled() => {
-                        tracing::info!(
-                            worker_id = worker_id,
-                            "worker stopped during retry sleep (cancelled)"
-                        );
+                        info!("worker {} stopped during retry sleep (cancelled)", worker_id);
                         worker_pool_state.set_idle(worker_id);
                         return;
                     }
@@ -581,10 +536,7 @@ pub(crate) async fn worker_loop(
             }
 
             if shutdown_token.is_cancelled() {
-                tracing::info!(
-                    worker_id = worker_id,
-                    "worker stopped (cancelled after message)"
-                );
+                info!("worker {} stopped (cancelled after message)", worker_id);
                 worker_pool_state.set_idle(worker_id);
                 break;
             }
@@ -596,7 +548,6 @@ pub(crate) async fn worker_loop(
                 &handler,
                 msg.clone(),
                 trace_id.clone(),
-                span_id.clone(),
                 worker_id,
                 &dlq_producer,
                 &dlq_router,

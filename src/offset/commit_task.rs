@@ -199,31 +199,31 @@ impl OffsetCommitter {
     /// Logs errors and continues on failure (does not block the cycle).
     async fn commit_partition(&self, topic: &str, partition: i32, offset: i64) {
         debug!(
-            topic = topic,
-            partition = partition,
-            offset = offset,
-            "Committing offset"
+            "Committing offset: topic={} partition={} offset={}",
+            topic,
+            partition,
+            offset
         );
 
         // Phase 13: Two-phase guard — store_offset first, then commit
         // Only commit when highest_contiguous > committed_offset (enforced by caller)
         if let Err(e) = self.runner.store_offset(topic, partition, offset).await {
             error!(
-                topic = topic,
-                partition = partition,
-                offset = offset,
-                error = %e,
-                "Failed to store offset"
+                "Failed to store offset: topic={} partition={} offset={} error={}",
+                topic,
+                partition,
+                offset,
+                e
             );
             return;
         }
         if let Err(e) = self.runner.commit() {
             error!(
-                topic = topic,
-                partition = partition,
-                offset = offset,
-                error = %e,
-                "Failed to commit offset"
+                "Failed to commit offset: topic={} partition={} offset={} error={}",
+                topic,
+                partition,
+                offset,
+                e
             );
         }
     }

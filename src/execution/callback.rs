@@ -350,13 +350,13 @@ impl PythonHandler {
                     Ok(result) => result,
                     Err(_) => {
                         error!(
-                            handler_id = %ctx.topic,
-                            topic = %ctx.topic,
-                            partition = ctx.partition,
-                            offset = ctx.offset,
-                            timeout_ms = timeout.as_millis() as u64,
-                            "handler timed out after {}ms",
-                            timeout.as_millis()
+                            "handler timed out after {}ms: handler_id={} topic={} partition={} offset={} timeout_ms={}",
+                            timeout.as_millis(),
+                            ctx.topic,
+                            ctx.topic,
+                            ctx.partition,
+                            ctx.offset,
+                            timeout.as_millis() as u64
                         );
                         ExecutionResult::Timeout {
                             info: TimeoutInfo {
@@ -410,13 +410,13 @@ impl PythonHandler {
                 Ok(result) => result,
                 Err(_) => {
                     error!(
-                        handler_id = %ctx.topic,
-                        topic = %ctx.topic,
-                        partition = ctx.partition,
-                        offset = ctx.offset,
-                        timeout_ms = t.as_millis() as u64,
-                        "handler timed out after {}ms",
-                        t.as_millis()
+                        "handler timed out after {}ms: handler_id={} topic={} partition={} offset={} timeout_ms={}",
+                        t.as_millis(),
+                        ctx.topic,
+                        ctx.topic,
+                        ctx.partition,
+                        ctx.offset,
+                        t.as_millis() as u64
                     );
                     ExecutionResult::Timeout {
                         info: TimeoutInfo {
