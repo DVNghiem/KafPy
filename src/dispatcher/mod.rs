@@ -29,7 +29,7 @@ pub mod queue_manager;
 
 pub use crate::consumer::OwnedMessage;
 use crate::log::info;
-pub use backpressure::{BackpressureAction, DefaultBackpressurePolicy, PauseOnFullPolicy};
+pub use backpressure::{BackpressureAction, DefaultBackpressurePolicy};
 pub use consumer_dispatcher::ConsumerDispatcher;
 pub use error::DispatchError;
 use queue_manager::QueueManager;
@@ -95,7 +95,7 @@ impl Dispatcher {
 
     /// Sends `message` to the handler registered for `message.topic`.
     ///
-    /// Non-blocking — returns immediately. Uses [`DefaultBackpressurePolicy`] internally.
+    /// Non-blocking — returns immediately.
     ///
     /// Returns [`DispatchError::Backpressure`] if the queue is full (per DISP-08).
     pub fn send(&self, message: OwnedMessage) -> Result<DispatchOutcome, DispatchError> {
@@ -150,12 +150,10 @@ impl Dispatcher {
         self.queue_manager.get_capacity(topic)
     }
 
-    /// Like [`send_with_policy`](Self::send_with_policy) but also returns the
-    /// [`BackpressureAction`] signal when backpressure occurs.
+    /// Like [`send`](Self::send) but also returns the [`BackpressureAction`] signal.
     ///
-    /// Returns `(Result, Option<BackpressureAction>)` — the `Option` is `Some`
-    /// when the policy returned `FuturePausePartition(topic)` and the caller
-    /// should invoke `ConsumerDispatcher::pause_partition`.
+    /// Returns `(Result, Option<BackpressureAction>)`; the signal is `None`
+    /// unless the dispatcher emits an explicit backpressure action.
     pub(crate) async fn send_with_policy_and_signal(
         &self,
         message: OwnedMessage,

@@ -41,9 +41,6 @@ pub(crate) mod dlq;
 // Observability — metrics sink, metric labels, handler metrics, queue snapshots
 pub(crate) mod observability;
 
-// Routing — zero-copy context, decision enum, router trait, and concrete routers
-pub(crate) mod routing;
-
 // Runtime assembly — RuntimeBuilder for composing pure-Rust consumer core
 pub(crate) mod runtime;
 
@@ -81,30 +78,6 @@ fn _kafpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 // ─── Compile-time Send+Sync guarantees ─────────────────────────────────────────
-
-/// Compile-time assertion that all routing types are Send+Sync.
-/// Breaking these guarantees would introduce data races in the dispatcher.
-fn _assert_send_sync_routing()
-where
-    crate::routing::HandlerId: Send + Sync,
-    crate::routing::context::RoutingContext<'static>: Send + Sync,
-    crate::routing::decision::RoutingDecision: Send + Sync,
-    crate::routing::key::KeyRouter: Send + Sync,
-    crate::routing::header::HeaderRouter: Send + Sync,
-    crate::routing::topic_pattern::TopicPatternRouter: Send + Sync,
-    crate::routing::callback_router::PythonRouter: Send + Sync,
-{
-}
-
-#[cfg(test)]
-mod send_sync_assertions {
-    use super::*;
-
-    #[test]
-    fn routing_types_are_send_sync() {
-        _assert_send_sync_routing();
-    }
-}
 
 /// Compile-time assertion that Dispatcher types are Send+Sync.
 fn _assert_send_sync_dispatcher()

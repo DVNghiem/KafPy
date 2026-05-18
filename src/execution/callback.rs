@@ -79,10 +79,6 @@ fn ctx_to_pydict<'py>(py: Python<'py>, ctx: &ExecutionContext, msg: &OwnedMessag
     }
     // Fan-in source topic (D-06: FANIN-03)
     let _ = py_ctx.set_item("source_topic", &ctx.source_topic);
-    // Fan-in group ID (D-07)
-    if let Some(fan_in_id) = ctx.fan_in_id {
-        let _ = py_ctx.set_item("fan_in_id", fan_in_id);
-    }
     py_ctx.into()
 }
 
@@ -98,8 +94,6 @@ pub enum HandlerMode {
     BatchSync,
     /// Batch async invocation via into_future with Vec<OwnedMessage> (Phase 26).
     BatchAsync,
-    /// Streaming async invocation via persistent async generator loop (Phase 10).
-    StreamingAsync,
 }
 
 impl HandlerMode {
@@ -110,7 +104,6 @@ impl HandlerMode {
             HandlerMode::SingleAsync => "SingleAsync",
             HandlerMode::BatchSync => "BatchSync",
             HandlerMode::BatchAsync => "BatchAsync",
-            HandlerMode::StreamingAsync => "StreamingAsync",
         }
     }
 
@@ -122,7 +115,6 @@ impl HandlerMode {
             Some("async") => HandlerMode::SingleAsync,
             Some("batch_sync") => HandlerMode::BatchSync,
             Some("batch_async") => HandlerMode::BatchAsync,
-            Some("streaming_async") => HandlerMode::StreamingAsync,
             _ => HandlerMode::SingleSync,
         }
     }
@@ -261,33 +253,6 @@ impl PythonHandler {
         }
     }
 
-    /// Creates a PythonHandler with a handler execution timeout.
-    ///
-    /// If a handler invocation takes longer than `timeout`, it will be cancelled
-    /// and treated as a `Terminal(HandlerPanic)` error, routing the message to
-    /// DLQ or retry based on the failure classification.
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_timeout(
-        callback: Arc<Py<PyAny>>,
-        retry_policy: Option<RetryPolicy>,
-        mode: HandlerMode,
-        batch_policy: Option<BatchPolicy>,
-        handler_timeout: Option<Duration>,
-        name: String,
-        middleware: Option<Vec<Arc<Py<PyAny>>>>,
-    ) -> Self {
-        Self {
-            callback,
-            retry_policy,
-            mode,
-            batch_policy,
-            handler_timeout,
-            name,
-            middleware,
-            fan_out: None,
-        }
-    }
-
     /// Returns the fan-out configuration for this handler, if configured.
     pub fn fan_out_config(&self) -> Option<&FanOutConfig> {
         self.fan_out.as_deref()
@@ -311,20 +276,6 @@ impl PythonHandler {
     /// Returns the batch policy for this handler, if configured.
     pub fn batch_policy(&self) -> Option<&BatchPolicy> {
         self.batch_policy.as_ref()
-    }
-
-    /// Invokes a streaming async handler — drives a Python async generator to completion.
-    ///
-    /// Used for HandlerMode::StreamingAsync. Creates a coroutine inside GIL, wraps in
-    /// PythonAsyncFuture, polls in a loop until StopAsyncIteration or error.
-    pub(crate) async fn invoke_streaming(
-        &self,
-        ctx: &ExecutionContext,
-        initial_message: OwnedMessage,
-    ) -> ExecutionResult {
-        use crate::execution::streaming::StreamingHandler;
-        let handler = StreamingHandler::new(Arc::clone(&self.callback));
-        handler.invoke_streaming(ctx, initial_message).await
     }
 
     /// Returns the handler name (typically the topic name).
@@ -354,11 +305,6 @@ impl PythonHandler {
                         exception: "BatchHandlerError".to_string(),
                         traceback: "Batch handler failed".to_string(),
                     },
-                    BatchExecutionResult::PartialFailure { .. } => ExecutionResult::Error {
-                        reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
-                        exception: "PartialFailureNotImplemented".to_string(),
-                        traceback: "PartialFailure not implemented in v1.6".to_string(),
-                    },
                 }
             }
             HandlerMode::BatchAsync => {
@@ -370,14 +316,8 @@ impl PythonHandler {
                         exception: "BatchHandlerError".to_string(),
                         traceback: "Batch handler failed".to_string(),
                     },
-                    BatchExecutionResult::PartialFailure { .. } => ExecutionResult::Error {
-                        reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
-                        exception: "PartialFailureNotImplemented".to_string(),
-                        traceback: "PartialFailure not implemented in v1.6".to_string(),
-                    },
                 }
             }
-            HandlerMode::StreamingAsync => self.invoke_streaming(ctx, message).await,
         };
 
         result

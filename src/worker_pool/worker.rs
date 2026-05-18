@@ -303,7 +303,6 @@ async fn process_fan_out(
                 Some(branch_id),
                 Some(fan_out_id_clone),
                 String::new(),
-                None,
             );
             let result = branch_span
                 .in_scope(|| async {
@@ -462,7 +461,6 @@ pub(crate) async fn worker_loop(
                 None,
                 None,
                 String::new(),
-                None,
             );
             let handler = handler_for_topic(&handlers, &msg.topic).clone();
             let start = std::time::Instant::now();

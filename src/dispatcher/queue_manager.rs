@@ -15,9 +15,6 @@ use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 
 pub use crate::consumer::OwnedMessage;
-use crate::dispatcher::error::DispatchError;
-use crate::log::{info, warn};
-use crate::routing::context::HandlerId;
 
 /// Metadata for a registered handler — tracks queue depth and inflight counts.
 pub(crate) struct HandlerMetadata {
@@ -82,24 +79,9 @@ impl HandlerMetadata {
         }
     }
 
-    /// Returns the current queue depth.
-    pub fn get_queue_depth(&self) -> usize {
-        self.queue_depth.load(Ordering::Relaxed)
-    }
-
     /// Returns the current inflight count.
     pub fn get_inflight(&self) -> usize {
         self.inflight.load(Ordering::Relaxed)
-    }
-
-    /// Increments queue_depth by 1 (called when message is buffered).
-    pub(crate) fn inc_queue_depth(&self) {
-        self.queue_depth.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Increments inflight by 1 (called when message is dispatched).
-    pub(crate) fn inc_inflight(&self) {
-        self.inflight.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Decrements both queue_depth and inflight by `count`.
@@ -230,56 +212,4 @@ impl QueueManager {
         }
     }
 
-    /// Internal: sends `message` to the handler registered for `handler_id`.
-    ///
-    /// Used by routing integration when a RoutingChain determines the target handler.
-    /// Increments `queue_depth` (message buffered) and `inflight` (dispatched).
-    /// Returns `DispatchOutcome` on success, `DispatchError` on failure.
-    pub(crate) fn send_to_handler_by_id(
-        &self,
-        handler_id: &HandlerId,
-        message: OwnedMessage,
-    ) -> Result<crate::dispatcher::DispatchOutcome, DispatchError> {
-        let topic = message.topic.clone();
-        let partition = message.partition;
-        let offset = message.offset;
-
-        let guard = self.handlers.lock();
-        let entry =
-            guard
-                .get(handler_id.as_str())
-                .ok_or_else(|| DispatchError::HandlerNotRegistered {
-                    topic: handler_id.to_string(),
-                })?;
-
-        info!(handler_id = %handler_id, topic = %topic, capacity = entry.metadata.capacity, "send_to_handler_by_id: attempting try_send");
-        match entry.sender.try_send(message) {
-            Ok(()) => {
-                entry.metadata.inc_queue_depth();
-                entry.metadata.inc_inflight();
-                info!(handler_id = %handler_id, "send_to_handler_by_id: success");
-                Ok(crate::dispatcher::DispatchOutcome {
-                    topic,
-                    partition,
-                    offset,
-                    queue_depth: entry.metadata.get_queue_depth(),
-                })
-            }
-            Err(TrySendError::Full(_)) => {
-                info!(handler_id = %handler_id, "send_to_handler_by_id: Full");
-                Err(DispatchError::QueueFull {
-                    queue_name: handler_id.to_string(),
-                    capacity: entry.metadata.capacity,
-                })
-            }
-            Err(TrySendError::Closed(_)) => {
-                warn!(handler_id = %handler_id, "send_to_handler_by_id: Closed - receiver dropped!");
-                Err(DispatchError::QueueClosed {
-                    topic: handler_id.to_string(),
-                })
-            }
-        }
-    }
 }
-
-use tokio::sync::mpsc::error::TrySendError;

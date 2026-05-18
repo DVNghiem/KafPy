@@ -28,9 +28,6 @@ pub struct ExecutionContext {
     /// than ctx.topic (e.g., round-robin multiplexed handler). For non-fan-in handlers,
     /// defaults to empty string.
     pub source_topic: String,
-    /// Fan-in group ID. Set when the handler was registered via register_fanin().
-    /// None when not a fan-in handler.
-    pub fan_in_id: Option<u64>,
 }
 
 impl ExecutionContext {
@@ -44,7 +41,6 @@ impl ExecutionContext {
             branch_id: None,
             fan_out_id: None,
             source_topic: String::new(),
-            fan_in_id: None,
         }
     }
 
@@ -59,7 +55,6 @@ impl ExecutionContext {
         branch_id: Option<u64>,
         fan_out_id: Option<u64>,
         source_topic: String,
-        fan_in_id: Option<u64>,
     ) -> Self {
         Self {
             topic,
@@ -70,7 +65,6 @@ impl ExecutionContext {
             branch_id,
             fan_out_id,
             source_topic,
-            fan_in_id,
         }
     }
 }

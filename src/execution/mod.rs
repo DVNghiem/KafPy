@@ -12,7 +12,6 @@ pub mod context;
 pub mod execution_result;
 pub mod fan_out;
 pub mod logger;
-pub mod streaming;
 
 pub use batch::BatchAccumulator;
 pub use callback::PythonHandler;

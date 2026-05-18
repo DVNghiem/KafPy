@@ -101,37 +101,3 @@ impl FanOutBuilderRust {
     }
 }
 
-/// Extension trait to allow PyConsumer::add_handler to accept fan-out config.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum HandlerModeRust {
-    #[default]
-    SingleSync,
-    SingleAsync,
-    BatchSync,
-    BatchAsync,
-    StreamingAsync,
-}
-
-impl HandlerModeRust {
-    pub fn from_opt_str(s: Option<&str>) -> Self {
-        match s {
-            Some("async") => HandlerModeRust::SingleAsync,
-            Some("batch_sync") => HandlerModeRust::BatchSync,
-            Some("batch_async") => HandlerModeRust::BatchAsync,
-            Some("streaming_async") => HandlerModeRust::StreamingAsync,
-            _ => HandlerModeRust::SingleSync,
-        }
-    }
-}
-
-impl From<HandlerModeRust> for HandlerMode {
-    fn from(mode: HandlerModeRust) -> Self {
-        match mode {
-            HandlerModeRust::SingleSync => HandlerMode::SingleSync,
-            HandlerModeRust::SingleAsync => HandlerMode::SingleAsync,
-            HandlerModeRust::BatchSync => HandlerMode::BatchSync,
-            HandlerModeRust::BatchAsync => HandlerMode::BatchAsync,
-            HandlerModeRust::StreamingAsync => HandlerMode::StreamingAsync,
-        }
-    }
-}

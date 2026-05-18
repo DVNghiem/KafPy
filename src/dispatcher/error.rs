@@ -8,10 +8,7 @@ pub enum DispatchError {
     #[error("handler queue '{queue_name}' is full (capacity: {capacity})")]
     QueueFull { queue_name: String, capacity: usize },
 
-    /// Backpressure error returned when the queue is full and the
-    /// [`crate::dispatcher::backpressure::BackpressurePolicy`] returns
-    /// [`crate::dispatcher::backpressure::BackpressureAction::Drop`] or
-    /// [`crate::dispatcher::backpressure::BackpressureAction::Wait`].
+    /// Backpressure error returned when dispatch cannot enqueue a message.
     /// Distinct from [`QueueFull`] — this is the public-facing error per DISP-08.
     #[error("backpressure on handler queue '{queue_name}': {reason}")]
     Backpressure { queue_name: String, reason: String },

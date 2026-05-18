@@ -424,25 +424,5 @@ pub(crate) async fn handle_batch_result_inline(
                 }
             }
         }
-        // PartialFailure — NOT IMPLEMENTED in v1.6
-        // Skip per D-05
-        BatchExecutionResult::PartialFailure { .. } => {
-            // Record batch size histogram for this partial-failure batch
-            let batch_size_labels = MetricLabels::new()
-                .insert("handler_id", topic)
-                .insert("topic", topic)
-                .insert("partition", partition.to_string());
-            HANDLER_METRICS.record_batch_size(&prometheus_sink, &batch_size_labels, batch.len());
-
-            warn!(
-                topic = %topic,
-                partition = partition,
-                "PartialFailure not implemented in v1.6 — treating as error"
-            );
-            // Fall through: treat as if all failed
-            for _msg in batch {
-                queue_manager.ack(topic, 1);
-            }
-        }
     }
 }

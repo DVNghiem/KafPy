@@ -64,25 +64,12 @@ impl ExecutionResult {
 }
 
 /// Batch execution result from a BatchSync or BatchAsync Python handler.
-///
-/// # Variants
-/// - `AllSuccess(Vec<Offset>)` — every message in the batch succeeded; record_ack per offset
-/// - `AllFailure(FailureReason)` — entire batch failed with same reason; route all to RetryCoordinator
-/// - `PartialFailure` — **NOT IMPLEMENTED in v1.6** — extension point for v1.7+
-///   (per-message outcome tracking within batches)
 #[derive(Debug, Clone)]
 pub enum BatchExecutionResult {
     /// Every message in the batch succeeded. Carries offsets for each message (same order as input batch).
     AllSuccess(Vec<i64>),
     /// Entire batch failed with the same reason. All messages route to RetryCoordinator.
     AllFailure(FailureReason),
-    /// **EXTENSION POINT — NOT IMPLEMENTED in v1.6**
-    /// Per-message outcome within batch. Implementation requires EXEC-10 to track individual offsets.
-    /// Tracked as issue in deferred items for v1.7+.
-    PartialFailure {
-        successful_offsets: Vec<i64>,
-        failed_messages: Vec<(String, i32, i64, FailureReason)>, // (topic, partition, offset, reason)
-    },
 }
 
 impl BatchExecutionResult {

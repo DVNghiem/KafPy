@@ -4,14 +4,11 @@
 
 use crate::consumer::runner::ConsumerRunner;
 use crate::consumer::OwnedMessage;
-use crate::dispatcher::backpressure::{BackpressureAction, BackpressurePolicy};
+use crate::dispatcher::backpressure::BackpressureAction;
 use crate::dispatcher::error::DispatchError;
-use crate::dispatcher::{DispatchOutcome, Dispatcher, QueueManager};
+use crate::dispatcher::{Dispatcher, QueueManager};
 use crate::log::{debug, error, info, warn, Span};
 use crate::observability::tracing::KafpySpanExt;
-use crate::routing::chain::RoutingChain;
-use crate::routing::context::RoutingContext;
-use crate::routing::decision::RoutingDecision;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -29,9 +26,6 @@ pub struct ConsumerDispatcher {
     paused_topics: parking_lot::Mutex<HashSet<String>>,
     /// Backpressure threshold ratio for resume (0.0 to 1.0).
     resume_threshold: f64,
-    /// Optional routing chain for handler-based routing.
-    /// When set, messages are routed by handler_id instead of topic.
-    routing_chain: Option<Arc<RoutingChain>>,
 }
 
 impl ConsumerDispatcher {
@@ -43,15 +37,7 @@ impl ConsumerDispatcher {
             partition_handles: parking_lot::Mutex::new(std::collections::HashMap::new()),
             paused_topics: parking_lot::Mutex::new(HashSet::new()),
             resume_threshold: 0.5,
-            routing_chain: None,
         }
-    }
-
-    /// Sets the routing chain for handler-based routing.
-    /// When set, messages are routed using the chain instead of by topic.
-    pub fn with_routing_chain(mut self, chain: Arc<RoutingChain>) -> Self {
-        self.routing_chain = Some(chain);
-        self
     }
 
     /// Registers a handler for `topic` with bounded queue of `capacity`.
@@ -67,28 +53,9 @@ impl ConsumerDispatcher {
             .register_handler_with_semaphore(topic, capacity, semaphore)
     }
 
-    /// Registers a handler by handler ID (for routing-based dispatch).
-    /// Optionally limits concurrency with `max_concurrency` semaphore permits.
-    pub fn register_handler_by_id(
-        &self,
-        handler_id: impl Into<String>,
-        capacity: usize,
-        max_concurrency: Option<usize>,
-    ) -> mpsc::Receiver<OwnedMessage> {
-        let semaphore = max_concurrency.map(|n| Arc::new(tokio::sync::Semaphore::new(n)));
-        let handler_id_str = handler_id.into();
-        self.dispatcher
-            .register_handler_with_semaphore(handler_id_str, capacity, semaphore)
-    }
-
     /// Runs the dispatch loop, polling the consumer stream and
     /// dispatching each message through the dispatcher.
-    /// Uses the provided backpressure policy.
-    ///
-    /// When a routing chain is configured, messages are first evaluated through
-    /// the chain to determine the target handler_id, then dispatched to that handler.
-    /// When no routing chain is set, messages are dispatched by topic (backward compat).
-    pub(crate) async fn run(&self, policy: &dyn BackpressurePolicy) {
+    pub(crate) async fn run(&self) {
         let mut stream = self.runner.stream();
         while let Some(result) = stream.next().await {
             match result {
@@ -96,7 +63,7 @@ impl ConsumerDispatcher {
                     let topic = msg.topic.clone();
                     let partition = msg.partition;
                     let offset = msg.offset;
-                    // Dispatch inside span; routing_decision is derived from outcome
+                    // Dispatch inside span; outcome is recorded for tracing.
                     let span = Span::current().kafpy_dispatch_process(
                         &topic,
                         partition,
@@ -105,11 +72,7 @@ impl ConsumerDispatcher {
                     );
                     let (outcome, pause_signal) = {
                         let _guard = span.enter();
-                        if let Some(ref chain) = self.routing_chain {
-                            self.route_with_chain(msg, chain, policy).await
-                        } else {
-                            self.dispatcher.send_with_policy_and_signal(msg).await
-                        }
+                        self.dispatcher.send_with_policy_and_signal(msg).await
                     };
                     match outcome {
                         Ok(outcome) => {
@@ -149,93 +112,6 @@ impl ConsumerDispatcher {
                 Err(e) => {
                     error!("consumer error: {}", e);
                 }
-            }
-        }
-    }
-
-    /// Routes a message through the routing chain and dispatches to the resulting handler.
-    async fn route_with_chain(
-        &self,
-        msg: OwnedMessage,
-        chain: &Arc<RoutingChain>,
-        policy: &dyn BackpressurePolicy,
-    ) -> (
-        Result<DispatchOutcome, DispatchError>,
-        Option<BackpressureAction>,
-    ) {
-        let ctx = RoutingContext::from_message(&msg);
-        match chain.route(&ctx) {
-            RoutingDecision::Route(handler_id) => {
-                // Dispatch to handler by ID
-                let qm = &self.dispatcher.queue_manager;
-                // Extract topic before send (msg moves into send_to_handler_by_id)
-                let source_topic = msg.topic.clone();
-                // Debug: log handlers map contents before send
-                {
-                    let guard = qm.handlers.lock();
-                    debug!(handler_id = %handler_id, topics = ?guard.keys().collect::<Vec<_>>(), "route_with_chain: handlers in QM");
-                }
-                match qm.send_to_handler_by_id(&handler_id, msg) {
-                    Ok(outcome) => (Ok(outcome), None),
-                    Err(DispatchError::Backpressure { queue_name, reason }) => {
-                        // Policy decides action based on the source topic from the message.
-                        // topic drives PausePartition targeting the slow source.
-                        let action = policy.on_queue_full(
-                            source_topic.as_str(), // pass actual Kafka source topic for per-source pause
-                            qm.handlers
-                                .lock()
-                                .get(handler_id.as_str())
-                                .map(|e| &e.metadata)
-                                .unwrap_or_else(|| panic!("handler '{}' not found", handler_id)),
-                        );
-                        match action {
-                            BackpressureAction::Drop | BackpressureAction::Wait => (
-                                Err(DispatchError::Backpressure { queue_name, reason }),
-                                None,
-                            ),
-                            BackpressureAction::PausePartition { topic: t, .. } => (
-                                Err(DispatchError::Backpressure { queue_name, reason }),
-                                Some(BackpressureAction::PausePartition {
-                                    topic: t.clone(),
-                                    partition: -1,
-                                }),
-                            ),
-                            BackpressureAction::ResumePartition { .. } => (
-                                Err(DispatchError::Backpressure { queue_name, reason }),
-                                None,
-                            ),
-                        }
-                    }
-                    Err(e) => (Err(e), None),
-                }
-            }
-            RoutingDecision::Drop => {
-                debug!("message dropped by routing chain");
-                (
-                    Err(DispatchError::HandlerNotRegistered {
-                        topic: "routing-drop".to_string(),
-                    }),
-                    None,
-                )
-            }
-            RoutingDecision::Reject(reason) => {
-                warn!("message rejected by routing chain: {}", reason);
-                (
-                    Err(DispatchError::HandlerNotRegistered {
-                        topic: "routing-reject".to_string(),
-                    }),
-                    None,
-                )
-            }
-            RoutingDecision::Defer => {
-                // Should not happen with properly configured chain, but handle gracefully
-                warn!("routing chain returned Defer with no fallback");
-                (
-                    Err(DispatchError::HandlerNotRegistered {
-                        topic: "routing-defer".to_string(),
-                    }),
-                    None,
-                )
             }
         }
     }
@@ -348,13 +224,6 @@ mod tests {
     fn owned_message_implements_send_and_sync() {
         fn assert_ownded<T: Send + Sync>() {}
         assert_ownded::<OwnedMessage>();
-    }
-
-    // DISP-17: OwnedMessage has no lifetimes (compile-time check via PhantomData)
-    #[test]
-    fn dispatch_outcome_has_no_lifetimes() {
-        fn assert_owned<T: Send + Sync>() {}
-        assert_owned::<DispatchOutcome>();
     }
 
     // DISP-18: PausePartition action carries topic for pause signal

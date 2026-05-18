@@ -22,7 +22,6 @@ use crate::consumer::error::ConsumerError;
 use crate::consumer::runtime::HandlerMetadata;
 use crate::consumer::{ConsumerConfigBuilder, ConsumerRunner};
 use crate::dispatcher::consumer_dispatcher::ConsumerDispatcher;
-use crate::dispatcher::DefaultBackpressurePolicy;
 use crate::dlq::produce::SharedDlqProducer;
 use crate::dlq::router::DefaultDlqRouter;
 use crate::dlq::DlqRouter;
@@ -33,7 +32,6 @@ use crate::observability::runtime_snapshot::RuntimeSnapshotTask;
 use crate::offset::commit_task::{CommitConfig, OffsetCommitter, TopicPartition};
 use crate::offset::offset_tracker::OffsetTracker;
 use crate::retry::retry_coordinator::RetryCoordinator;
-use crate::routing::chain::RoutingChain;
 use crate::shutdown::ShutdownCoordinator;
 use crate::worker_pool::concurrency::HandlerConcurrency;
 use crate::worker_pool::pool::WorkerPool;
@@ -137,7 +135,7 @@ impl RuntimeBuilder {
         offset_tracker.set_runner(Arc::clone(&runner_arc));
 
         // 4. Create ConsumerDispatcher
-        let mut dispatcher = ConsumerDispatcher::new((*runner_arc).clone());
+        let dispatcher = ConsumerDispatcher::new((*runner_arc).clone());
 
         // 5. Collect receivers from all registered handlers
         let all_handlers: Vec<(String, HandlerMetadata)> = {
@@ -148,32 +146,6 @@ impl RuntimeBuilder {
                 .collect()
         };
 
-        if !rust_config.routing_rules.is_empty() {
-            let default_handler = all_handlers
-                .iter()
-                .min_by(|(a, _), (b, _)| a.cmp(b))
-                .map(|(handler_id, _)| crate::routing::HandlerId::new(handler_id.clone()))
-                .unwrap_or_else(|| crate::routing::HandlerId::new("__default__"));
-            let python_callback = std::env::var("KAFPY_ROUTING_PY_CALLBACK_HANDLER")
-                .ok()
-                .and_then(|handler_id| {
-                    all_handlers
-                        .iter()
-                        .find(|(id, _)| id == &handler_id)
-                        .map(|(_, meta)| Arc::clone(&meta.callback))
-                });
-            let routing_chain = RoutingChain::from_rules(
-                &rust_config.routing_rules,
-                default_handler,
-                python_callback,
-                prometheus_sink.clone(),
-            )
-            .map_err(|e| ConsumerError::Subscription {
-                broker: rust_config.brokers.clone(),
-                message: format!("invalid routing rule: {e}"),
-            })?;
-            dispatcher = dispatcher.with_routing_chain(Arc::new(routing_chain));
-        }
         logger::log(
             "INFO",
             &format!(
@@ -299,7 +271,7 @@ impl RuntimeBuilder {
 
         // 13. Spawn dispatcher task
         let dispatcher_handle = tokio::spawn(async move {
-            dispatcher.run(&DefaultBackpressurePolicy).await;
+            dispatcher.run().await;
         });
 
         // 14. Return Runtime (caller must invoke run())

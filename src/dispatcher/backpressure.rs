@@ -1,9 +1,4 @@
-//! Backpressure policy for handling queue-full scenarios.
-//!
-//! When a handler's queue is full, the dispatcher consults a [`BackpressurePolicy`]
-//! to decide what action to take. The policy returns a [`BackpressureAction`].
-
-use crate::dispatcher::queue_manager::HandlerMetadata;
+//! Backpressure action types for handling queue-full scenarios.
 
 /// Action to take when a handler's queue is full.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,46 +28,7 @@ impl BackpressureAction {
     }
 }
 
-/// Policy for handling backpressure when a handler queue is full.
-///
-/// Implementors define custom behavior when `try_send` fails with `Full`.
-/// The policy receives the topic name and handler metadata for inspection.
-///
-/// The `topic` parameter is the **actual Kafka source topic** from the message,
-/// NOT the handler_id. This enables per-source targeted pause for fan-in scenarios.
-pub(crate) trait BackpressurePolicy: Send + Sync {
-    /// Called when a send attempt fails because the handler's queue is full.
-    ///
-    /// The `topic` parameter is the **source topic from the message being dispatched**,
-    /// not the handler_id. Implementors can use this to route PausePartition to the
-    /// specific slow source rather than the fan-in handler key.
-    ///
-    /// The handler metadata can be inspected for queue_depth, inflight, capacity.
-    /// Return the action to take: Drop, Wait, or FuturePausePartition.
-    fn on_queue_full(&self, topic: &str, handler: &HandlerMetadata) -> BackpressureAction;
-}
-
-/// Default backpressure policy: drop messages on queue full.
-/// Safe for most use cases; messages are lost but consumer continues.
+/// Default backpressure policy marker.
 #[derive(Debug, Clone, Default)]
 pub struct DefaultBackpressurePolicy;
 
-impl BackpressurePolicy for DefaultBackpressurePolicy {
-    fn on_queue_full(&self, _topic: &str, _handler: &HandlerMetadata) -> BackpressureAction {
-        BackpressureAction::Drop
-    }
-}
-
-/// Backpressure policy that signals pause on queue full.
-/// Intended for use cases where dropping messages is unacceptable.
-#[derive(Debug, Clone, Default)]
-pub struct PauseOnFullPolicy;
-
-impl BackpressurePolicy for PauseOnFullPolicy {
-    fn on_queue_full(&self, topic: &str, _handler: &HandlerMetadata) -> BackpressureAction {
-        BackpressureAction::PausePartition {
-            topic: topic.to_string(),
-            partition: -1, // -1 indicates all partitions (consumer-level pause)
-        }
-    }
-}

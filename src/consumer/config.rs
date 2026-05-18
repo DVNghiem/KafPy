@@ -1,5 +1,4 @@
 use crate::retry::RetryPolicy;
-use crate::routing::config::RoutingRule;
 use rdkafka::config::ClientConfig;
 use std::time::Duration;
 
@@ -38,7 +37,6 @@ pub struct ConsumerConfig {
     pub default_retry_policy: RetryPolicy,
     pub dlq_topic_prefix: String,
     pub drain_timeout_secs: u64,
-    pub routing_rules: Vec<RoutingRule>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -97,7 +95,6 @@ pub struct ConsumerConfigBuilder {
     default_retry_policy: RetryPolicy,
     dlq_topic_prefix: String,
     drain_timeout_secs: u64,
-    routing_rules: Vec<RoutingRule>,
 }
 
 impl ConsumerConfigBuilder {
@@ -117,7 +114,6 @@ impl ConsumerConfigBuilder {
             default_retry_policy: RetryPolicy::default(),
             dlq_topic_prefix: "dlq.".to_string(),
             drain_timeout_secs: 30,
-            routing_rules: Vec::new(),
             ..Default::default()
         }
     }
@@ -224,27 +220,6 @@ impl ConsumerConfigBuilder {
         self
     }
 
-    /// Adds a routing rule. Rules are evaluated in priority order (lower first).
-    ///
-    /// # Example
-    /// ```ignore
-    /// let config = ConsumerConfigBuilder::new()
-    ///     .brokers("localhost:9092")
-    ///     .group_id("my-group")
-    ///     .topics(["events"])
-    ///     .routing_rule(
-    ///         RoutingRuleBuilder::new()
-    ///             .topic_pattern("events.*", PatternType::Glob)
-    ///             .to_handler("events-handler")
-    ///             .priority(1)
-    ///     )
-    ///     .build();
-    /// ```
-    pub fn routing_rule(mut self, rule: RoutingRule) -> Self {
-        self.routing_rules.push(rule);
-        self
-    }
-
     pub fn build(self) -> Result<ConsumerConfig, BuildError> {
         let brokers = self.brokers.ok_or(BuildError::MissingField("brokers"))?;
         let group_id = self.group_id.ok_or(BuildError::MissingField("group_id"))?;
@@ -274,7 +249,6 @@ impl ConsumerConfigBuilder {
             default_retry_policy: self.default_retry_policy,
             dlq_topic_prefix: self.dlq_topic_prefix,
             drain_timeout_secs: self.drain_timeout_secs,
-            routing_rules: self.routing_rules,
         })
     }
 }

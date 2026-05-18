@@ -100,15 +100,12 @@ try:
         ProducerConfig,
         Producer,
     )
-    from ._kafpy import run_scenario_py, run_hardening_checks_py
     # New PyO3-exposed types
     from ._kafpy import PyRetryPolicy, PyObservabilityConfig
     from ._kafpy import PyFailureCategory, PyFailureReason
 except (ModuleNotFoundError, ImportError):
     ProducerConfig = None  # type: ignore
     Producer = None  # type: ignore
-    run_scenario_py = None  # type: ignore
-    run_hardening_checks_py = None  # type: ignore
     PyRetryPolicy = None  # type: ignore
     PyObservabilityConfig = None  # type: ignore
     PyFailureCategory = None  # type: ignore
@@ -179,8 +176,6 @@ __all__ = [
     # Rust extension types (available when _kafpy is built)
     "ProducerConfig",
     "Producer",
-    "run_scenario_py",
-    "run_hardening_checks_py",
     "PyRetryPolicy",
     "PyObservabilityConfig",
     "PyFailureCategory",
