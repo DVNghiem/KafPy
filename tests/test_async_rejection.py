@@ -1,10 +1,9 @@
-"""Tests for async rejection with batch=True — reproduces bug where async functions
-used with @app.handler(topic="...", batch=True) do not raise TypeError with correct message.
+"""Tests for handler registration API.
 
-Bug location: kafpy/runtime.py:137-139
-Expected: TypeError("async batch handlers are not supported")
-Actual: TypeError("handler_mode must be 'sync' or 'batch_sync', got 'batch_async'")
-         (raised in register_handler instead of in handler() where it should be caught early)
+Verifies that:
+- handler() only registers single-message handlers
+- batch_handler() is the sole path for batch registration
+- async functions are rejected by both decorators
 """
 
 from __future__ import annotations
@@ -13,88 +12,73 @@ import pytest
 from unittest.mock import MagicMock
 
 
-class TestAsyncBatchHandlerRejection:
-    """Async functions with batch=True must raise TypeError with 'async batch handlers are not supported'."""
+class TestHandlerAsyncRejection:
+    """async functions must be rejected by handler() and batch_handler()."""
 
-    def test_async_handler_with_batch_true_raises_correct_typeerror_message(self):
-        """Async function used with @app.handler(topic=..., batch=True) should raise
-        TypeError with message 'async batch handlers are not supported'.
-
-        Bug: When batch=True and fn is async, the code sets handler_mode="batch_async"
-        and passes it to register_handler, which raises a generic error about handler_mode
-        being wrong, instead of the specific 'async batch handlers are not supported' error
-        that batch_handler raises (runtime.py:199).
-        """
+    def test_async_handler_raises_typeerror(self):
+        """handler() must reject async functions."""
         from kafpy import KafPy
 
-        # Create a mock consumer that won't actually connect to Kafka
         mock_consumer = MagicMock()
         app = KafPy(consumer=mock_consumer)
 
-        # Define an async function - this should NOT be allowed with batch=True
-        async def async_batch_handler(messages, ctx):
-            return None
-
-        # The decorator is applied at definition time when we use @
-        # We wrap the decoration in a function to catch the exception
-        def try_register():
-            @app.handler(topic="test", batch=True)
-            async def inner_handler(messages, ctx):
+        with pytest.raises(TypeError, match="async handlers are not supported"):
+            @app.handler(topic="test")
+            async def handle(msg, ctx):
                 return None
 
-        # Should raise TypeError with the CORRECT message: "async batch handlers are not supported"
-        # This matches what batch_handler raises (runtime.py:199)
-        with pytest.raises(TypeError) as exc_info:
-            try_register()
-
-        # The bug: currently raises "handler_mode must be 'sync' or 'batch_sync', got 'batch_async'"
-        # Expected: "async batch handlers are not supported"
-        assert "async batch handlers are not supported" in str(exc_info.value)
-
-    def test_async_batch_handler_raises_typeerror_not_handler_mode_error(self):
-        """Verify the error is specifically about async batch handlers, not handler_mode values."""
+    def test_async_batch_handler_raises_typeerror(self):
+        """batch_handler() must reject async functions."""
         from kafpy import KafPy
 
         mock_consumer = MagicMock()
         app = KafPy(consumer=mock_consumer)
 
-        async def async_batch_handler(messages, ctx):
-            return None
-
-        def try_register():
-            @app.handler(topic="test", batch=True)
-            async def inner_handler(messages, ctx):
+        with pytest.raises(TypeError, match="async batch handlers are not supported"):
+            @app.batch_handler(topic="test")
+            async def handle(messages, ctx):
                 return None
 
-        with pytest.raises(TypeError) as exc_info:
-            try_register()
 
-        error_message = str(exc_info.value)
+class TestHandlerRegistration:
+    """Sync handler and batch_handler registration smoke tests."""
 
-        # The correct error message should mention "async batch handlers"
-        assert "async batch handlers" in error_message
-        # The bug produces an error about handler_mode being wrong - that's the wrong message
-        assert "handler_mode must" not in error_message, (
-            f"Error should be 'async batch handlers are not supported', "
-            f"not a generic handler_mode error. Got: {error_message}"
-        )
-
-
-class TestSyncBatchHandlerWorks:
-    """Sync functions with batch=True should work fine."""
-
-    def test_sync_batch_handler_works(self):
-        """Sync function used with @app.handler(topic=..., batch=True) should work."""
+    def test_sync_handler_registers_as_sync(self):
+        """handler() registers a sync function with type='sync'."""
         from kafpy import KafPy
 
         mock_consumer = MagicMock()
         app = KafPy(consumer=mock_consumer)
 
-        # This should NOT raise
-        @app.handler(topic="test", batch=True)
-        def inner_handler(messages, ctx):
+        @app.handler(topic="test")
+        def handle(msg, ctx):
             return None
 
-        # Verify it was registered correctly
+        assert "test" in app._handlers
+        assert app._handlers["test"]["type"] == "sync"
+
+    def test_batch_handler_registers_as_batch_sync(self):
+        """batch_handler() registers a sync function with type='batch_sync'."""
+        from kafpy import KafPy
+
+        mock_consumer = MagicMock()
+        app = KafPy(consumer=mock_consumer)
+
+        @app.batch_handler(topic="test")
+        def handle_batch(messages, ctx):
+            return None
+
         assert "test" in app._handlers
         assert app._handlers["test"]["type"] == "batch_sync"
+
+    def test_handler_does_not_accept_batch_params(self):
+        """handler() must not accept batch, batch_max_size, or batch_max_wait_ms."""
+        from kafpy import KafPy
+
+        mock_consumer = MagicMock()
+        app = KafPy(consumer=mock_consumer)
+
+        with pytest.raises(TypeError):
+            @app.handler(topic="test", batch=True)  # type: ignore[call-arg]
+            def handle(msg, ctx):
+                return None

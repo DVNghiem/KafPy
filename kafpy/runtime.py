@@ -84,12 +84,11 @@ class KafPy:
         routing: object | None = None,
         timeout_ms: int | None = None,
         concurrency: int | None = None,
-        batch: bool = False,
-        batch_max_size: int = 100,
-        batch_max_wait_ms: int = 1000,
         middleware: list | None = None,
     ) -> Callable[[Callable], Callable]:
-        """Decorator to register a handler for a topic.
+        """Decorator to register a single-message handler for a topic.
+
+        For batch processing, use :meth:`batch_handler` instead.
 
         Args:
             topic: The Kafka topic to handle.
@@ -98,11 +97,6 @@ class KafPy:
                 Overrides ``ConsumerConfig.handler_timeout_ms``.
             concurrency: Maximum concurrent executions of this handler.
                 None means no limit (default).
-            batch: If True, registers a batch handler that receives a list of
-                messages. The callable receives ``list[kafpy.KafkaMessage]`` and
-                returns ``kafpy.HandlerResult``.
-            batch_max_size: Maximum messages per batch (default 100).
-            batch_max_wait_ms: Maximum time to wait before dispatching a batch (default 1000).
             middleware: List of middleware instances (e.g., [Logging(), Metrics()]).
                 Each must implement before(), after(), on_error().
                 Built-in middleware: Logging(), Metrics().
@@ -111,18 +105,10 @@ class KafPy:
         Returns:
             A decorator that registers the decorated callable as a handler.
 
-        Example (single-message)::
+        Example::
 
             @app.handler(topic="my-topic")
             def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerResult:
-                return kafpy.HandlerResult(action="ack")
-
-        Example (batch)::
-
-            @app.handler(topic="my-topic", batch=True, batch_max_size=50, batch_max_wait_ms=500)
-            def handle_batch(messages: list[kafpy.KafkaMessage], ctx) -> kafpy.HandlerResult:
-                for msg in messages:
-                    process(msg)
                 return kafpy.HandlerResult(action="ack")
 
         Example (with middleware)::
@@ -133,30 +119,13 @@ class KafPy:
         """
 
         def decorator(fn: Callable) -> Callable:
-            if batch:
-                # Detect sync vs async batch mode
-                if inspect.iscoroutinefunction(fn):
-                    raise TypeError("async batch handlers are not supported")
-                else:
-                    handler_mode = "batch_sync"
-                self.register_handler(
-                    topic, fn,
-                    routing=None,
-                    handler_mode=handler_mode,
-                    batch_max_size=batch_max_size,
-                    batch_max_wait_ms=batch_max_wait_ms,
-                    timeout_ms=timeout_ms,
-                    concurrency=concurrency,
-                    middleware=middleware,
-                )
-            else:
-                self.register_handler(
-                    topic, fn,
-                    routing=routing,
-                    timeout_ms=timeout_ms,
-                    concurrency=concurrency,
-                    middleware=middleware,
-                )
+            self.register_handler(
+                topic, fn,
+                routing=routing,
+                timeout_ms=timeout_ms,
+                concurrency=concurrency,
+                middleware=middleware,
+            )
             return fn
 
         return decorator
@@ -194,18 +163,35 @@ class KafPy:
         """
 
         def decorator(fn: Callable) -> Callable:
-            # Detect if the batch handler is async
             if inspect.iscoroutinefunction(fn):
                 raise TypeError("async batch handlers are not supported")
-            mode = "batch_sync"
 
-            self.register_handler(
-                topic, fn,
-                routing=None,
-                handler_mode=mode,
+            def wrapper(msg_dict: dict, ctx_dict: dict):
+                msg = KafkaMessage.from_dict(msg_dict)
+                ctx = HandlerContext(
+                    topic=str(ctx_dict["topic"]),
+                    partition=int(ctx_dict["partition"]),
+                    offset=int(ctx_dict["offset"]),
+                    timestamp=int(ctx_dict.get("timestamp", ctx_dict.get("timestamp_millis", 0))),
+                    headers=dict(ctx_dict["headers"]) if ctx_dict.get("headers") else {},
+                )
+                return fn(msg, ctx)
+
+            self._handlers[topic] = {
+                "fn": fn,
+                "type": "batch_sync",
+                "batch_max_size": max_size,
+                "batch_max_wait_ms": max_wait_ms,
+                "timeout_ms": timeout_ms,
+            }
+            self._consumer.add_handler(
+                topic, wrapper,
+                mode="batch_sync",
                 batch_max_size=max_size,
                 batch_max_wait_ms=max_wait_ms,
                 timeout_ms=timeout_ms,
+                concurrency=None,
+                middleware=None,
             )
             return fn
 
@@ -217,25 +203,26 @@ class KafPy:
         handler_fn: Callable,
         *,
         routing: object | None = None,
-        handler_mode: str | None = None,
-        batch_max_size: int | None = None,
-        batch_max_wait_ms: int | None = None,
         timeout_ms: int | None = None,
         concurrency: int | None = None,
         middleware: list | None = None,
     ) -> None:
-        """Explicitly register a handler for a topic.
+        """Explicitly register a single-message handler for a topic.
+
+        For batch handlers, use :meth:`batch_handler` instead.
 
         Args:
             topic: The Kafka topic to handle.
-            handler_fn: The callable to invoke for messages.
+            handler_fn: The callable to invoke for each message.
+                Must be a regular (non-async) function.
             routing: Optional routing configuration.
-            handler_mode: Override auto-detected handler mode.
-                One of "sync", "batch_sync". "async" and "batch_async" are not supported.
-            batch_max_size: Max messages per batch (batch modes only).
-            batch_max_wait_ms: Max wait time per batch in ms (batch modes only).
             timeout_ms: Per-handler execution timeout in milliseconds.
+            concurrency: Maximum concurrent executions for this handler. None = no limit.
             middleware: List of middleware instances (e.g., [Logging(), Metrics()]).
+
+        Raises:
+            ValueError: If handler_fn is not callable.
+            TypeError: If handler_fn is an async function or async generator.
 
         Example::
 
@@ -245,24 +232,11 @@ class KafPy:
         """
         if not callable(handler_fn):
             raise ValueError(f"handler_fn must be callable, got {type(handler_fn).__name__}")
-
-        # Detect handler type via callable inspection (D-02)
-        if handler_mode is not None:
-            if handler_mode not in ("sync", "batch_sync"):
-                raise TypeError(
-                    f"handler_mode must be 'sync' or 'batch_sync', got {handler_mode!r}"
-                )
-            handler_type = handler_mode
-        elif inspect.iscoroutinefunction(handler_fn):
+        if inspect.iscoroutinefunction(handler_fn):
             raise TypeError("async handlers are not supported")
-        elif inspect.isasyncgenfunction(handler_fn):
-            raise TypeError("async batch handlers are not supported")
-        elif inspect.isgeneratorfunction(handler_fn):
-            handler_type = "batch_sync"
-        else:
-            handler_type = "sync"
+        if inspect.isasyncgenfunction(handler_fn):
+            raise TypeError("async handlers are not supported")
 
-        # Wrap handler to convert dicts to proper types
         def wrapper(msg_dict: dict, ctx_dict: dict):
             msg = KafkaMessage.from_dict(msg_dict)
             ctx = HandlerContext(
@@ -277,20 +251,17 @@ class KafPy:
         self._handlers[topic] = {
             "fn": handler_fn,
             "routing": routing,
-            "type": handler_type,
-            "batch_max_size": batch_max_size,
-            "batch_max_wait_ms": batch_max_wait_ms,
+            "type": "sync",
             "timeout_ms": timeout_ms,
             "concurrency": concurrency,
             "middleware": middleware,
         }
 
-        # Also register with the Rust consumer so it can dispatch messages
         self._consumer.add_handler(
             topic, wrapper,
-            mode=handler_type if handler_type != "sync" else None,
-            batch_max_size=batch_max_size,
-            batch_max_wait_ms=batch_max_wait_ms,
+            mode=None,
+            batch_max_size=None,
+            batch_max_wait_ms=None,
             timeout_ms=timeout_ms,
             concurrency=concurrency,
             middleware=middleware,
