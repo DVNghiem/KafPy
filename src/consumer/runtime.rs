@@ -228,50 +228,34 @@ impl PyConsumer {
         }
     }
 
-    /// Starts the consumer and runs indefinitely, dispatching messages to
+    /// Starts the consumer and blocks until it shuts down, dispatching messages to
     /// registered Python handlers via WorkerPool.
-    pub fn start(&self) -> PyResult<()> {
+    ///
+    /// Releases the Python GIL while running so that Tokio worker tasks can
+    /// acquire it to invoke Python handler callbacks. Returns only when the
+    /// runtime exits (via `stop()`, SIGTERM, or a fatal build error).
+    pub fn start(&self, py: Python<'_>) -> PyResult<()> {
         let config = self.config.clone();
         let handlers = Arc::clone(&self.handlers);
         let fan_out_handlers = self.get_fan_out_handlers();
         let shutdown_token = self.shutdown_token.clone();
 
-        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        py.detach(move || {
+            let rt = tokio::runtime::Runtime::new()
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
-        let tx_clone = tx.clone();
-        std::thread::spawn(move || {
-            let rt = match tokio::runtime::Runtime::new() {
-                Ok(rt) => rt,
-                Err(e) => {
-                    let _ = tx_clone.send(format!("Failed to create Tokio runtime: {}", e));
-                    return;
-                }
-            };
-            rt.block_on(async {
+            rt.block_on(async move {
                 let builder =
                     RuntimeBuilder::new(config, handlers, fan_out_handlers, shutdown_token);
                 match builder.build().await {
                     Ok(runtime) => {
-                        drop(tx); // Signal we're running successfully
                         runtime.run_with_sigterm().await;
+                        Ok(())
                     }
-                    Err(e) => {
-                        let _ = tx.send(e.to_string());
-                    }
+                    Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())),
                 }
-            });
-        });
-
-        // Check if build failed before returning Ok
-        match rx.recv_timeout(std::time::Duration::from_secs(30)) {
-            Ok(err_msg) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(err_msg)),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                // Build is taking long time — treat as success but log a warning
-                // The runtime is still starting in the background thread
-                Ok(())
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Ok(()), // Build succeeded, tx was dropped
-        }
+            })
+        })
     }
 
     pub fn stop(&self) {
