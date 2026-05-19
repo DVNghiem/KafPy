@@ -274,11 +274,14 @@ impl RuntimeBuilder {
             CommitConfig::default(),
             Arc::clone(&coordinator),
         );
-        let (tx, rx) = watch::channel(TopicPartition::new("", 0));
+        let (commit_tx, rx) = watch::channel(TopicPartition::new("", 0));
         let committer_handle = tokio::spawn(async move {
             committer.run(rx).await;
         });
-        drop(tx);
+        // Keep commit_tx alive in Runtime so the watch channel stays open.
+        // Dropping it immediately (as before) caused rx.changed() to return Err
+        // in a tight busy-loop inside the committer. The committer is driven by
+        // its interval ticker; the watch channel is reserved for future signal-driven commits.
 
         // 13. Spawn dispatcher task
         let dispatcher_handle = tokio::spawn(async move {
@@ -291,6 +294,8 @@ impl RuntimeBuilder {
             dispatcher_handle,
             committer_handle,
             coordinator,
+            runner: runner_arc,
+            _commit_tx: commit_tx,
         })
     }
 }
@@ -307,6 +312,10 @@ pub struct Runtime {
     pub committer_handle: tokio::task::JoinHandle<()>,
     /// Shutdown coordinator for drain signaling.
     pub coordinator: Arc<ShutdownCoordinator>,
+    /// Consumer runner — kept here so shutdown can signal it to stop.
+    runner: Arc<ConsumerRunner>,
+    /// Commit watch channel sender — kept alive to prevent busy-loop in committer.
+    _commit_tx: watch::Sender<TopicPartition>,
 }
 
 impl Runtime {
@@ -317,29 +326,49 @@ impl Runtime {
     /// for the duration.
     pub async fn run(mut self) {
         self.pool.run().await;
+        // Stop the consumer runner so the dispatcher stream closes.
+        self.runner.stop();
         // Await the dispatcher and committer to ensure clean shutdown
         let _ = self.dispatcher_handle.await;
         let _ = self.committer_handle.await;
     }
 
-    /// Runs the worker pool with SIGTERM handling.
+    /// Runs the worker pool with SIGTERM and SIGINT handling.
     ///
-    /// Spawns a task that listens for SIGTERM. When received, initiates
+    /// Spawns a task that listens for SIGTERM or SIGINT. When received, initiates
     /// graceful shutdown via ShutdownCoordinator.begin_draining().
     /// Then runs the pool and waits for shutdown.
     #[cfg(unix)]
     pub async fn run_with_sigterm(self) {
         use tokio::signal::unix::{signal, SignalKind};
         let coordinator = Arc::clone(&self.coordinator);
+        // Clone the shutdown token so the signal handler can cancel workers.
+        let shutdown_token = self.pool.shutdown_token.clone();
+        // Clone the runner so the signal handler can stop the consumer stream.
+        let runner = Arc::clone(&self.runner);
 
         tokio::spawn(async move {
             let mut sigterm = signal(SignalKind::terminate()).unwrap();
-            sigterm.recv().await;
-            info!(
-                "received SIGTERM, initiating graceful shutdown (drain_timeout_secs={})",
-                coordinator.drain_timeout().as_secs()
-            );
+            let mut sigint = signal(SignalKind::interrupt()).unwrap();
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    info!(
+                        "received SIGTERM, initiating graceful shutdown (drain_timeout_secs={})",
+                        coordinator.drain_timeout().as_secs()
+                    );
+                }
+                _ = sigint.recv() => {
+                    info!(
+                        "received SIGINT, initiating graceful shutdown (drain_timeout_secs={})",
+                        coordinator.drain_timeout().as_secs()
+                    );
+                }
+            }
             let _ = coordinator.begin_draining();
+            // Cancel the worker shutdown token so workers exit their polling loops.
+            shutdown_token.cancel();
+            // Stop the consumer runner so the dispatcher stream closes and exits.
+            runner.stop();
         });
 
         self.run().await;

@@ -197,6 +197,11 @@ impl WorkerPool {
             .flush_failed_to_dlq(&self.dlq_router, &self.dlq_producer);
         self.offset_coordinator.graceful_shutdown();
         logger::log("INFO", "worker pool shutdown complete");
+        // Transition coordinator through Finalizing -> Done so the committer task exits.
+        if self.coordinator.phase() == crate::shutdown::ShutdownPhase::Draining {
+            self.coordinator.begin_finalizing();
+            self.coordinator.set_done();
+        }
     }
 }
 

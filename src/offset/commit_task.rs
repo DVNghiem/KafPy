@@ -205,8 +205,8 @@ impl OffsetCommitter {
             offset
         );
 
-        // Phase 13: Two-phase guard — store_offset first, then commit
-        // Only commit when highest_contiguous > committed_offset (enforced by caller)
+        // store_offset(N) tells rdkafka to commit N+1 as the next fetch offset.
+        // So we pass highest_contiguous directly (not +1).
         if let Err(e) = self.runner.store_offset(topic, partition, offset).await {
             error!(
                 "Failed to store offset: topic={} partition={} offset={} error={}",

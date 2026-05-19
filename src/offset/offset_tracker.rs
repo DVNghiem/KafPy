@@ -72,10 +72,19 @@ impl PartitionState {
     /// Records an ack for `offset`, buffering if out-of-order.
     ///
     /// Algorithm:
-    /// 1. Insert offset into pending_offsets (for now)
-    /// 2. Remove from failed_offsets if it was there (retry succeeded)
-    /// 3. Advance contiguous cursor while gap fills
+    /// 1. If this is the first ack (committed_offset == -1), seed committed_offset
+    ///    to offset - 1 so the contiguous cursor starts at the actual partition base
+    ///    rather than always waiting for offset 0 (which may never arrive).
+    /// 2. Insert offset into pending_offsets
+    /// 3. Remove from failed_offsets if it was there (retry succeeded)
+    /// 4. Advance contiguous cursor while gap fills
     pub fn ack(&mut self, offset: i64) {
+        // Seed the cursor on first ack so consumers that start mid-partition
+        // (e.g., at offset 3) don't wait forever for offset 0.
+        if self.committed_offset == -1 {
+            self.committed_offset = offset - 1;
+        }
+
         self.pending_offsets.insert(offset);
         self.failed_offsets.remove(&offset);
 

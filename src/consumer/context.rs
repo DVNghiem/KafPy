@@ -30,9 +30,10 @@ use crate::offset::offset_tracker::OffsetTracker;
 /// ## On Assignment
 ///
 /// In `post_rebalance` with `Rebalance::Assign`:
-/// 1. Get last committed offset from OffsetTracker for each partition
-/// 2. Seek to `committed + 1` (next unprocessed message)
-/// 3. Log the seek operation
+/// 1. Query Kafka for committed offsets for the assigned partitions
+/// 2. If in-memory tracker has a committed offset (mid-session rebalance), seek to tracker + 1
+/// 3. If Kafka has a committed offset for this group, seek to it
+/// 4. Otherwise, let auto.offset.reset determine the starting position
 ///
 /// # Thread Safety
 ///
@@ -43,6 +44,11 @@ pub struct CustomConsumerContext {
     /// Tracks whether each topic-partition is paused (for backpressure).
     /// Key: "topic-partition", Value: bool (true = paused)
     pause_state: Arc<parking_lot::Mutex<std::collections::HashMap<String, bool>>>,
+    /// Pre-fetched Kafka committed offsets, populated before polling starts.
+    /// Key: (topic, partition), Value: committed offset from Kafka.
+    /// Used in `post_rebalance` to seek to the correct starting position without
+    /// making network calls from within the callback (which deadlocks the poll thread).
+    startup_offsets: Arc<parking_lot::Mutex<std::collections::HashMap<(String, i32), i64>>>,
 }
 
 impl CustomConsumerContext {
@@ -51,7 +57,20 @@ impl CustomConsumerContext {
         Self {
             offset_tracker,
             pause_state: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+            startup_offsets: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
         }
+    }
+
+    /// Seeds the startup offset cache with committed offsets pre-fetched from Kafka.
+    ///
+    /// Must be called BEFORE polling starts (i.e., before `consumer.stream()` / `consumer.recv()`).
+    /// Calling `committed_offsets()` from within a rebalance callback deadlocks the poll thread.
+    pub fn seed_startup_offsets(
+        &self,
+        offsets: std::collections::HashMap<(String, i32), i64>,
+    ) {
+        let mut guard = self.startup_offsets.lock();
+        *guard = offsets;
     }
 
     /// Returns a mutable reference to the pause state map.
@@ -189,42 +208,62 @@ impl ConsumerContext for CustomConsumerContext {
                     return;
                 }
                 info!(
-                    "rebalance: partitions assigned, seeking to committed+1: count={}",
+                    "rebalance: partitions assigned: count={}",
                     tpl.count()
                 );
+
+                // rd_kafka_assign/incremental_assign sets the initial fetch position to
+                // auto.offset.reset BEFORE committed offsets are fetched from Kafka.
+                // We must explicitly seek here using pre-fetched Kafka committed offsets
+                // (seeding happens in ConsumerRunner::new before polling starts).
+                //
+                // Priority:
+                //   1. In-memory tracker has a committed offset (mid-session rebalance) → seek to tracker + 1
+                //   2. Pre-fetched Kafka committed offset exists → seek to it
+                //   3. Neither → leave position as-is (auto.offset.reset applies)
+                let startup_offsets = self.startup_offsets.lock();
+
                 for elem in tpl.elements() {
                     let topic = elem.topic();
                     let partition = elem.partition();
-
-                    // Get the last committed offset for this partition
-                    let committed = self.offset_tracker.committed_offset(topic, partition);
-                    //  Seek to committed + 1, not committed
-                    let seek_offset = committed + 1;
-
                     let topic_owned = topic.to_string();
-                    let offset = rdkafka::Offset::Offset(seek_offset);
-                    match consumer.seek(
-                        &topic_owned,
-                        partition,
-                        offset,
-                        std::time::Duration::from_secs(5),
-                    ) {
-                        Ok(_) => {
-                            info!(
-                                "seeked to committed+1 on assignment: topic={} partition={} committed_offset={} seek_offset={}",
-                                topic,
+
+                    let in_memory = self.offset_tracker.committed_offset(topic, partition);
+
+                    let seek_to: Option<i64> = if in_memory >= 0 {
+                        // Mid-session rebalance: in-memory tracker is authoritative
+                        Some(in_memory + 1)
+                    } else {
+                        // Fresh startup: use pre-fetched Kafka committed offset
+                        startup_offsets.get(&(topic_owned.clone(), partition)).copied()
+                    };
+
+                    match seek_to {
+                        Some(seek_offset) => {
+                            match consumer.seek(
+                                &topic_owned,
                                 partition,
-                                committed,
-                                seek_offset
-                            );
+                                rdkafka::Offset::Offset(seek_offset),
+                                std::time::Duration::from_secs(5),
+                            ) {
+                                Ok(_) => {
+                                    info!(
+                                        "seeked on assignment: topic={} partition={} seek_offset={}",
+                                        topic, partition, seek_offset
+                                    );
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "failed to seek on assignment: topic={} partition={} seek_offset={} error={}",
+                                        topic, partition, seek_offset, e
+                                    );
+                                }
+                            }
                         }
-                        Err(e) => {
-                            error!(
-                                "failed to seek on assignment: topic={} partition={} seek_offset={} error={}",
-                                topic,
-                                partition,
-                                seek_offset,
-                                e
+                        None => {
+                            debug!(
+                                "no committed offset found, using auto.offset.reset: topic={} partition={}",
+                                topic, partition
                             );
                         }
                     }

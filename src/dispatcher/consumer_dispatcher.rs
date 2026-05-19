@@ -55,39 +55,17 @@ impl ConsumerDispatcher {
     /// Runs the dispatch loop, polling the consumer stream and
     /// dispatching each message through the dispatcher.
     pub(crate) async fn run(&self) {
-        // Populate partition handles for pause/resume before starting the loop.
-        // The consumer may not have been assigned partitions yet (assignment happens
-        // during the first poll). Retry with backoff until we get at least one partition,
-        // so the pause/resume mechanism is operational from the first message.
-        for attempt in 0..10u32 {
-            match self.populate_partitions() {
-                Ok(()) => {
-                    info!("partition handles populated (attempt {})", attempt + 1);
-                    break;
-                }
-                Err(e) => {
-                    if attempt < 9 {
-                        debug!(
-                            "partition handles not yet available (attempt {}): {}",
-                            attempt + 1,
-                            e
-                        );
-                        tokio::time::sleep(std::time::Duration::from_millis(
-                            200 * (1u64 << attempt.min(4)),
-                        ))
-                        .await;
-                    } else {
-                        warn!(
-                            "could not populate partition handles after 10 attempts: {}; \
-                             backpressure-based partition pause will be unavailable",
-                            e
-                        );
-                    }
-                }
-            }
-        }
-
+        // Start the stream immediately — partition assignment only happens once the
+        // consumer is polled, so we must start consuming before we can populate handles.
+        // Partition handles are only needed for backpressure pause/resume; they are
+        // refreshed lazily on the first backpressure event if not yet available.
         let mut stream = self.runner.stream();
+
+        // Try to populate partition handles now; likely fails on first call (no assignment yet).
+        // The backpressure path below will retry when needed.
+        if let Err(e) = self.populate_partitions() {
+            debug!("partition handles not yet available at startup (will retry on backpressure): {}", e);
+        }
         while let Some(result) = stream.next().await {
             match result {
                 Ok(msg) => {

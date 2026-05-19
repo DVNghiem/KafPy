@@ -6,3 +6,4 @@
 pub mod shutdown;
 
 pub use shutdown::ShutdownCoordinator;
+pub use shutdown::ShutdownPhase;

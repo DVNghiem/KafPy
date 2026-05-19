@@ -67,6 +67,44 @@ impl ConsumerRunner {
             config.group_id
         );
 
+        // Pre-fetch committed offsets from Kafka and seed the context cache.
+        // This must be done BEFORE polling starts because calling committed_offsets()
+        // inside a rebalance callback deadlocks the poll thread.
+        let mut startup_offsets: std::collections::HashMap<(String, i32), i64> =
+            std::collections::HashMap::new();
+        for topic in &config.topics {
+            // Fetch topic metadata to learn partition count
+            if let Ok(meta) = consumer.fetch_metadata(Some(topic), Duration::from_secs(5)) {
+                for topic_meta in meta.topics() {
+                    let mut tpl = rdkafka::TopicPartitionList::new();
+                    for part in topic_meta.partitions() {
+                        tpl.add_partition(topic, part.id());
+                    }
+                    if tpl.count() > 0 {
+                        if let Ok(committed) =
+                            consumer.committed_offsets(tpl, Duration::from_secs(5))
+                        {
+                            for elem in committed.elements() {
+                                if let rdkafka::Offset::Offset(o) = elem.offset() {
+                                    startup_offsets.insert(
+                                        (elem.topic().to_string(), elem.partition()),
+                                        o,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !startup_offsets.is_empty() {
+            info!(
+                "Pre-fetched Kafka committed offsets for {} partition(s)",
+                startup_offsets.len()
+            );
+            context.seed_startup_offsets(startup_offsets);
+        }
+
         let (shutdown_tx, _) = broadcast::channel(1);
 
         Ok(Self {
