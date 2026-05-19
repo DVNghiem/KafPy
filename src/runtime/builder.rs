@@ -26,7 +26,6 @@ use crate::dlq::produce::SharedDlqProducer;
 use crate::dlq::router::DefaultDlqRouter;
 use crate::dlq::DlqRouter;
 use crate::execution::callback::PythonHandler;
-use crate::execution::logger;
 use crate::observability::metrics::SharedPrometheusSink;
 use crate::observability::runtime_snapshot::RuntimeSnapshotTask;
 use crate::offset::commit_task::{CommitConfig, OffsetCommitter, TopicPartition};
@@ -147,13 +146,10 @@ impl RuntimeBuilder {
                 .collect()
         };
 
-        logger::log(
-            "INFO",
-            &format!(
-                "registering handlers count={} topics={:?}",
-                all_handlers.len(),
-                all_handlers.iter().map(|(t, _)| t).collect::<Vec<_>>()
-            ),
+        info!(
+            "registering handlers count={} topics={:?}",
+            all_handlers.len(),
+            all_handlers.iter().map(|(t, _)| t).collect::<Vec<_>>()
         );
         // Pair each receiver with its topic so WorkerPool can route batch workers correctly.
         // Queue capacity: use message_batch_size * 10 as burst buffer (minimum 1000).

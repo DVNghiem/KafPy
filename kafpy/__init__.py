@@ -101,15 +101,15 @@ try:
         Producer,
     )
     # New PyO3-exposed types
-    from ._kafpy import PyRetryPolicy, PyObservabilityConfig
-    from ._kafpy import PyFailureCategory, PyFailureReason
+    from ._kafpy import RetryPolicy, ObservabilityConfig
+    from ._kafpy import FailureCategory, FailureReason
 except (ModuleNotFoundError, ImportError):
     ProducerConfig = None  # type: ignore
     Producer = None  # type: ignore
-    PyRetryPolicy = None  # type: ignore
-    PyObservabilityConfig = None  # type: ignore
-    PyFailureCategory = None  # type: ignore
-    PyFailureReason = None  # type: ignore
+    RetryPolicy = None  # type: ignore
+    ObservabilityConfig = None  # type: ignore
+    FailureCategory = None  # type: ignore
+    FailureReason = None  # type: ignore
 
 
 class BaseMiddleware:
@@ -176,10 +176,10 @@ __all__ = [
     # Rust extension types (available when _kafpy is built)
     "ProducerConfig",
     "Producer",
-    "PyRetryPolicy",
-    "PyObservabilityConfig",
-    "PyFailureCategory",
-    "PyFailureReason",
+    "RetryPolicy",
+    "ObservabilityConfig",
+    "FailureCategory",
+    "FailureReason",
     # Configuration types — Phase 34
     "ConsumerConfig",
     "RoutingConfig",

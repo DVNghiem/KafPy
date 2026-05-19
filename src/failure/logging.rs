@@ -1,5 +1,6 @@
 use crate::execution::ExecutionContext;
 use crate::failure::{FailureCategory, FailureReason};
+use crate::log::{info, warn, error, trace};
 
 /// Log a failure with structured context through Python's logging module.
 ///
@@ -36,6 +37,10 @@ pub fn log_failure(
             ),
         ),
     };
-
-    crate::execution::logger::log(level, &msg);
+    match level {
+        "INFO" => info!("{}", msg),
+        "WARNING" => warn!("{}", msg),
+        "ERROR" => error!("{}", msg),
+        _ => trace!("{}", msg), // Fallback to trace for unexpected levels
+    }
 }

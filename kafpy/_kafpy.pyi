@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 from typing import Any
 
-# ─── Consumer Configuration ────────────────────────────────────────────────────
-
 @dataclass
 class ConsumerConfig:
     brokers: str
@@ -22,12 +20,12 @@ class ConsumerConfig:
     partition_assignment_strategy: str
     retry_backoff_ms: int
     message_batch_size: int
-    default_retry_policy: PyRetryPolicy | None
+    default_retry_policy: RetryPolicy | None
     dlq_topic_prefix: str | None
     drain_timeout_secs: int | None
     num_workers: int | None
     enable_auto_offset_store: bool | None
-    observability_config: PyObservabilityConfig | None
+    observability_config: ObservabilityConfig | None
     handler_timeout_ms: int | None
 
     def __init__(
@@ -49,20 +47,18 @@ class ConsumerConfig:
         partition_assignment_strategy: str = "roundrobin",
         retry_backoff_ms: int = 100,
         message_batch_size: int = 100,
-        default_retry_policy: PyRetryPolicy | None = None,
+        default_retry_policy: RetryPolicy | None = None,
         dlq_topic_prefix: str | None = None,
         drain_timeout_secs: int | None = None,
         num_workers: int | None = None,
         enable_auto_offset_store: bool | None = None,
-        observability_config: PyObservabilityConfig | None = None,
+        observability_config: ObservabilityConfig | None = None,
         handler_timeout_ms: int | None = None,
     ): ...
 
     @staticmethod
     def from_env() -> "ConsumerConfig": ...
 
-
-# ─── Producer Configuration ────────────────────────────────────────────────────
 
 @dataclass
 class ProducerConfig:
@@ -109,8 +105,6 @@ class ProducerConfig:
     def from_env() -> "ProducerConfig": ...
 
 
-# ─── Kafka Message ────────────────────────────────────────────────────────────
-
 @dataclass
 class KafkaMessage:
     topic: str
@@ -125,8 +119,6 @@ class KafkaMessage:
     def get_headers(self) -> list[tuple[str, bytes | None]]: ...
     def get_timestamp_millis(self) -> None | int: ...
 
-
-# ─── Consumer ──────────────────────────────────────────────────────────────────
 
 @dataclass
 class FanOutRegistration:
@@ -155,8 +147,6 @@ class Consumer:
     def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, traceback: Any) -> bool: ...
 
 
-# ─── Producer ──────────────────────────────────────────────────────────────────
-
 @dataclass
 class Producer:
     config: ProducerConfig
@@ -183,9 +173,7 @@ class Producer:
     def in_flight_count(self) -> int: ...
 
 
-# ─── Retry Policy ──────────────────────────────────────────────────────────────
-
-class PyRetryPolicy:
+class RetryPolicy:
     """Retry policy configuration for message processing.
 
     Uses milliseconds for delay values (Python-friendly) and converts
@@ -213,9 +201,7 @@ class PyRetryPolicy:
     def __repr__(self) -> str: ...
 
 
-# ─── Observability Configuration ───────────────────────────────────────────────
-
-class PyObservabilityConfig:
+class ObservabilityConfig:
     """Observability configuration for metrics and tracing.
 
     When otlp_endpoint is None, tracing is disabled (zero-cost).
@@ -242,9 +228,7 @@ class PyObservabilityConfig:
     def __repr__(self) -> str: ...
 
 
-# ─── Failure Classification ─────────────────────────────────────────────────────
-
-class PyFailureCategory:
+class FailureCategory:
     """High-level failure category for classifying message processing errors.
 
     Members:
@@ -259,21 +243,19 @@ class PyFailureCategory:
     def __repr__(self) -> str: ...
 
 
-class PyFailureReason:
+class FailureReason:
     """A specific failure reason with its category and description.
 
     Represents the classification of why a message failed processing,
     used for retry and DLQ routing decisions.
     """
 
-    category: PyFailureCategory
+    category: FailureCategory
     description: str
 
-    def __init__(self, category: PyFailureCategory, description: str) -> None: ...
+    def __init__(self, category: FailureCategory, description: str) -> None: ...
     def __repr__(self) -> str: ...
 
-
-# ─── Runtime Introspection ─────────────────────────────────────────────────────
 
 def get_runtime_snapshot() -> dict: ...
 """Return the current runtime snapshot as a Python dict.

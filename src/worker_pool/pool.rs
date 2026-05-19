@@ -11,7 +11,6 @@ use crate::dispatcher::queue_manager::QueueManager;
 use crate::dispatcher::OwnedMessage;
 use crate::dlq::{DlqRouter, SharedDlqProducer};
 use crate::execution::callback::PythonHandler;
-use crate::execution::logger;
 use crate::observability::metrics::SharedPrometheusSink;
 use crate::observability::runtime_snapshot::WorkerPoolState;
 use crate::offset::offset_coordinator::OffsetCoordinator;
@@ -20,7 +19,7 @@ use crate::shutdown::ShutdownCoordinator;
 use crate::worker_pool::batch_loop::batch_worker_loop;
 use crate::worker_pool::concurrency::HandlerConcurrency;
 use crate::worker_pool::worker::worker_loop;
-use log::{error, warn};
+use log::{error, warn, info};
 
 /// WorkerPool — manages N Tokio workers via `JoinSet`.
 ///
@@ -124,10 +123,8 @@ impl WorkerPool {
             }
         }
 
-        logger::log(
-            "INFO",
-            &format!("WorkerPool created n_workers={}", n_workers),
-        );
+        info!("WorkerPool created n_workers={}", n_workers);
+        
         Self {
             join_set,
             shutdown_token,
@@ -176,13 +173,14 @@ impl WorkerPool {
     /// timeout, forces abort of all remaining workers.
     /// Also triggers Rayon pool drain during the finalizing phase.
     pub async fn shutdown(&mut self) {
-        logger::log("INFO", "initiating worker pool shutdown");
+        info!("initiating worker pool shutdown");
+        
         self.shutdown_token.cancel();
         // LSC-03: Drain with timeout from coordinator
         let drain_timeout = self.coordinator.drain_timeout();
         match tokio::time::timeout(drain_timeout, self.join_set.shutdown()).await {
             Ok(()) => {
-                logger::log("INFO", "worker pool drained gracefully");
+                info!("worker pool drained gracefully");
             }
             Err(_) => {
                 warn!(
@@ -196,7 +194,7 @@ impl WorkerPool {
         self.offset_coordinator
             .flush_failed_to_dlq(&self.dlq_router, &self.dlq_producer);
         self.offset_coordinator.graceful_shutdown();
-        logger::log("INFO", "worker pool shutdown complete");
+        info!("worker pool shutdown complete");
         // Transition coordinator through Finalizing -> Done so the committer task exits.
         if self.coordinator.phase() == crate::shutdown::ShutdownPhase::Draining {
             self.coordinator.begin_finalizing();

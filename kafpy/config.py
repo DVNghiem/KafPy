@@ -145,20 +145,20 @@ class ConsumerConfig:
         """Convert to Rust ConsumerConfig for use with the KafPy runtime."""
         import kafpy._kafpy as _kafpy
 
-        # Build optional PyRetryPolicy from RetryConfig if provided
+        # Build optional RetryPolicy from RetryConfig if provided
         py_retry_policy = None
         if self.retry_policy is not None:
-            py_retry_policy = _kafpy.PyRetryPolicy(
+            py_retry_policy = _kafpy.RetryPolicy(
                 max_attempts=self.retry_policy.max_attempts,
                 base_delay_ms=int(self.retry_policy.base_delay * 1000),
                 max_delay_ms=int(self.retry_policy.max_delay * 1000) if self.retry_policy.max_delay is not None else 30000,
                 jitter_factor=self.retry_policy.jitter_factor if self.retry_policy.jitter_factor is not None else 0.1,
             )
 
-        # Build optional PyObservabilityConfig from ObservabilityConfig if provided
+        # Build optional ObservabilityConfig from ObservabilityConfig if provided
         py_obs_config = None
         if self.observability_config is not None:
-            py_obs_config = _kafpy.PyObservabilityConfig(
+            py_obs_config = _kafpy.ObservabilityConfig(
                 otlp_endpoint=self.observability_config.otlp_endpoint,
                 service_name=self.observability_config.service_name,
                 sampling_ratio=self.observability_config.sampling_ratio,
