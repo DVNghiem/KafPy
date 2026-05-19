@@ -5,7 +5,6 @@
 //! - [`ExecutionResult`] — normalized outcome (Ok/Error/Rejected)
 //! - [`ExecutionContext`] — message metadata for trace context
 //!
-pub mod async_bridge;
 pub mod batch;
 pub mod callback;
 pub mod context;

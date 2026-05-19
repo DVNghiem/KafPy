@@ -87,12 +87,8 @@ pub enum HandlerMode {
     /// Single-message sync invocation via spawn_blocking.
     #[default]
     SingleSync,
-    /// Single-message async invocation via pyo3-async-runtimes into_future (Phase 26).
-    SingleAsync,
-    /// Batch sync invocation via spawn_blocking with Vec<OwnedMessage> (Phase 25).
+    /// Batch sync invocation via spawn_blocking with Vec<OwnedMessage>.
     BatchSync,
-    /// Batch async invocation via into_future with Vec<OwnedMessage> (Phase 26).
-    BatchAsync,
 }
 
 impl HandlerMode {
@@ -100,20 +96,16 @@ impl HandlerMode {
     pub fn as_str(&self) -> &'static str {
         match self {
             HandlerMode::SingleSync => "SingleSync",
-            HandlerMode::SingleAsync => "SingleAsync",
             HandlerMode::BatchSync => "BatchSync",
-            HandlerMode::BatchAsync => "BatchAsync",
         }
     }
 
     /// Parse a handler mode from a string slice.
-    /// Accepts "sync", "async", "batch_sync", "batch_async".
+    /// Accepts "sync", "batch_sync".
     /// Returns `SingleSync` for unrecognized or None input.
     pub fn from_opt_str(s: Option<&str>) -> Self {
         match s {
-            Some("async") => HandlerMode::SingleAsync,
             Some("batch_sync") => HandlerMode::BatchSync,
-            Some("batch_async") => HandlerMode::BatchAsync,
             _ => HandlerMode::SingleSync,
         }
     }
@@ -294,20 +286,8 @@ impl PythonHandler {
     ) -> ExecutionResult {
         let result = match self.mode() {
             HandlerMode::SingleSync => self.invoke(ctx, message).await,
-            HandlerMode::SingleAsync => self.invoke_async(message).await,
             HandlerMode::BatchSync => {
                 let result = self.invoke_batch(ctx, vec![message]).await;
-                match result {
-                    BatchExecutionResult::AllSuccess(_) => ExecutionResult::Ok,
-                    BatchExecutionResult::AllFailure(reason) => ExecutionResult::Error {
-                        reason,
-                        exception: "BatchHandlerError".to_string(),
-                        traceback: "Batch handler failed".to_string(),
-                    },
-                }
-            }
-            HandlerMode::BatchAsync => {
-                let result = self.invoke_batch_async(vec![message]).await;
                 match result {
                     BatchExecutionResult::AllSuccess(_) => ExecutionResult::Ok,
                     BatchExecutionResult::AllFailure(reason) => ExecutionResult::Error {
@@ -563,205 +543,9 @@ impl PythonHandler {
         }
     }
 
-    /// Invokes an async Python handler via `spawn_blocking` + `asyncio.run()`.
-    ///
-    /// # Design
-    /// The previous implementation drove the coroutine with `PythonAsyncFuture`
-    /// directly on a Tokio worker thread. That approach was incorrect:
-    /// - `Python::attach()` on a Tokio thread blocks the thread until the GIL is free.
-    /// - `wake_by_ref()` on every yield caused busy-polling of the Tokio scheduler.
-    /// - Python asyncio I/O primitives (`asyncio.sleep`, network calls) did not
-    ///   work correctly because no asyncio event loop was running.
-    ///
-    /// The correct model: run the async handler on a dedicated blocking thread via
-    /// `spawn_blocking`. Inside that thread, `asyncio.run()` creates a real event
-    /// loop, drives the coroutine to completion, and tears it down. The Tokio worker
-    /// thread is fully free while Python executes.
-    ///
-    /// Trade-off: GIL is held for the entire handler execution (same as SingleSync),
-    /// but spawn_blocking ensures no Tokio thread is blocked. asyncio.run() provides
-    /// a real event loop so Python async I/O works correctly.
-    pub async fn invoke_async(&self, message: OwnedMessage) -> ExecutionResult {
-        let callback = Arc::clone(&self.callback);
-
-        // Extract trace context in Rust before crossing the GIL boundary.
-        let header_map: HashMap<String, String> = message
-            .headers
-            .iter()
-            .filter_map(|(k, v)| {
-                v.as_ref()
-                    .map(|bytes| String::from_utf8_lossy(bytes).to_string())
-                    .map(|val| (k.clone(), val))
-            })
-            .collect();
-        let mut trace_context = HashMap::new();
-        inject_trace_context(&header_map, &mut trace_context);
-
-        tokio::task::spawn_blocking(move || {
-            Python::attach(|py| {
-                let py_msg = message_to_pydict(py, &message, Some(&trace_context));
-
-                // Call the handler function — must return a coroutine object.
-                let coro = match callback.call1(py, (py_msg,)) {
-                    Ok(c) => c,
-                    Err(py_err) => {
-                        let ctx = ExecutionContext::new(
-                            message.topic.clone(),
-                            message.partition,
-                            message.offset,
-                            0,
-                        );
-                        let classifier = DefaultFailureClassifier;
-                        let reason = classifier.classify(&py_err, &ctx);
-                        let exception = py_err
-                            .get_type(py)
-                            .name()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|_| "Unknown".to_string());
-                        let traceback = py_err.to_string();
-                        return ExecutionResult::Error {
-                            reason,
-                            exception,
-                            traceback,
-                        };
-                    }
-                };
-
-                // asyncio.run() creates a fresh event loop, drives the coroutine to
-                // completion, and tears it down. This is the correct execution model
-                // for stateless async handlers. Python async I/O works correctly here.
-                let asyncio = match py.import("asyncio") {
-                    Ok(m) => m,
-                    Err(_) => {
-                        return ExecutionResult::Error {
-                            reason: FailureReason::Terminal(
-                                crate::failure::TerminalKind::HandlerPanic,
-                            ),
-                            exception: "ImportError".to_string(),
-                            traceback: "failed to import asyncio module".to_string(),
-                        };
-                    }
-                };
-
-                match asyncio.call_method1("run", (coro,)) {
-                    Ok(_) => ExecutionResult::Ok,
-                    Err(py_err) => {
-                        let ctx = ExecutionContext::new(
-                            message.topic.clone(),
-                            message.partition,
-                            message.offset,
-                            0,
-                        );
-                        let classifier = DefaultFailureClassifier;
-                        let reason = classifier.classify(&py_err, &ctx);
-                        let exception = py_err
-                            .get_type(py)
-                            .name()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|_| "Unknown".to_string());
-                        let traceback = py_err.to_string();
-                        ExecutionResult::Error {
-                            reason,
-                            exception,
-                            traceback,
-                        }
-                    }
-                }
-            })
-        })
-        .await
-        .unwrap_or_else(|_| ExecutionResult::Error {
-            reason: FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic),
-            exception: "Panic".to_string(),
-            traceback: "spawn_blocking task panicked".to_string(),
-        })
-    }
-
-    /// Invokes an async Python batch handler via `spawn_blocking` + `asyncio.run()`.
-    ///
-    /// Used for HandlerMode::BatchAsync. Mirrors `invoke_async` but passes a
-    /// `Vec<PyDict>` to the coroutine function rather than a single dict.
-    ///
-    /// GIL is acquired once per batch inside spawn_blocking. The Tokio thread is
-    /// free for the duration. asyncio.run() provides a real event loop so Python
-    /// async I/O inside the batch handler works correctly.
-    pub async fn invoke_batch_async(&self, messages: Vec<OwnedMessage>) -> BatchExecutionResult {
-        let callback = Arc::clone(&self.callback);
-
-        // Extract trace context from first message headers before crossing the GIL boundary.
-        let header_map: HashMap<String, String> = messages
-            .first()
-            .map(|msg| {
-                msg.headers
-                    .iter()
-                    .filter_map(|(k, v)| {
-                        v.as_ref()
-                            .map(|bytes| String::from_utf8_lossy(bytes).to_string())
-                            .map(|val| (k.clone(), val))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut trace_context = HashMap::new();
-        inject_trace_context(&header_map, &mut trace_context);
-
-        let result = tokio::task::spawn_blocking(move || {
-            Python::attach(|py| {
-                // Build Vec<PyDict> — one dict per message — GIL held once for the entire batch.
-                let py_batch: Vec<Py<PyAny>> = messages
-                    .iter()
-                    .map(|msg| message_to_pydict(py, msg, Some(&trace_context)))
-                    .collect();
-
-                // Call the async batch handler — must return a coroutine object.
-                let coro = match callback.call1(py, (py_batch,)) {
-                    Ok(c) => c,
-                    Err(py_err) => {
-                        let classifier = DefaultFailureClassifier;
-                        let ctx = ExecutionContext::new("unknown".to_string(), 0, 0, 0);
-                        let reason = classifier.classify(&py_err, &ctx);
-                        return BatchExecutionResult::AllFailure(reason);
-                    }
-                };
-
-                // asyncio.run() drives the coroutine on a real event loop.
-                let asyncio = match py.import("asyncio") {
-                    Ok(m) => m,
-                    Err(_) => {
-                        return BatchExecutionResult::AllFailure(FailureReason::Terminal(
-                            crate::failure::TerminalKind::HandlerPanic,
-                        ));
-                    }
-                };
-
-                match asyncio.call_method1("run", (coro,)) {
-                    Ok(_) => {
-                        let offsets: Vec<i64> = messages.iter().map(|m| m.offset).collect();
-                        BatchExecutionResult::AllSuccess(offsets)
-                    }
-                    Err(py_err) => {
-                        let classifier = DefaultFailureClassifier;
-                        let ctx = ExecutionContext::new("unknown".to_string(), 0, 0, 0);
-                        let reason = classifier.classify(&py_err, &ctx);
-                        BatchExecutionResult::AllFailure(reason)
-                    }
-                }
-            })
-        })
-        .await;
-
-        match result {
-            Ok(r) => r,
-            Err(_) => BatchExecutionResult::AllFailure(FailureReason::Terminal(
-                crate::failure::TerminalKind::HandlerPanic,
-            )),
-        }
-    }
-
     /// Dispatches to the appropriate batch invoke based on HandlerMode.
     ///
-    /// Used by batch_worker_loop to route to either invoke_batch (BatchSync) or
-    /// invoke_batch_async (BatchAsync) without duplicating the dispatch logic.
+    /// Used by batch_worker_loop to route to invoke_batch (BatchSync).
     pub async fn invoke_mode_batch(
         &self,
         ctx: &ExecutionContext,
@@ -769,7 +553,6 @@ impl PythonHandler {
     ) -> BatchExecutionResult {
         match self.mode() {
             HandlerMode::BatchSync => self.invoke_batch(ctx, messages).await,
-            HandlerMode::BatchAsync => self.invoke_batch_async(messages).await,
             _ => unreachable!("invoke_mode_batch only valid for batch modes"),
         }
     }

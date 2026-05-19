@@ -70,6 +70,7 @@ class ConsumerConfig:
         auto_offset_reset: Where to start if no offset exists ("earliest" or "latest").
         enable_auto_commit: Whether to auto-commit offsets.
         session_timeout_ms: Session timeout in milliseconds.
+        bootstrap_timeout_ms: Bootstrap timeout in milliseconds. None uses rdkafka default.
         heartbeat_interval_ms: Heartbeat interval in milliseconds.
         max_poll_interval_ms: Maximum poll interval in milliseconds.
         security_protocol: Security protocol (None, "PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL").
@@ -97,6 +98,7 @@ class ConsumerConfig:
     auto_offset_reset: str = "earliest"
     enable_auto_commit: bool = False
     session_timeout_ms: int = 30000
+    bootstrap_timeout_ms: int | None = None
     heartbeat_interval_ms: int = 3000
     max_poll_interval_ms: int = 300000
     security_protocol: str | None = None
@@ -170,6 +172,7 @@ class ConsumerConfig:
             auto_offset_reset=self.auto_offset_reset,
             enable_auto_commit=self.enable_auto_commit,
             session_timeout_ms=self.session_timeout_ms,
+            bootstrap_timeout_ms=self.bootstrap_timeout_ms,
             heartbeat_interval_ms=self.heartbeat_interval_ms,
             max_poll_interval_ms=self.max_poll_interval_ms,
             security_protocol=self.security_protocol,

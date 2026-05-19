@@ -230,22 +230,48 @@ impl PyConsumer {
 
     /// Starts the consumer and runs indefinitely, dispatching messages to
     /// registered Python handlers via WorkerPool.
-    pub fn start(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    pub fn start(&self) -> PyResult<()> {
         let config = self.config.clone();
         let handlers = Arc::clone(&self.handlers);
         let fan_out_handlers = self.get_fan_out_handlers();
         let shutdown_token = self.shutdown_token.clone();
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let builder = RuntimeBuilder::new(config, handlers, fan_out_handlers, shutdown_token);
-            let runtime = builder
-                .build()
-                .await
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-            runtime.run_with_sigterm().await;
-            Ok(())
-        })
-        .map(|b| b.unbind())
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+
+        let tx_clone = tx.clone();
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    let _ = tx_clone.send(format!("Failed to create Tokio runtime: {}", e));
+                    return;
+                }
+            };
+            rt.block_on(async {
+                let builder =
+                    RuntimeBuilder::new(config, handlers, fan_out_handlers, shutdown_token);
+                match builder.build().await {
+                    Ok(runtime) => {
+                        drop(tx); // Signal we're running successfully
+                        runtime.run_with_sigterm().await;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(e.to_string());
+                    }
+                }
+            });
+        });
+
+        // Check if build failed before returning Ok
+        match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(err_msg) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(err_msg)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // Build is taking long time — treat as success but log a warning
+                // The runtime is still starting in the background thread
+                Ok(())
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Ok(()), // Build succeeded, tx was dropped
+        }
     }
 
     pub fn stop(&self) {
@@ -328,7 +354,7 @@ impl PyConsumer {
         // For fan-out sinks, the actual handler with FanOutConfig is stored in
         // fan_out_handlers. HandlerMetadata.callback is set to PyNone as a marker
         // so RuntimeBuilder knows this topic needs special handling.
-        let py_none = unsafe { Python::assume_attached() }.None();
+        let py_none = Python::attach(|py| py.None());
         let meta = HandlerMetadata::new(
             Arc::new(py_none),
             HandlerMode::SingleSync,

@@ -12,6 +12,7 @@ pub struct ConsumerConfig {
     pub auto_offset_reset: String,
     pub enable_auto_commit: bool,
     pub session_timeout_ms: u32,
+    pub bootstrap_timeout_ms: Option<u32>,
     pub heartbeat_interval_ms: u32,
     pub max_poll_interval_ms: u32,
     pub security_protocol: Option<String>,
@@ -77,6 +78,7 @@ impl ConsumerConfig {
         auto_offset_reset="earliest".to_string(),
         enable_auto_commit=false,
         session_timeout_ms=30000,
+        bootstrap_timeout_ms=None,
         heartbeat_interval_ms=3000,
         max_poll_interval_ms=300000,
         security_protocol = None,
@@ -103,6 +105,7 @@ impl ConsumerConfig {
         auto_offset_reset: String,
         enable_auto_commit: bool,
         session_timeout_ms: u32,
+        bootstrap_timeout_ms: Option<u32>,
         heartbeat_interval_ms: u32,
         max_poll_interval_ms: u32,
         security_protocol: Option<String>,
@@ -129,6 +132,7 @@ impl ConsumerConfig {
             auto_offset_reset,
             enable_auto_commit,
             session_timeout_ms,
+            bootstrap_timeout_ms,
             heartbeat_interval_ms,
             max_poll_interval_ms,
             security_protocol,
@@ -182,6 +186,10 @@ impl ConsumerConfig {
             session_timeout_ms: env::var("KAFKA_SESSION_TIMEOUT_MS")
                 .unwrap_or_else(|_| "30000".to_string())
                 .parse()?,
+            bootstrap_timeout_ms: env::var("KAFKA_BOOTSTRAP_TIMEOUT_MS")
+                .ok()
+                .map(|s| s.parse())
+                .transpose()?,
             heartbeat_interval_ms: env::var("KAFKA_HEARTBEAT_INTERVAL_MS")
                 .unwrap_or_else(|_| "3000".to_string())
                 .parse()?,
@@ -562,6 +570,7 @@ fn make_consumer_builder_clone(b: &ConsumerConfigBuilder) -> ConsumerConfigBuild
         auto_offset_reset: b.auto_offset_reset.clone(),
         enable_auto_commit: b.enable_auto_commit,
         session_timeout_ms: b.session_timeout_ms,
+        bootstrap_timeout_ms: RwLock::new(*b.bootstrap_timeout_ms.read().unwrap()),
         heartbeat_interval_ms: b.heartbeat_interval_ms,
         max_poll_interval_ms: b.max_poll_interval_ms,
         security_protocol: RwLock::new(b.security_protocol.read().unwrap().clone()),
@@ -592,6 +601,7 @@ pub struct ConsumerConfigBuilder {
     auto_offset_reset: String,
     enable_auto_commit: bool,
     session_timeout_ms: u32,
+    bootstrap_timeout_ms: RwLock<Option<u32>>,
     heartbeat_interval_ms: u32,
     max_poll_interval_ms: u32,
     security_protocol: RwLock<Option<String>>,
@@ -636,6 +646,7 @@ impl ConsumerConfigBuilder {
             auto_offset_reset: "earliest".to_string(),
             enable_auto_commit: false,
             session_timeout_ms: 30000,
+            bootstrap_timeout_ms: RwLock::new(None),
             heartbeat_interval_ms: 3000,
             max_poll_interval_ms: 300000,
             security_protocol: RwLock::new(None),
@@ -689,6 +700,11 @@ impl ConsumerConfigBuilder {
 
     pub fn session_timeout_ms(&mut self, ms: u32) -> Self {
         self.session_timeout_ms = ms;
+        make_consumer_builder_clone(self)
+    }
+
+    pub fn bootstrap_timeout_ms(&mut self, ms: u32) -> Self {
+        *self.bootstrap_timeout_ms.write().unwrap() = Some(ms);
         make_consumer_builder_clone(self)
     }
 
@@ -799,6 +815,7 @@ impl ConsumerConfigBuilder {
             auto_offset_reset: self.auto_offset_reset.clone(),
             enable_auto_commit: self.enable_auto_commit,
             session_timeout_ms: self.session_timeout_ms,
+            bootstrap_timeout_ms: *self.bootstrap_timeout_ms.read().unwrap(),
             heartbeat_interval_ms: self.heartbeat_interval_ms,
             max_poll_interval_ms: self.max_poll_interval_ms,
             security_protocol: self.security_protocol.read().unwrap().clone(),

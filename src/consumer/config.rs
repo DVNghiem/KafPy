@@ -24,6 +24,7 @@ pub struct ConsumerConfig {
     pub enable_auto_commit: bool,
     pub enable_auto_offset_store: bool,
     pub session_timeout_ms: u32,
+    pub bootstrap_timeout_ms: Option<u32>,
     pub heartbeat_interval_ms: u32,
     pub max_poll_interval_ms: u32,
     pub security_protocol: Option<String>,
@@ -82,6 +83,7 @@ pub struct ConsumerConfigBuilder {
     enable_auto_commit: bool,
     enable_auto_offset_store: bool,
     session_timeout_ms: u32,
+    bootstrap_timeout_ms: Option<u32>,
     heartbeat_interval_ms: u32,
     max_poll_interval_ms: u32,
     security_protocol: Option<String>,
@@ -105,6 +107,7 @@ impl ConsumerConfigBuilder {
             enable_auto_commit: false,
             enable_auto_offset_store: false,
             session_timeout_ms: 45000,
+            bootstrap_timeout_ms: None,
             heartbeat_interval_ms: 3000,
             max_poll_interval_ms: 300000,
             fetch_min_bytes: 1048576,
@@ -155,6 +158,11 @@ impl ConsumerConfigBuilder {
 
     pub fn session_timeout(mut self, timeout: Duration) -> Self {
         self.session_timeout_ms = timeout.as_millis() as u32;
+        self
+    }
+
+    pub fn bootstrap_timeout(mut self, timeout: Duration) -> Self {
+        self.bootstrap_timeout_ms = Some(timeout.as_millis() as u32);
         self
     }
 
@@ -236,6 +244,7 @@ impl ConsumerConfigBuilder {
             enable_auto_commit: self.enable_auto_commit,
             enable_auto_offset_store: self.enable_auto_offset_store,
             session_timeout_ms: self.session_timeout_ms,
+            bootstrap_timeout_ms: self.bootstrap_timeout_ms,
             heartbeat_interval_ms: self.heartbeat_interval_ms,
             max_poll_interval_ms: self.max_poll_interval_ms,
             security_protocol: self.security_protocol,
@@ -305,6 +314,9 @@ impl ConsumerConfig {
         }
         if let Some(ref password) = self.sasl_password {
             cfg.set("sasl.password", password);
+        }
+        if let Some(timeout) = self.bootstrap_timeout_ms {
+            cfg.set("bootstrap.timeout.ms", timeout.to_string());
         }
 
         cfg

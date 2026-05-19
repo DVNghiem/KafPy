@@ -69,11 +69,7 @@ impl WorkerPool {
 
         // Determine whether ALL handlers are batch mode
         let all_batch = handlers.values().all(|h| {
-            matches!(
-                h.mode(),
-                crate::execution::callback::HandlerMode::BatchSync
-                    | crate::execution::callback::HandlerMode::BatchAsync
-            )
+            matches!(h.mode(), crate::execution::callback::HandlerMode::BatchSync)
         });
 
         // Share the handler map across all workers via Arc

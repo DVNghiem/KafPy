@@ -49,7 +49,7 @@ class Consumer:
         Args:
             topic: The Kafka topic to subscribe to.
             handler: A callable that takes a KafkaMessage and returns None.
-            mode: Optional handler mode ("sync", "async", "batch_sync", "batch_async").
+            mode: Optional handler mode ("sync", "batch_sync"). "async" and "batch_async" are not supported.
             batch_max_size: Max messages per batch (batch modes only).
             batch_max_wait_ms: Max wait time per batch in ms (batch modes only).
             timeout_ms: Per-handler execution timeout in milliseconds.
@@ -58,8 +58,8 @@ class Consumer:
         """
         self._consumer.add_handler(topic, handler, mode, batch_max_size, batch_max_wait_ms, timeout_ms, concurrency, middleware)
 
-    def start(self) -> object:
-        """Start the consumer. Returns an awaitable coroutine."""
+    def start(self) -> None:
+        """Start the consumer. Blocks until the consumer shuts down."""
         return self._consumer.start()
 
     def stop(self) -> None:

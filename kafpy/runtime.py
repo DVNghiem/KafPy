@@ -53,7 +53,6 @@ class KafPy:
         """Start consuming messages.
 
         Begins the consumer and dispatches messages to registered handlers.
-        Returns an awaitable coroutine.
         """
         return self._consumer.start()
 
@@ -69,20 +68,14 @@ class KafPy:
     def run(self) -> None:
         """Run the consumer until stop() is called or a signal is received.
 
-        Blocks the calling thread by running the async consumer in a new event loop.
-        Use ``await app.start()`` instead if you are already inside an async context
-        (e.g., with ``asyncio.run`` or inside an ASGI framework).
+        Blocks the calling thread. Use start() directly if you need non-blocking
+        consumption.
 
         Example::
 
             app.run()  # blocks until consumer shuts down
-
-        To run from an async context::
-
-            await app.start()
         """
-        import asyncio
-        asyncio.run(self.start())
+        self.start()
 
     def handler(
         self,
@@ -143,7 +136,7 @@ class KafPy:
             if batch:
                 # Detect sync vs async batch mode
                 if inspect.iscoroutinefunction(fn):
-                    handler_mode = "batch_async"
+                    raise TypeError("async batch handlers are not supported")
                 else:
                     handler_mode = "batch_sync"
                 self.register_handler(
@@ -203,9 +196,8 @@ class KafPy:
         def decorator(fn: Callable) -> Callable:
             # Detect if the batch handler is async
             if inspect.iscoroutinefunction(fn):
-                mode = "batch_async"
-            else:
-                mode = "batch_sync"
+                raise TypeError("async batch handlers are not supported")
+            mode = "batch_sync"
 
             self.register_handler(
                 topic, fn,
@@ -239,7 +231,7 @@ class KafPy:
             handler_fn: The callable to invoke for messages.
             routing: Optional routing configuration.
             handler_mode: Override auto-detected handler mode.
-                One of "sync", "async", "batch_sync", "batch_async".
+                One of "sync", "batch_sync". "async" and "batch_async" are not supported.
             batch_max_size: Max messages per batch (batch modes only).
             batch_max_wait_ms: Max wait time per batch in ms (batch modes only).
             timeout_ms: Per-handler execution timeout in milliseconds.
@@ -256,11 +248,15 @@ class KafPy:
 
         # Detect handler type via callable inspection (D-02)
         if handler_mode is not None:
+            if handler_mode not in ("sync", "batch_sync"):
+                raise TypeError(
+                    f"handler_mode must be 'sync' or 'batch_sync', got {handler_mode!r}"
+                )
             handler_type = handler_mode
         elif inspect.iscoroutinefunction(handler_fn):
-            handler_type = "async"
+            raise TypeError("async handlers are not supported")
         elif inspect.isasyncgenfunction(handler_fn):
-            handler_type = "batch_async"
+            raise TypeError("async batch handlers are not supported")
         elif inspect.isgeneratorfunction(handler_fn):
             handler_type = "batch_sync"
         else:

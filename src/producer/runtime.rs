@@ -6,15 +6,42 @@ use rdkafka::{
     util::Timeout,
 };
 use std::sync::Arc;
+use std::thread::{JoinHandle, spawn};
 use std::time::Duration;
+use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::RwLock;
+use parking_lot::Mutex;
 
 use crate::config::ProducerConfig;
+
+/// Task sent from PyProducer methods to the background worker thread
+enum ProducerTask {
+    Init {
+        result_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+    Send {
+        topic: String,
+        key: Option<Vec<u8>>,
+        payload: Option<Vec<u8>>,
+        partition: Option<i32>,
+        headers: Option<Vec<(String, Vec<u8>)>>,
+        result_tx: tokio::sync::oneshot::Sender<Result<(i32, i64), String>>,
+    },
+    Flush {
+        timeout_ms: u64,
+        result_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+    InFlightCount {
+        result_tx: tokio::sync::oneshot::Sender<Result<i32, String>>,
+    },
+}
 
 #[pyclass(name = "Producer")]
 pub struct PyProducer {
     producer: Arc<RwLock<Option<FutureProducer>>>,
     config: ProducerConfig,
+    task_tx: Arc<Mutex<Option<Sender<ProducerTask>>>>,
+    worker_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 #[pymethods]
@@ -24,99 +51,143 @@ impl PyProducer {
         Ok(Self {
             producer: Arc::new(RwLock::new(None)),
             config,
+            task_tx: Arc::new(Mutex::new(None)),
+            worker_handle: Arc::new(Mutex::new(None)),
         })
     }
 
     /// Initialize the producer (must be called before sending messages)
-    pub fn init(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    pub fn init(&self) -> PyResult<()> {
         let config = self.config.clone();
         let producer_lock = Arc::clone(&self.producer);
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let producer = Self::create_producer(&config)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+        // Create channel for sending tasks to the worker thread
+        let (task_tx, mut task_rx) = channel::<ProducerTask>(100);
 
-            let mut lock = producer_lock.write().await;
-            *lock = Some(producer);
+        // Store the task sender before spawning the thread
+        {
+            let mut tx_guard = self.task_tx.lock();
+            *tx_guard = Some(task_tx.clone());
+        }
 
-            info!("Kafka producer initialized successfully");
+        // Spawn the background worker thread
+        let handle = spawn(move || {
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    error!("Failed to create Tokio runtime for producer: {}", e);
+                    return;
+                }
+            };
+            rt.block_on(async {
+                loop {
+                    // Use select! to listen for shutdown or tasks
+                    tokio::select! {
+                        Some(task) = task_rx.recv() => {
+                            match task {
+                                ProducerTask::Init { result_tx } => {
+                                    let result = Self::create_producer(&config)
+                                        .map_err(|e| e.to_string());
+                                    match result {
+                                        Ok(producer) => {
+                                            let mut lock = producer_lock.write().await;
+                                            *lock = Some(producer);
+                                            let _ = result_tx.send(Ok(()));
+                                            info!("Kafka producer initialized successfully");
+                                        }
+                                        Err(e) => {
+                                            let _ = result_tx.send(Err(e));
+                                        }
+                                    }
+                                }
+                                ProducerTask::Send { topic, key, payload, partition, headers, result_tx } => {
+                                    let result = Self::do_send(&producer_lock, &topic, key, payload, partition, headers).await;
+                                    let _ = result_tx.send(result);
+                                }
+                                ProducerTask::Flush { timeout_ms, result_tx } => {
+                                    let result = Self::do_flush(&producer_lock, timeout_ms).await;
+                                    let _ = result_tx.send(result);
+                                }
+                                ProducerTask::InFlightCount { result_tx } => {
+                                    let result = Self::do_in_flight_count(&producer_lock).await;
+                                    let _ = result_tx.send(result);
+                                }
+                            }
+                        }
+                        else => {
+                            // Channel closed, exit worker
+                            break;
+                        }
+                    }
+                }
+            });
+        });
 
-            let res: PyResult<Py<PyAny>> = Python::attach(|py| Ok(py.None()));
-            res
-        })
-        .map(|b| b.unbind())
+        // Store the worker handle
+        {
+            let mut handle_guard = self.worker_handle.lock();
+            *handle_guard = Some(handle);
+        }
+
+        // Send init task and wait for result
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let task = ProducerTask::Init { result_tx };
+
+        // Use blocking send to send the task
+        {
+            let tx = self.task_tx.lock();
+            if let Some(tx) = tx.as_ref() {
+                tx.blocking_send(task)
+                    .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Worker channel closed"))?;
+            }
+        }
+
+        // Wait for the init result using blocking recv
+        match result_rx.blocking_recv() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)),
+            Err(_) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Worker thread died during producer init")),
+        }
     }
 
     /// Send a message to Kafka asynchronously
     pub fn send(
         &self,
-        py: Python<'_>,
         topic: String,
         key: Option<Vec<u8>>,
         payload: Option<Vec<u8>>,
         partition: Option<i32>,
         headers: Option<Vec<(String, Vec<u8>)>>,
-    ) -> PyResult<Py<PyAny>> {
-        let producer_lock = Arc::clone(&self.producer);
-        let timeout = self.config.message_timeout_ms;
+    ) -> PyResult<(i32, i64)> {
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let task = ProducerTask::Send {
+            topic: topic.clone(),
+            key,
+            payload,
+            partition,
+            headers,
+            result_tx,
+        };
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let lock = producer_lock.read().await;
-            let producer = lock.as_ref().ok_or_else(|| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                    "Producer not initialized. Call init() first.",
-                )
-            })?;
-
-            let mut record = FutureRecord::to(&topic);
-
-            if let Some(k) = key.as_ref() {
-                record = record.key(k);
+        // Send task to worker using blocking send
+        {
+            let tx = self.task_tx.lock();
+            if tx.is_none() {
+                return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "Producer not initialized",
+                ));
             }
+            tx.as_ref().unwrap()
+                .blocking_send(task)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+        }
 
-            if let Some(p) = payload.as_ref() {
-                record = record.payload(p);
-            }
-
-            if let Some(part) = partition {
-                record = record.partition(part);
-            }
-
-            // Add headers if provided
-            if let Some(hdrs) = headers {
-                let mut kafka_headers = rdkafka::message::OwnedHeaders::new();
-                for (key, value) in hdrs {
-                    kafka_headers = kafka_headers.insert(rdkafka::message::Header {
-                        key: &key,
-                        value: Some(&value),
-                    });
-                }
-                record = record.headers(kafka_headers);
-            }
-
-            let delivery_result = producer
-                .send(record, Timeout::After(Duration::from_millis(timeout)))
-                .await;
-
-            match delivery_result {
-                Ok(delivery) => {
-                    debug!(
-                        "Message delivered to topic '{}', partition: {}, offset: {}",
-                        topic, delivery.partition, delivery.offset
-                    );
-                    let res: PyResult<(i32, i64)> = Ok((delivery.partition, delivery.offset));
-                    res
-                }
-                Err((kafka_err, _)) => {
-                    error!("Failed to deliver message: {:?}", kafka_err);
-                    Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                        "Failed to deliver message: {:?}",
-                        kafka_err
-                    )))
-                }
-            }
-        })
-        .map(|b| b.unbind())
+        // Wait for result using blocking recv (no runtime needed)
+        match result_rx.blocking_recv() {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)),
+            Err(_) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Worker thread died unexpectedly")),
+        }
     }
 
     /// Send a message synchronously (convenience method)
@@ -128,114 +199,66 @@ impl PyProducer {
         partition: Option<i32>,
         headers: Option<Vec<(String, Vec<u8>)>>,
     ) -> PyResult<(i32, i64)> {
-        let producer_lock = self.producer.clone();
-        let timeout = self.config.message_timeout_ms;
-
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-
-        rt.block_on(async {
-            let lock = producer_lock.read().await;
-            let producer = lock.as_ref().ok_or_else(|| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                    "Producer not initialized. Call init() first.",
-                )
-            })?;
-
-            let mut record = FutureRecord::to(&topic);
-
-            if let Some(k) = key.as_ref() {
-                record = record.key(k);
-            }
-
-            if let Some(p) = payload.as_ref() {
-                record = record.payload(p);
-            }
-
-            if let Some(part) = partition {
-                record = record.partition(part);
-            }
-
-            // Add headers if provided
-            if let Some(hdrs) = headers {
-                let mut kafka_headers = rdkafka::message::OwnedHeaders::new();
-                for (key, value) in hdrs {
-                    kafka_headers = kafka_headers.insert(rdkafka::message::Header {
-                        key: &key,
-                        value: Some(&value),
-                    });
-                }
-                record = record.headers(kafka_headers);
-            }
-
-            let delivery_result = producer
-                .send(record, Timeout::After(Duration::from_millis(timeout)))
-                .await;
-
-            match delivery_result {
-                Ok(delivery) => {
-                    debug!(
-                        "Message delivered to topic '{}', partition: {}, offset: {}",
-                        topic, delivery.partition, delivery.offset
-                    );
-                    Ok((delivery.partition, delivery.offset))
-                }
-                Err((kafka_err, _)) => {
-                    error!("Failed to deliver message: {:?}", kafka_err);
-                    Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                        "Failed to deliver message: {:?}",
-                        kafka_err
-                    )))
-                }
-            }
-        })
+        // send_sync is identical to send in this implementation
+        // since the worker thread handles all operations
+        self.send(topic, key, payload, partition, headers)
     }
 
     /// Flush all pending messages
-    pub fn flush(&self, py: Python<'_>, timeout_ms: Option<u64>) -> PyResult<Py<PyAny>> {
-        let producer_lock = Arc::clone(&self.producer);
+    pub fn flush(&self, timeout_ms: Option<u64>) -> PyResult<()> {
         let timeout = timeout_ms.unwrap_or(10000);
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let lock = producer_lock.read().await;
-            let producer = lock.as_ref().ok_or_else(|| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                    "Producer not initialized. Call init() first.",
-                )
-            })?;
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let task = ProducerTask::Flush {
+            timeout_ms: timeout,
+            result_tx,
+        };
 
-            producer
-                .flush(Timeout::After(Duration::from_millis(timeout)))
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                        "Failed to flush producer: {:?}",
-                        e
-                    ))
-                })?;
+        // Send task to worker using blocking send
+        {
+            let tx = self.task_tx.lock();
+            if tx.is_none() {
+                return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "Producer not initialized",
+                ));
+            }
+            tx.as_ref().unwrap()
+                .blocking_send(task)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+        }
 
-            info!("Producer flushed successfully");
-
-            let res: PyResult<Py<PyAny>> = Python::attach(|py| Ok(py.None()));
-            res
-        })
-        .map(|b| b.unbind())
+        // Wait for result using blocking recv (no runtime needed)
+        match result_rx.blocking_recv() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)),
+            Err(_) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Worker thread died unexpectedly")),
+        }
     }
 
     /// Get the number of messages waiting to be sent
     pub fn in_flight_count(&self) -> PyResult<i32> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let task = ProducerTask::InFlightCount { result_tx };
 
-        rt.block_on(async {
-            let lock = self.producer.read().await;
-            let producer = lock.as_ref().ok_or_else(|| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                    "Producer not initialized. Call init() first.",
-                )
-            })?;
+        // Send task to worker using blocking send
+        {
+            let tx = self.task_tx.lock();
+            if tx.is_none() {
+                return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "Producer not initialized",
+                ));
+            }
+            tx.as_ref().unwrap()
+                .blocking_send(task)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+        }
 
-            Ok(producer.in_flight_count())
-        })
+        // Wait for result using blocking recv (no runtime needed)
+        match result_rx.blocking_recv() {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)),
+            Err(_) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Worker thread died unexpectedly")),
+        }
     }
 }
 
@@ -288,5 +311,105 @@ impl PyProducer {
         }
 
         client_config.create()
+    }
+
+    async fn do_send(
+        producer_lock: &Arc<RwLock<Option<FutureProducer>>>,
+        topic: &str,
+        key: Option<Vec<u8>>,
+        payload: Option<Vec<u8>>,
+        partition: Option<i32>,
+        headers: Option<Vec<(String, Vec<u8>)>>,
+    ) -> Result<(i32, i64), String> {
+        let timeout_ms = 30000; // Default timeout
+
+        let lock = producer_lock.read().await;
+        let producer = lock.as_ref().ok_or_else(|| "Producer not initialized".to_string())?;
+
+        let mut record = FutureRecord::to(topic);
+
+        if let Some(k) = key.as_ref() {
+            record = record.key(k);
+        }
+
+        if let Some(p) = payload.as_ref() {
+            record = record.payload(p);
+        }
+
+        if let Some(part) = partition {
+            record = record.partition(part);
+        }
+
+        // Add headers if provided
+        if let Some(hdrs) = headers {
+            let mut kafka_headers = rdkafka::message::OwnedHeaders::new();
+            for (key, value) in hdrs {
+                kafka_headers = kafka_headers.insert(rdkafka::message::Header {
+                    key: &key,
+                    value: Some(&value),
+                });
+            }
+            record = record.headers(kafka_headers);
+        }
+
+        let delivery_result = producer
+            .send(record, Timeout::After(Duration::from_millis(timeout_ms)))
+            .await;
+
+        match delivery_result {
+            Ok(delivery) => {
+                debug!(
+                    "Message delivered to topic '{}', partition: {}, offset: {}",
+                    topic, delivery.partition, delivery.offset
+                );
+                Ok((delivery.partition, delivery.offset))
+            }
+            Err((kafka_err, _)) => {
+                error!("Failed to deliver message: {:?}", kafka_err);
+                Err(format!("Failed to deliver message: {:?}", kafka_err))
+            }
+        }
+    }
+
+    async fn do_flush(
+        producer_lock: &Arc<RwLock<Option<FutureProducer>>>,
+        timeout_ms: u64,
+    ) -> Result<(), String> {
+        let lock = producer_lock.read().await;
+        let producer = lock.as_ref().ok_or_else(|| "Producer not initialized".to_string())?;
+
+        producer
+            .flush(Timeout::After(Duration::from_millis(timeout_ms)))
+            .map_err(|e| format!("Failed to flush producer: {:?}", e))?;
+
+        info!("Producer flushed successfully");
+        Ok(())
+    }
+
+    async fn do_in_flight_count(
+        producer_lock: &Arc<RwLock<Option<FutureProducer>>>,
+    ) -> Result<i32, String> {
+        let lock = producer_lock.read().await;
+        let producer = lock.as_ref().ok_or_else(|| "Producer not initialized".to_string())?;
+
+        Ok(producer.in_flight_count())
+    }
+}
+
+impl Drop for PyProducer {
+    fn drop(&mut self) {
+        // Drop the task sender to close the channel and signal the worker to exit
+        {
+            let mut tx = self.task_tx.lock();
+            *tx = None;
+        }
+
+        // Join the worker thread
+        {
+            let mut handle = self.worker_handle.lock();
+            if let Some(h) = handle.take() {
+                let _ = h.join();
+            }
+        }
     }
 }

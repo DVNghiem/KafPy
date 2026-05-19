@@ -63,7 +63,7 @@ impl ExecutionResult {
     }
 }
 
-/// Batch execution result from a BatchSync or BatchAsync Python handler.
+/// Batch execution result from a BatchSync Python handler.
 #[derive(Debug, Clone)]
 pub enum BatchExecutionResult {
     /// Every message in the batch succeeded. Carries offsets for each message (same order as input batch).
