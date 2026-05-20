@@ -4,7 +4,7 @@ KafPy provides a handler-based API for building Kafka consumers in Python. All p
 
 ## Overview
 
-```
+```python
 import kafpy
 
 config = kafpy.ConsumerConfig(
@@ -22,22 +22,38 @@ def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerR
 app.run()
 ```
 
-## Core Classes
+## Public API Summary
 
 | Class | Purpose |
 |-------|---------|
 | [`ConsumerConfig`](#consumerconfig) | Configuration for Kafka consumer |
-| [`Consumer`](#consumer) | Wrapper around the Rust Kafka consumer |
+| [`Consumer`](#consumer) | Python wrapper around the Rust Kafka consumer |
 | [`KafPy`](#kafpy) | Main runtime with handler registration |
 | [`KafkaMessage`](#kafkamessage) | Incoming Kafka message with typed accessors |
 | [`HandlerContext`](#handlercontext) | Metadata for a handler invocation |
 | [`HandlerResult`](#handlerresult) | Handler return value directing runtime behavior |
+| [`HandlerAction`](#handleraction) | Enum of possible handler actions |
+| [`FanOutBuilder`](#fanoutbuilder) | Builder for fan-out handler registration |
+| [`FanOutRegistration`](#fanoutregistration) | Result of a fan-out registration |
+| [`FanInRegistration`](#faninregistration) | Result of a fan-in handler registration |
+| [`RetryConfig`](#retryconfig) | Retry configuration for handler failures |
+| [`ObservabilityConfig`](#observabilityconfig) | OTLP tracing and metrics configuration |
+| [`BatchConfig`](#batchconfig) | Batch processing configuration |
+| [`FailureCategory`](#failurecategory) | High-level failure category |
+| [`FailureReason`](#failurereason) | A specific failure reason with category and description |
+| [`BaseMiddleware`](#basemiddleware) | Base class for user-defined middleware |
+| [`Logging`](#logging) | Built-in logging middleware |
+| [`Metrics`](#metrics) | Built-in metrics middleware |
+| [`KafPyError`](#kafpyerror) | Base exception for all KafPy errors |
+| [`ConsumerError`](#consumererror) | Consumer-level errors |
+| [`HandlerError`](#handlererror) | Handler processing errors |
+| [`ConfigurationError`](#configurationerror) | Configuration errors |
+
+---
 
 ## Configuration
 
 ### `ConsumerConfig`
-
-Configuration for the Kafka consumer. Pass to `kafpy.Consumer()` to create a consumer instance.
 
 ```python
 config = kafpy.ConsumerConfig(
@@ -47,7 +63,7 @@ config = kafpy.ConsumerConfig(
 )
 ```
 
-**Parameters:**
+**Attributes:**
 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
@@ -57,6 +73,7 @@ config = kafpy.ConsumerConfig(
 | `auto_offset_reset` | `str` | `"earliest"` | Where to start if no offset exists (`"earliest"` or `"latest"`) |
 | `enable_auto_commit` | `bool` | `False` | Whether to auto-commit offsets |
 | `session_timeout_ms` | `int` | `30000` | Session timeout in milliseconds |
+| `bootstrap_timeout_ms` | `int \| None` | `None` | Bootstrap timeout in milliseconds (None uses rdkafka default) |
 | `heartbeat_interval_ms` | `int` | `3000` | Heartbeat interval in milliseconds |
 | `max_poll_interval_ms` | `int` | `300000` | Maximum poll interval in milliseconds |
 | `security_protocol` | `str \| None` | `None` | Security protocol (`"PLAINTEXT"`, `"SSL"`, `"SASL_PLAINTEXT"`, `"SASL_SSL"`) |
@@ -78,11 +95,13 @@ config = kafpy.ConsumerConfig(
 
 **Raises:** `ValueError` for invalid values (negative timeouts, invalid `auto_offset_reset`, etc.)
 
+**Methods:**
+
+- `to_rust()` — Converts to Rust ConsumerConfig for use with the runtime.
+
 ---
 
 ### `RetryConfig`
-
-Retry configuration for handler failures.
 
 ```python
 retry_config = kafpy.RetryConfig(
@@ -93,7 +112,7 @@ retry_config = kafpy.RetryConfig(
 )
 ```
 
-**Parameters:**
+**Attributes:**
 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
@@ -106,8 +125,6 @@ retry_config = kafpy.RetryConfig(
 
 ### `ObservabilityConfig`
 
-Observability configuration for OTLP tracing and metrics.
-
 ```python
 obs_config = kafpy.ObservabilityConfig(
     otlp_endpoint="http://localhost:4317",
@@ -117,7 +134,7 @@ obs_config = kafpy.ObservabilityConfig(
 )
 ```
 
-**Parameters:**
+**Attributes:**
 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
@@ -130,8 +147,6 @@ obs_config = kafpy.ObservabilityConfig(
 
 ### `BatchConfig`
 
-Batch processing configuration.
-
 ```python
 batch_config = kafpy.BatchConfig(
     max_batch_size=100,
@@ -139,7 +154,7 @@ batch_config = kafpy.BatchConfig(
 )
 ```
 
-**Parameters:**
+**Attributes:**
 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
@@ -148,23 +163,113 @@ batch_config = kafpy.BatchConfig(
 
 ---
 
-### `RoutingConfig`
+## Handler Types
 
-Routing configuration for handler selection.
+### `KafkaMessage`
+
+Kafka message with typed field access.
 
 ```python
-routing_config = kafpy.RoutingConfig(
-    routing_mode="pattern",
-    fallback_handler="default-handler",
-)
+@dataclass(frozen=True)
+class KafkaMessage:
+    topic: str
+    partition: int
+    offset: int
+    key: bytes | None
+    payload: bytes | None
+    headers: list[tuple[str, bytes | None]]
+    timestamp_millis: int | None = None
+    _trace_context: dict[str, str] | None = None
 ```
 
-**Parameters:**
+**Attributes:**
 
-| Name | Type | Default | Description |
-|------|------|---------|-------------|
-| `routing_mode` | `str` | `"default"` | How to route messages (`"default"`, `"pattern"`, `"header"`, `"key"`, `"python"`) |
-| `fallback_handler` | `str \| None` | `None` | Name of fallback handler when no match is found |
+| Name | Type | Description |
+|------|------|-------------|
+| `topic` | `str` | Kafka topic this message was consumed from |
+| `partition` | `int` | Partition number |
+| `offset` | `int` | Message offset in partition |
+| `key` | `bytes \| None` | Message key as bytes, or None if not set |
+| `payload` | `bytes \| None` | Message payload as bytes, or None if not set |
+| `headers` | `list[tuple[str, bytes \| None]]` | List of (key, value) header tuples |
+| `timestamp_millis` | `int \| None` | Message timestamp in milliseconds since epoch |
+| `_trace_context` | `dict[str, str] \| None` | Internal trace context (not for public use) |
+
+**Methods:**
+
+#### `get_key_as_string()`
+
+```python
+key = msg.get_key_as_string()  # str | None
+```
+
+Decode key as UTF-8 string.
+
+**Returns:** `str | None` — the decoded key, or `None` if key is absent.
+
+**Raises:** `HandlerError` if the key cannot be decoded as UTF-8.
+
+#### `get_payload_as_string()`
+
+```python
+payload = msg.get_payload_as_string()  # str | None
+```
+
+Decode payload as UTF-8 string.
+
+**Returns:** `str | None` — the decoded payload, or `None` if payload is absent.
+
+**Raises:** `HandlerError` if the payload cannot be decoded as UTF-8.
+
+#### `from_dict(data: dict) -> KafkaMessage`
+
+Construct a `KafkaMessage` from a dictionary (used internally by the runtime).
+
+---
+
+### `HandlerContext`
+
+Context for a handler invocation, providing metadata about the Kafka message.
+
+```python
+@dataclass(frozen=True)
+class HandlerContext:
+    topic: str           # Kafka topic name
+    partition: int       # Partition number
+    offset: int          # Message offset in partition
+    timestamp: int       # Timestamp in milliseconds since epoch
+    headers: dict[str, str]  # Message headers
+```
+
+---
+
+### `HandlerResult`
+
+Result of a handler invocation, directing the runtime's next action.
+
+```python
+result = kafpy.HandlerResult(action="ack")
+```
+
+**Attributes:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `action` | `str \| HandlerAction` | Action to take: `"ack"`, `"nack"`, `"dlq"`, `"retry"` |
+
+---
+
+### `HandlerAction`
+
+Enum of possible actions a handler can return.
+
+```python
+class HandlerAction(str, Enum):
+    ACK = "ack"      # Commit offset
+    NACK = "nack"    # Retry without backoff
+    DLQ = "dlq"      # Route to dead letter queue
+    RETRY = "retry"  # Retry with backoff
+```
 
 ---
 
@@ -210,36 +315,23 @@ Python wrapper around the Rust Kafka consumer. Created via `kafpy.Consumer(confi
 consumer = kafpy.Consumer(config)
 ```
 
-**Parameters:**
+**Constructor:**
 
 | Name | Type | Description |
 |------|------|-------------|
 | `config` | [`ConsumerConfig`](#consumerconfig) | Consumer configuration |
 
-#### `add_handler()`
+**Methods:**
+
+#### `add_handler(topic, handler, *, mode=None, batch_max_size=None, batch_max_wait_ms=None, timeout_ms=None, concurrency=None, middleware=None)`
 
 Register a handler for a topic. Prefer using `@app.handler` decorator instead.
-
-```python
-consumer.add_handler(
-    "my-topic",
-    my_handler,
-    mode="sync",
-    batch_max_size=100,
-    batch_max_wait_ms=1000,
-    timeout_ms=5000,
-    concurrency=10,
-    middleware=[kafpy.Logging(), kafpy.Metrics()],
-)
-```
-
-**Parameters:**
 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
 | `topic` | `str` | Required | Kafka topic to subscribe to |
-| `handler` | `Callable[[object], None]` | Required | Callable that takes a `KafkaMessage` |
-| `mode` | `str \| None` | `None` | Handler mode: `"sync"`, `"async"`, `"batch_sync"`, `"batch_async"` |
+| `handler` | `Callable` | Required | Callable that takes a `KafkaMessage` |
+| `mode` | `str \| None` | `None` | Handler mode (`"sync"`, `"batch_sync"`) |
 | `batch_max_size` | `int \| None` | `None` | Max messages per batch (batch modes) |
 | `batch_max_wait_ms` | `int \| None` | `None` | Max wait time per batch in ms (batch modes) |
 | `timeout_ms` | `int \| None` | `None` | Per-handler execution timeout in milliseconds |
@@ -248,10 +340,10 @@ consumer.add_handler(
 
 #### `start()`
 
-Start the consumer. Returns an awaitable coroutine.
+Start the consumer. Blocks until the consumer shuts down.
 
 ```python
-await consumer.start()
+consumer.start()
 ```
 
 #### `stop()`
@@ -262,9 +354,9 @@ Stop the consumer gracefully. Initiates drain: waits for in-flight messages to c
 consumer.stop()
 ```
 
-#### `register_fanout()`
+#### `register_fanout(group_name, sink_topics, handler, *, max_fan_out=None, timeout_ms=None) -> FanOutBuilder`
 
-Register a fan-out group. Returns a `FanOutBuilder` for configuration.
+Register a fan-out group.
 
 ```python
 builder = consumer.register_fanout(
@@ -277,19 +369,17 @@ builder = consumer.register_fanout(
 registration = builder.max_fan_out(8).register()
 ```
 
-**Parameters:**
-
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
 | `group_name` | `str` | Required | Identifier for this fan-out group |
 | `sink_topics` | `list[str]` | Required | List of sink topic names to fan out to |
-| `handler` | `Callable[[object], None]` | Required | Python callable invoked for each sink topic |
-| `max_fan_out` | `int \| None` | `None` | Maximum concurrent sink branches (default: 4, max: 64) |
+| `handler` | `Callable` | Required | Python callable invoked for each sink topic |
+| `max_fan_out` | `int \| None` | `None` | Maximum concurrent sink branches (default 4, max 64) |
 | `timeout_ms` | `int \| None` | `None` | Per-branch execution timeout in milliseconds |
 
 **Returns:** `FanOutBuilder`
 
-#### `register_fanin()`
+#### `register_fanin(handler_key, sources, handler, *, timeout_ms=None) -> FanInRegistration`
 
 Register a fan-in handler: one callback receives messages from multiple topics.
 
@@ -302,18 +392,16 @@ registration = consumer.register_fanin(
 )
 ```
 
-**Parameters:**
-
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
 | `handler_key` | `str` | Required | Unique identifier for this handler |
 | `sources` | `list[str]` | Required | List of Kafka topic names to subscribe to |
-| `handler` | `Callable[[object], None]` | Required | Python callable invoked for each message |
+| `handler` | `Callable` | Required | Python callable invoked for each message |
 | `timeout_ms` | `int \| None` | `None` | Per-handler execution timeout in milliseconds |
 
 **Returns:** `FanInRegistration`
 
-#### `status()`
+#### `status() -> dict[str, Any]`
 
 Return the current runtime snapshot as a dictionary.
 
@@ -330,7 +418,7 @@ status = consumer.status()
 
 ```python
 async with consumer:
-    await consumer.start()
+    consumer.start()
 # Automatically stops on exit
 ```
 
@@ -350,9 +438,17 @@ def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerR
 app.run()
 ```
 
-#### `handler()`
+**Constructor:**
 
-Decorator to register a handler for a topic.
+| Name | Type | Description |
+|------|------|-------------|
+| `consumer` | [`Consumer`](#consumer) | Consumer instance |
+
+**Methods:**
+
+#### `handler(topic, *, routing=None, timeout_ms=None, concurrency=None, middleware=None)`
+
+Decorator to register a single-message handler for a topic. **Async functions are not supported.**
 
 ```python
 @app.handler(topic="my-topic")
@@ -360,42 +456,27 @@ def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerR
     return kafpy.HandlerResult(action="ack")
 ```
 
-**Parameters:**
-
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
 | `topic` | `str` | Required | Kafka topic to handle |
 | `routing` | `object \| None` | `None` | Optional routing configuration |
 | `timeout_ms` | `int \| None` | `None` | Per-handler execution timeout (overrides `ConsumerConfig.handler_timeout_ms`) |
 | `concurrency` | `int \| None` | `None` | Maximum concurrent executions (None = no limit) |
-| `batch` | `bool` | `False` | If `True`, registers a batch handler receiving `list[KafkaMessage]` |
-| `batch_max_size` | `int` | `100` | Maximum messages per batch |
-| `batch_max_wait_ms` | `int` | `1000` | Maximum wait time before dispatching a batch |
-| `middleware` | `list \| None` | `None` | Middleware instances (e.g., `[kafpy.Logging(), kafpy.Metrics()]`) |
+| `middleware` | `list \| None` | `None` | Middleware instances (e.g., `[Logging(), Metrics()]`) |
 
-**Returns:** Decorator that registers the decorated callable.
+**Raises:** `TypeError` if the decorated function is async.
 
-**Batch example:**
+#### `batch_handler(topic, *, max_size=100, max_wait_ms=1000, timeout_ms=None)`
+
+Decorator to register a batch handler for a topic. **Async functions are not supported.**
 
 ```python
-@app.handler(topic="my-topic", batch=True, batch_max_size=50, batch_max_wait_ms=500)
+@app.batch_handler(topic="my-topic", max_size=50, max_wait_ms=500)
 def handle_batch(messages: list[kafpy.KafkaMessage], ctx) -> kafpy.HandlerResult:
     for msg in messages:
         process(msg)
     return kafpy.HandlerResult(action="ack")
 ```
-
-#### `batch_handler()`
-
-Decorator to register a batch handler explicitly.
-
-```python
-@app.batch_handler(topic="my-topic", max_size=50, max_wait_ms=500)
-def handle_batch(messages: list[kafpy.KafkaMessage], ctx) -> kafpy.HandlerResult:
-    return kafpy.HandlerResult(action="ack")
-```
-
-**Parameters:**
 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
@@ -404,16 +485,28 @@ def handle_batch(messages: list[kafpy.KafkaMessage], ctx) -> kafpy.HandlerResult
 | `max_wait_ms` | `int` | `1000` | Maximum wait time before dispatching a batch |
 | `timeout_ms` | `int \| None` | `None` | Per-handler execution timeout in milliseconds |
 
-#### `register_handler()`
+**Raises:** `TypeError` if the decorated function is async.
 
-Explicitly register a handler for a topic (alternative to decorator).
+#### `register_handler(topic, handler_fn, *, routing=None, timeout_ms=None, concurrency=None, middleware=None)`
+
+Explicitly register a single-message handler for a topic.
 
 ```python
 def handle(msg, ctx):
     return HandlerResult(action="ack")
-
 app.register_handler("my-topic", handle)
 ```
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `topic` | `str` | Required | Kafka topic to handle |
+| `handler_fn` | `Callable` | Required | Regular (non-async) callable |
+| `routing` | `object \| None` | `None` | Optional routing configuration |
+| `timeout_ms` | `int \| None` | `None` | Per-handler execution timeout in milliseconds |
+| `concurrency` | `int \| None` | `None` | Maximum concurrent executions |
+| `middleware` | `list \| None` | `None` | Middleware instances |
+
+**Raises:** `TypeError` if handler_fn is async.
 
 #### `run()`
 
@@ -425,10 +518,10 @@ app.run()
 
 #### `start()`
 
-Start consuming messages. Returns an awaitable coroutine. Use instead of `run()` when already in an async context.
+Start consuming messages. Returns control to caller.
 
 ```python
-await app.start()
+app.start()
 ```
 
 #### `stop()`
@@ -437,106 +530,6 @@ Stop the consumer gracefully.
 
 ```python
 app.stop()
-```
-
----
-
-## Handler Types
-
-### `KafkaMessage`
-
-Kafka message with typed field access.
-
-```python
-@dataclass(frozen=True)
-class KafkaMessage:
-    topic: str
-    partition: int
-    offset: int
-    key: bytes | None
-    payload: bytes | None
-    headers: list[tuple[str, bytes | None]]
-    timestamp_millis: int | None = None
-```
-
-#### `get_key_as_string()`
-
-Decode key as UTF-8 string.
-
-```python
-key = msg.get_key_as_string()
-```
-
-**Returns:** `str | None` — the decoded key, or `None` if key is absent.
-
-**Raises:** `HandlerError` if the key cannot be decoded as UTF-8.
-
-#### `get_payload_as_string()`
-
-Decode payload as UTF-8 string.
-
-```python
-payload = msg.get_payload_as_string()
-```
-
-**Returns:** `str | None` — the decoded payload, or `None` if payload is absent.
-
-**Raises:** `HandlerError` if the payload cannot be decoded as UTF-8.
-
-#### `from_dict()`
-
-Construct a `KafkaMessage` from a dictionary (used internally by the runtime).
-
-```python
-msg = KafkaMessage.from_dict(data)
-```
-
----
-
-### `HandlerContext`
-
-Context for a handler invocation, providing metadata about the Kafka message.
-
-```python
-@dataclass(frozen=True)
-class HandlerContext:
-    topic: str           # Kafka topic name
-    partition: int       # Partition number
-    offset: int          # Message offset in partition
-    timestamp: int       # Timestamp in milliseconds since epoch
-    headers: dict[str, str]  # Message headers
-```
-
----
-
-### `HandlerResult`
-
-Result of a handler invocation, directing the runtime's next action.
-
-```python
-result = kafpy.HandlerResult(action="ack")
-```
-
-**Parameters:**
-
-| Name | Type | Description |
-|------|------|-------------|
-| `action` | `str \| HandlerAction` | Action to take: `"ack"`, `"nack"`, `"dlq"`, `"retry"` |
-
-**Accepted string values:** `"ack"`, `"nack"`, `"dlq"`, `"retry"`
-
----
-
-### `HandlerAction`
-
-Enum of possible actions a handler can return.
-
-```python
-class HandlerAction(str, Enum):
-    ACK = "ack"      # Commit offset
-    NACK = "nack"    # Retry without backoff
-    DLQ = "dlq"      # Route to dead letter queue
-    RETRY = "retry"  # Retry with backoff
 ```
 
 ---
@@ -556,15 +549,11 @@ builder = consumer.register_fanout(
 registration = builder.max_fan_out(8).register()
 ```
 
-#### `max_fan_out()`
+**Methods:**
+
+#### `max_fan_out(n) -> FanOutBuilder`
 
 Set the maximum fan-out degree.
-
-```python
-builder.max_fan_out(8)
-```
-
-**Parameters:**
 
 | Name | Type | Description |
 |------|------|-------------|
@@ -572,13 +561,9 @@ builder.max_fan_out(8)
 
 **Returns:** New `FanOutBuilder` with `max_fan_out` set.
 
-#### `register()`
+#### `register() -> FanOutRegistration`
 
 Register the fan-out group with the consumer.
-
-```python
-registration = builder.register()
-```
 
 **Returns:** `FanOutRegistration`
 
@@ -630,31 +615,19 @@ class MyMiddleware(kafpy.BaseMiddleware):
         print(f"Handler error: {result}")
 ```
 
-#### `before()`
+**Methods:**
+
+#### `before(ctx: dict) -> None`
 
 Called before the handler is invoked.
-
-```python
-def before(self, ctx: dict) -> None:
-    pass
-```
-
-**Parameters:**
 
 | Name | Type | Description |
 |------|------|-------------|
 | `ctx` | `dict` | ExecutionContext dict with `topic`, `partition`, `offset`, etc. |
 
-#### `after()`
+#### `after(ctx: dict, result: str, elapsed_ms: float) -> None`
 
 Called after the handler succeeds.
-
-```python
-def after(self, ctx: dict, result: str, elapsed_ms: float) -> None:
-    pass
-```
-
-**Parameters:**
 
 | Name | Type | Description |
 |------|------|-------------|
@@ -662,16 +635,9 @@ def after(self, ctx: dict, result: str, elapsed_ms: float) -> None:
 | `result` | `str` | Result label (e.g., `"ok"`, `"error"`, `"timeout"`) |
 | `elapsed_ms` | `float` | Wall-clock time in milliseconds since `before()` was called |
 
-#### `on_error()`
+#### `on_error(ctx: dict, result: str) -> None`
 
 Called when the handler invocation returns an error.
-
-```python
-def on_error(self, ctx: dict, result: str) -> None:
-    pass
-```
-
-**Parameters:**
 
 | Name | Type | Description |
 |------|------|-------------|
@@ -721,6 +687,13 @@ class KafPyError(Exception):
     topic: str | None        # Kafka topic name when applicable
 ```
 
+**Methods:**
+
+- `__str__()` — Returns the message.
+- `__repr__()` — Returns a detailed representation with all fields.
+
+---
+
 ### `ConsumerError`
 
 Raised for consumer-level errors: Kafka errors, subscription issues, message receive failures, serialization errors.
@@ -736,6 +709,8 @@ raise ConsumerError(
 
 Format: `"Consumer error: NOT_LEADER (error 6) on my-topic@partition 0"`
 
+---
+
 ### `HandlerError`
 
 Raised for handler processing errors: Python handler exceptions, wrong-type message field access, handler panics caught at the PyO3 boundary.
@@ -748,6 +723,8 @@ raise HandlerError(
     topic="my-topic",
 )
 ```
+
+---
 
 ### `ConfigurationError`
 
