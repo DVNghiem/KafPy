@@ -99,12 +99,12 @@ class Consumer:
         from kafpy.fanout import FanOutBuilder
 
         return FanOutBuilder(
-            _consumer=self,
-            _group_name=group_name,
-            _sink_topics=sink_topics,
-            _handler=handler,
-            _max_fan_out=max_fan_out,
-            _timeout_ms=timeout_ms,
+            consumer=self,
+            group_name=group_name,
+            sink_topics=sink_topics,
+            handler=handler,
+            max_fan_out=max_fan_out,
+            timeout_ms=timeout_ms,
         )
 
     def register_fanin(

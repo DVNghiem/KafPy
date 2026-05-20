@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 __all__ = [
     "ConsumerConfig",
@@ -20,8 +19,6 @@ __all__ = [
 ROUTING_MODES: frozenset[str] = frozenset({"pattern", "header", "key", "python", "default"})
 AUTO_OFFSET_RESET_VALUES: frozenset[str] = frozenset({"earliest", "latest"})
 
-
-# ─── Failure Classification ────────────────────────────────────────────────────
 
 class FailureCategory:
     """High-level failure category for classifying message processing errors.
@@ -110,14 +107,12 @@ class ConsumerConfig:
     partition_assignment_strategy: str = "roundrobin"
     retry_backoff_ms: int = 100
     message_batch_size: int = 100
-    # ── New fields: retry, DLQ, drain, workers, observability ──
     retry_policy: RetryConfig | None = None
     dlq_topic_prefix: str | None = None
     drain_timeout_secs: int | None = None
     num_workers: int | None = None
     enable_auto_offset_store: bool | None = None
     observability_config: ObservabilityConfig | None = None
-    # ── Handler timeout: cancel handlers that exceed this duration (ms) ──
     handler_timeout_ms: int | None = None
 
     def __post_init__(self) -> None:

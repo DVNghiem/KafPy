@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+from ._kafpy import Consumer
+
 __all__ = ["FanOutBuilder", "FanOutRegistration", "FanInRegistration"]
 
 
@@ -55,12 +57,12 @@ class FanOutBuilder:
         registration = builder.max_fan_out(8).register()
     """
 
-    _consumer: object
-    _group_name: str
-    _sink_topics: list[str]
-    _handler: Callable
-    _max_fan_out: int | None
-    _timeout_ms: int | None
+    consumer: Consumer
+    group_name: str
+    sink_topics: list[str]
+    handler: Callable
+    max_fan_out: int | None
+    timeout_ms: int | None
 
     def max_fan_out(self, n: int) -> "FanOutBuilder":
         """Set the maximum fan-out degree.
@@ -72,12 +74,12 @@ class FanOutBuilder:
             A new FanOutBuilder with max_fan_out set.
         """
         return FanOutBuilder(
-            _consumer=self._consumer,
-            _group_name=self._group_name,
-            _sink_topics=self._sink_topics,
-            _handler=self._handler,
-            _max_fan_out=n,
-            _timeout_ms=self._timeout_ms,
+            consumer=self.consumer,
+            group_name=self.group_name,
+            sink_topics=self.sink_topics,
+            handler=self.handler,
+            max_fan_out=n,
+            timeout_ms=self.timeout_ms,
         )
 
     def register(self) -> "FanOutRegistration":
@@ -86,13 +88,12 @@ class FanOutBuilder:
         Returns:
             FanOutRegistration with group_name, fan_out_id, sink_topics.
         """
-
-        result = self._consumer._consumer.register_fanout(
-            self._group_name,
-            self._sink_topics,
-            self._handler,
-            self._max_fan_out,
-            self._timeout_ms,
+        result = self.consumer.register_fanout(
+            self.group_name,
+            self.sink_topics,
+            self.handler,
+            self.max_fan_out,
+            self.timeout_ms,
         )
         return FanOutRegistration(
             group_name=result.group_name,

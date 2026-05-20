@@ -6,6 +6,7 @@ import inspect
 import threading
 from typing import Any, Callable
 
+from ._kafpy import Consumer
 from .handlers import KafkaMessage, HandlerContext
 
 __all__ = [
@@ -38,7 +39,7 @@ class KafPy:
         app.run()
     """
 
-    def __init__(self, consumer: object) -> None:
+    def __init__(self, consumer: Consumer) -> None:
         """Initialize KafPy with a Consumer.
 
         Args:
@@ -49,7 +50,7 @@ class KafPy:
         self._stopping = False
         self._loop_thread: threading.Thread | None = None
 
-    def start(self) -> object:
+    def start(self):
         """Start consuming messages.
 
         Begins the consumer and dispatches messages to registered handlers.
@@ -64,18 +65,6 @@ class KafPy:
         """
         self._stopping = True
         self._consumer.stop()
-
-    def run(self) -> None:
-        """Run the consumer until stop() is called or a signal is received.
-
-        Blocks the calling thread. Use start() directly if you need non-blocking
-        consumption.
-
-        Example::
-
-            app.run()  # blocks until consumer shuts down
-        """
-        self.start()
 
     def handler(
         self,
