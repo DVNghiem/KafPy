@@ -35,7 +35,7 @@ class KafPy:
             print(f"Received: {msg.value}")
             return kafpy.HandlerResult(action="ack")
 
-        app.run()
+        app.start()
     """
 
     def __init__(self, consumer: Consumer) -> None:

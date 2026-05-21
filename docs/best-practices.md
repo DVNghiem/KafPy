@@ -24,7 +24,7 @@ with kafpy.Consumer(config) as consumer:
     def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerResult:
         return kafpy.HandlerResult(action="ack")
 
-    app.run()
+    app.start()
 ```
 
 The context manager guarantees `stop()` is called on exit, triggering the 4-phase shutdown lifecycle (Running → Draining → Finalizing → Done).
@@ -152,39 +152,23 @@ Accessing `.key` when it is `None` returns `None` silently — no exception is r
 
 ## Handler Patterns
 
-### Prefer Async Handlers for I/O-Bound Workloads
-
-Async handlers avoid blocking the worker thread during external calls:
-
-```python
-import asyncio
-import aiohttp
-
-@app.handler(topic="my-topic")
-async def handle_async(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerResult:
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f"http://api.example.com/data/{msg.key}") as resp:
-            data = await resp.json()
-            await process(data)
-    return kafpy.HandlerResult(action="ack")
-```
-
 ### Use Batch Handlers for High-Throughput Workloads
 
 Batch handlers accumulate messages and process them in bulk, reducing per-message overhead:
 
 ```python
-@app.handler(
+@app.batch_handler(
     topic="my-topic",
-    batch=True,
-    batch_max_size=100,
-    batch_max_wait_ms=500,   # Wait up to 500ms for a full batch
+    max_size=100,
+    max_wait_ms=500,   # Wait up to 500ms for a full batch
 )
 def handle_batch(messages: list[kafpy.KafkaMessage], ctx) -> kafpy.HandlerResult:
     records = [json.loads(msg.get_payload_as_string()) for msg in messages]
     bulk_insert(records)
     return kafpy.HandlerResult(action="ack")
 ```
+
+Use `max_size` to control the maximum batch size and `max_wait_ms` to control how long to wait for a partial batch before processing.
 
 ### Fan-Out for Parallel Processing Pipelines
 

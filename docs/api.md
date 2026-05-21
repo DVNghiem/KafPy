@@ -19,7 +19,7 @@ app = kafpy.KafPy(consumer)
 def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerResult:
     return kafpy.HandlerResult(action="ack")
 
-app.run()
+app.start()  # blocks the calling thread
 ```
 
 ## Public API Summary
@@ -30,7 +30,7 @@ app.run()
 | [`Consumer`](#consumer) | Python wrapper around the Rust Kafka consumer |
 | [`KafPy`](#kafpy) | Main runtime with handler registration |
 | [`KafkaMessage`](#kafkamessage) | Incoming Kafka message with typed accessors |
-| [`HandlerContext`](#handlercontext) | Metadata for a handler invocation |
+| [`HandlerContext`](#handlercontext) | Metadata for a handler invocation (stub) |
 | [`HandlerResult`](#handlerresult) | Handler return value directing runtime behavior |
 | [`HandlerAction`](#handleraction) | Enum of possible handler actions |
 | [`FanOutBuilder`](#fanoutbuilder) | Builder for fan-out handler registration |
@@ -246,6 +246,8 @@ Construct a `KafkaMessage` from a dictionary (used internally by the runtime).
 
 Context for a handler invocation, providing metadata about the Kafka message.
 
+**Note:** This is a stub — full implementation in Phase 36 or later. Currently provides basic topic/partition/offset/timestamp/headers fields only.
+
 ```python
 @dataclass(frozen=True)
 class HandlerContext:
@@ -355,7 +357,7 @@ Register a handler for a topic. Prefer using `@app.handler` decorator instead.
 
 #### `start()`
 
-Start the consumer. Blocks until the consumer shuts down.
+Start the consumer. Blocks the calling thread until the consumer shuts down.
 
 ```python
 consumer.start()
@@ -429,19 +431,21 @@ status = consumer.status()
 
 #### Context Manager
 
-`Consumer` supports `async with` for automatic graceful shutdown:
+`Consumer` supports `with` (sync context manager) for automatic graceful shutdown:
 
 ```python
-async with consumer:
+with consumer:
     consumer.start()
 # Automatically stops on exit
 ```
+
+**Note:** This is a sync context manager. `async with consumer:` is NOT supported.
 
 ---
 
 ### `KafPy`
 
-Main runtime for consuming Kafka messages. Create with a `Consumer`, register handlers using the decorator or `register_handler()`, then call `run()`.
+Main runtime for consuming Kafka messages. Create with a `Consumer`, register handlers using the decorator or `register_handler()`, then call `start()` to begin consuming.
 
 ```python
 app = kafpy.KafPy(consumer)
@@ -450,7 +454,7 @@ app = kafpy.KafPy(consumer)
 def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerResult:
     return kafpy.HandlerResult(action="ack")
 
-app.run()
+app.start()  # blocks the calling thread
 ```
 
 **Constructor:**
@@ -474,7 +478,7 @@ def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerR
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
 | `topic` | `str` | Required | Kafka topic to handle |
-| `routing` | `object \| None` | `None` | Optional routing configuration |
+| `routing` | `object \| None` | `None` | Reserved for future use (currently ignored) |
 | `timeout_ms` | `int \| None` | `None` | Per-handler execution timeout (overrides `ConsumerConfig.handler_timeout_ms`) |
 | `concurrency` | `int \| None` | `None` | Maximum concurrent executions (None = no limit) |
 | `middleware` | `list \| None` | `None` | Middleware instances (e.g., `[Logging(), Metrics()]`) |
@@ -516,24 +520,16 @@ app.register_handler("my-topic", handle)
 |------|------|---------|-------------|
 | `topic` | `str` | Required | Kafka topic to handle |
 | `handler_fn` | `Callable` | Required | Regular (non-async) callable |
-| `routing` | `object \| None` | `None` | Optional routing configuration |
+| `routing` | `object \| None` | `None` | Reserved for future use (currently ignored) |
 | `timeout_ms` | `int \| None` | `None` | Per-handler execution timeout in milliseconds |
 | `concurrency` | `int \| None` | `None` | Maximum concurrent executions |
 | `middleware` | `list \| None` | `None` | Middleware instances |
 
 **Raises:** `TypeError` if handler_fn is async.
 
-#### `run()`
-
-Run the consumer until `stop()` is called or a signal is received. Blocks the calling thread.
-
-```python
-app.run()
-```
-
 #### `start()`
 
-Start consuming messages. Returns control to caller.
+Start consuming messages. **Blocks the calling thread** until `stop()` is called or a signal is received.
 
 ```python
 app.start()

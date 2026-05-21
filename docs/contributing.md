@@ -104,6 +104,22 @@ def process_message(msg: KafkaMessage, ctx: HandlerContext) -> HandlerResult:
 pub struct PartitionConsumer { ... }
 ```
 
+### Handler Restrictions
+
+**Async handlers are NOT supported.** Using `async def` with `@app.handler` raises `TypeError`. Use synchronous functions only.
+
+```python
+# ✅ Correct — sync function
+@app.handler(topic="my-topic")
+def handle_message(msg: KafkaMessage, ctx: HandlerContext) -> HandlerResult:
+    ...
+
+# ❌ Incorrect — async def will raise TypeError
+@app.handler(topic="my-topic")
+async def handle_message(msg: KafkaMessage, ctx: HandlerContext) -> HandlerResult:
+    ...
+```
+
 ### Test Naming
 
 Use descriptive test names that explain the expected behavior:
@@ -166,12 +182,32 @@ Describe the problem you're solving and your proposed solution. Check existing i
 KafPy/
 ├── kafpy/              # Python package source
 │   ├── __init__.py     # Public API exports
+│   ├── _kafpy.pyi      # Type stubs
 │   ├── config.py       # ConsumerConfig
 │   ├── consumer.py     # Consumer
 │   ├── exceptions.py   # Exception hierarchy
+│   ├── fanout.py       # Fan-out utilities
 │   ├── handlers.py     # KafkaMessage, HandlerContext
 │   └── runtime.py      # KafPy app runtime
 ├── src/                # Rust source (PyO3 bindings)
+│   ├── lib.rs
+│   ├── bindings.rs
+│   ├── config.rs
+│   ├── consumer/
+│   ├── dispatcher/
+│   ├── dlq/
+│   ├── execution/
+│   ├── failure/
+│   ├── kafka_message.rs
+│   ├── middleware/
+│   ├── observability/
+│   ├── offset/
+│   ├── producer/
+│   ├── retry/
+│   ├── runtime/
+│   ├── shutdown/
+│   └── worker_pool/
 ├── tests/              # Python tests
-└── Cargo.toml          # Rust dependencies
+├── Cargo.toml          # Rust dependencies
+└── pyproject.toml      # Python package config
 ```

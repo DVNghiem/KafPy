@@ -18,7 +18,7 @@ Public API entry point. All public types are re-exported here for convenience::
         print(f"Received: {msg.value}")
         return kafpy.HandlerResult(action="ack")
 
-    app.run()
+    app.start()
 
 Exception types are available via ``kafpy.exceptions``:
     from kafpy.exceptions import KafPyError, ConsumerError, HandlerError, ConfigurationError
@@ -32,8 +32,6 @@ For handler and message types, use ``kafpy.handlers``:
 
 __version__ = "0.1.0"
 
-# ─── Python Logging Configuration ──────────────────────────────────────────────
-#
 # KafPy uses Python's standard logging module. All log messages from the Rust
 # extension are forwarded to Python logging via the "kafpy" logger.
 #

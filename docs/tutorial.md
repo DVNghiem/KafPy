@@ -78,7 +78,7 @@ def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerR
 
 
 if __name__ == "__main__":
-    app.run()
+    app.start()
 ```
 
 Run the consumer:
@@ -147,38 +147,9 @@ config = kafpy.ConsumerConfig(
 | `session_timeout_ms` | `30000` | Session timeout in milliseconds |
 | `max_poll_interval_ms` | `300000` | Maximum poll interval in milliseconds |
 
-## Async Handlers
-
-Handlers can be async for better performance with I/O-bound processing:
-
-```python
-import kafpy
-import httpx
-
-config = kafpy.ConsumerConfig(
-    bootstrap_servers="localhost:19092",
-    group_id="async-group",
-    topics=["my-topic"],
-)
-consumer = kafpy.Consumer(config)
-app = kafpy.KafPy(consumer)
-
-
-@app.handler(topic="my-topic")
-async def handle_async(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerResult:
-    # Example: call an external API
-    async with httpx.AsyncClient() as client:
-        await client.post("https://example.com/webhook", json={"message": msg.get_payload_as_string()})
-    return kafpy.HandlerResult(action="ack")
-
-
-if __name__ == "__main__":
-    app.run()
-```
-
 ## Batch Handlers
 
-For high-throughput scenarios, process messages in batches:
+For high-throughput scenarios, process messages in batches using `batch_handler`:
 
 ```python
 import kafpy
@@ -192,7 +163,7 @@ consumer = kafpy.Consumer(config)
 app = kafpy.KafPy(consumer)
 
 
-@app.handler(topic="my-topic", batch=True, batch_max_size=50, batch_max_wait_ms=500)
+@app.batch_handler(topic="my-topic", max_size=50, max_wait_ms=500)
 def handle_batch(messages: list[kafpy.KafkaMessage], ctx: kafpy.HandlerContext) -> kafpy.HandlerResult:
     print(f"Processing batch of {len(messages)} messages")
     for msg in messages:
@@ -201,7 +172,7 @@ def handle_batch(messages: list[kafpy.KafkaMessage], ctx: kafpy.HandlerContext) 
 
 
 if __name__ == "__main__":
-    app.run()
+    app.start()
 ```
 
 ## Retry and Error Handling
@@ -237,7 +208,7 @@ def handle_with_retry(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kaf
 
 
 if __name__ == "__main__":
-    app.run()
+    app.start()
 ```
 
 ### Handler Actions
@@ -273,7 +244,7 @@ def handle_with_middleware(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -
 
 
 if __name__ == "__main__":
-    app.run()
+    app.start()
 ```
 
 ## Running with Context Manager
@@ -296,7 +267,7 @@ with kafpy.Consumer(config) as consumer:
     def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerResult:
         return kafpy.HandlerResult(action="ack")
 
-    app.run()
+    app.start()
 ```
 
 The consumer stops gracefully when the `with` block exits.
@@ -304,6 +275,6 @@ The consumer stops gracefully when the `with` block exits.
 ## Next Steps
 
 - **[Configuration](installation.md)** — Explore all consumer configuration options
-- **[Guides](guides.md)** — Learn about sync, async, and batch handlers
+- **[Guides](guides.md)** — Learn about sync and batch handlers
 - **[Best Practices](best-practices.md)** — Retry strategies, DLQ handling, and timeouts
 - **[API Reference](api.md)** — Complete API documentation

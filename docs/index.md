@@ -5,7 +5,7 @@ KafPy is a Python library for building high-performance Kafka consumers. Built w
 ## Key capabilities
 
 - **Handler-based API** — register functions to process messages from any topic
-- **Sync and async handlers** — use whichever model fits your code
+- **Sync handlers** — register Python functions to process messages (async not supported)
 - **Batch processing** — process messages in configurable batches for throughput
 - **Retry and DLQ** — built-in exponential backoff with dead-letter queue routing
 - **Middleware** — logging, metrics, and custom extensions via a simple interface
@@ -32,7 +32,7 @@ def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerR
     print(f"Received: {msg.key} @ {ctx.topic}:{ctx.partition}:{ctx.offset}")
     return kafpy.HandlerResult(action="ack")
 
-app.run()
+app.start()
 ```
 
 ## Next steps

@@ -5,8 +5,8 @@ Practical guides for common KafPy patterns. Each guide is self-contained with wo
 ## Contents
 
 - [Your First Consumer](#your-first-consumer)
-- [Async Handlers](#async-handlers)
 - [Batch Processing](#batch-processing)
+- [Backpressure and Flow Control](#backpressure-and-flow-control)
 - [Authentication with SASL](#authentication-with-sasl)
 - [Retry and Dead-Letter Queues](#retry-and-dead-letter-queues)
 - [Custom Middleware](#custom-middleware)
@@ -40,72 +40,67 @@ def handle_order(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.Ha
     return kafpy.HandlerResult(action="ack")
 
 
-app.run()
+app.start()
 ```
 
-The `run()` call blocks the current thread. To run from an async context, use `await app.start()` instead:
-
-```python
-import asyncio
-
-async def main():
-    await app.start()
-
-asyncio.run(main())
-```
-
----
-
-## Async Handlers
-
-Register async handlers by declaring them with `async def`. The runtime auto-detects the mode.
-
-```python
-import kafpy
-
-app = kafpy.KafPy(consumer)
-
-
-@app.handler(topic="events")
-async def handle_event(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerResult:
-    result = await process_event(msg.payload)
-    if result.ok:
-        return kafpy.HandlerResult(action="ack")
-    else:
-        return kafpy.HandlerResult(action="dlq")
-
-
-app.run()
-```
-
-The `@app.handler` decorator inspects the callable at registration time — no explicit mode flag required.
+The `start()` call blocks the current thread. It is not async — do not use `await`.
 
 ---
 
 ## Batch Processing
 
-For high-throughput workloads, process messages in batches. Use `@app.handler(..., batch=True)` or the explicit `@app.batch_handler` decorator.
-
-### Batch Handler (Sync)
+For high-throughput workloads, process messages in batches using `@app.batch_handler`. Batch handlers receive a list of messages instead of one at a time.
 
 ```python
-@app.handler(topic="clicks", batch=True, batch_max_size=200, batch_max_wait_ms=500)
+@app.batch_handler(topic="clicks", max_size=200, max_wait_ms=500)
 def handle_clicks_batch(messages: list[kafpy.KafkaMessage], ctx) -> kafpy.HandlerResult:
     records = [msg.payload for msg in messages]
     db.bulk_insert(records)
     return kafpy.HandlerResult(action="ack")
 ```
 
-### Batch Handler (Async)
+The batch is delivered when either `max_size` messages accumulate or `max_wait_ms` elapses, whichever comes first.
+
+### Batch Handler Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `max_size` | 100 | Maximum messages per batch |
+| `max_wait_ms` | 1000 | Maximum wait time before dispatch |
+
+### Batch vs Single-Message Handlers
+
+| Pattern | Decorator | Handler Signature |
+|---------|-----------|-----------------|
+| Single | `@app.handler(topic="...")` | `def handle(msg, ctx) -> HandlerResult` |
+| Batch | `@app.batch_handler(topic="...")` | `def handle(messages: list, ctx) -> HandlerResult` |
+
+---
+
+## Backpressure and Flow Control
+
+KafPy automatically applies backpressure to prevent unbounded memory growth when Python handlers cannot keep up with message production.
+
+### How It Works
+
+1. **In-flight limit** — The Rust consumer maintains an in-flight message limit (default 1000 messages per partition)
+2. **Pause** — When in-flight messages reach the limit, the Kafka partition is **paused**. No new messages are fetched.
+3. **Resume** — When in-flight drops below the limit, the partition is **resumed**. Fetching continues.
+
+This is fully automatic — no configuration or user code required.
+
+### GIL Consideration
+
+Python handlers run in worker threads. Because of the GIL, only one Python thread executes Python code at a time. For CPU-bound workloads, consider increasing `num_workers` to increase thread count — the GIL is released during I/O operations, so concurrent I/O-bound handlers still benefit from parallelism.
 
 ```python
-@app.handler(topic="clicks", batch=True, batch_max_size=200, batch_max_wait_ms=500)
-async def handle_clicks_batch_async(messages: list[kafpy.KafkaMessage], ctx) -> kafpy.HandlerResult:
-    await db.bulk_insert_async([msg.payload for msg in messages])
-    return kafpy.HandlerResult(action="ack")
+config = kafpy.ConsumerConfig(
+    bootstrap_servers="localhost:9092",
+    group_id="consumer",
+    topics=["events"],
+    num_workers=8,  # more threads for I/O-bound handlers
+)
 ```
-
-The batch is delivered when either `batch_max_size` messages accumulate or `batch_max_wait_ms` elapses, whichever comes first.
 
 ---
 
@@ -170,20 +165,17 @@ def handle_event(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.Ha
         return kafpy.HandlerResult(action="dlq")   # bypasses retry, goes to dlq.events
 ```
 
-### Inspecting Failures
+### Retry and DLQ Flow
 
-Use `FailureCategory` and `FailureReason` to classify errors before deciding an action:
+```mermaid
+flowchart LR
+    H[Handler] -->|"action=ack"| ACK[ack]
+    H -->|"action=retry"| RET[retry]
+    H -->|"action=dlq"| DLQ[dlq]
 
-```python
-from kafpy.config import FailureCategory, FailureReason
-
-def classify_failure(error: Exception) -> FailureReason:
-    if isinstance(error, TransientError):
-        return FailureReason(category=FailureCategory.Retryable, description="network timeout")
-    elif isinstance(error, ValidationError):
-        return FailureReason(category=FailureCategory.NonRetryable, description="bad payload format")
-    else:
-        return FailureReason(category=FailureCategory.Terminal, description="unknown error")
+    RET -->|exponential backoff| H
+    DLQ --> DLT[DLQ Topic]
+    ACK --> OC[Offset Committer]
 ```
 
 ---
@@ -304,11 +296,20 @@ consumer = kafpy.Consumer(config)
 app = kafpy.KafPy(consumer)
 
 with consumer:
-    app.run()  # blocks
+    app.start()  # blocks
 # consumer.stop() is called automatically on exit
 ```
 
 The `Consumer.__exit__` calls `stop()`, which initiates a 4-phase drain:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Running
+    Running --> Draining: stop() / signal
+    Draining --> Finalizing: in-flight complete
+    Finalizing --> Done: offsets committed
+    Done --> [*]
+```
 
 1. **Running** → stops accepting new messages
 2. **Draining** → waits for in-flight handler calls to finish (up to `drain_timeout_secs`)
@@ -375,7 +376,7 @@ config = kafpy.ConsumerConfig(
     bootstrap_servers="localhost:9092",
     group_id="high-throughput",
     topics=["events"],
-    num_workers=16,  # more threads for CPU-bound handlers
+    num_workers=16,  # more threads for I/O-bound handlers
 )
 ```
 
@@ -406,11 +407,10 @@ config = kafpy.ConsumerConfig(
 For maximum throughput on bulk workloads, always prefer batch handlers:
 
 ```python
-@app.handler(
+@app.batch_handler(
     topic="bulk-events",
-    batch=True,
-    batch_max_size=500,
-    batch_max_wait_ms=100,  # short wait for throughput; tune against your workload
+    max_size=500,
+    max_wait_ms=100,  # short wait for throughput; tune against your workload
 )
 def handle_bulk(messages: list[kafpy.KafkaMessage], ctx) -> kafpy.HandlerResult:
     db.bulk_write([msg.payload for msg in messages])
@@ -438,6 +438,50 @@ config = kafpy.ConsumerConfig(
 ### Handler Timeout
 
 Avoid setting `handler_timeout_ms` too aggressively. The timeout should be at least 2x your p99 handler latency to avoid false positives.
+
+---
+
+## Architecture Diagrams
+
+### Message Flow
+
+```mermaid
+flowchart LR
+    K[Kafka] --> rdkafka[librdkafka]
+    rdkafka --> RC[Rust Consumer]
+    RC --> D[Dispatcher]
+    D --> Q[Queue]
+    Q --> WP[Worker Pool]
+    WP --> H[Python Handler]
+    H --> HR[HandlerResult]
+    HR --> ACK[ack]
+    HR --> NCK[nack]
+    HR --> DLQ[dlq]
+    HR --> RET[retry]
+    ACK --> OC[Offset Committer]
+    NCK --> WP
+    RET --> WP
+    DLQ --> DLT[DLQ Topic]
+```
+
+### Batch Accumulation
+
+```mermaid
+sequenceDiagram
+    participant Kafka
+    participant Rust as Rust Consumer
+    participant Buffer as Message Buffer
+    participant Handler as Python Handler
+
+    Rust->>Kafka: Fetch messages
+    Kafka->>Rust: Message batch
+    Rust->>Buffer: Accumulate
+    Note over Buffer: max_size or max_wait_ms
+
+    Buffer->>Handler: Dispatch batch
+    Handler->>Buffer: Return HandlerResult
+    Buffer->>Kafka: Commit offsets
+```
 
 ---
 
