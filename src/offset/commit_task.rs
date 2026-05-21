@@ -131,6 +131,12 @@ impl OffsetCommitter {
     ///
     /// When the `ShutdownCoordinator` enters the `Done` phase (via `begin_finalizing`),
     /// the committer commits all pending offsets and exits cleanly.
+    ///
+    /// ## Signal-Driven Behavior
+    ///
+    /// When a signal arrives via the watch channel (from an ack), only the specific
+    /// topic-partition is processed if throttle conditions are met.
+    /// Interval ticks still process all partitions as a safety net.
     pub async fn run(self, mut rx: watch::Receiver<TopicPartition>) {
         let mut ticker = interval(Duration::from_millis(self.config.commit_interval_ms));
 
@@ -148,9 +154,10 @@ impl OffsetCommitter {
                     info!("final offsets committed, committer shutting down");
                     break;
                 }
-                // Watch channel signal — a topic-partition has new data ready
+                // Watch channel signal — a specific topic-partition has new data ready
                 _ = rx.changed() => {
-                    self.process_ready_partitions().await;
+                    let tp = (*rx.borrow()).clone();
+                    self.process_partition(&tp.topic, tp.partition).await;
                 }
                 // Periodic tick — ensures commits happen even without signals
                 _ = ticker.tick() => {
@@ -160,16 +167,33 @@ impl OffsetCommitter {
         }
     }
 
+    /// Processes a specific topic-partition if throttle conditions are met.
+    async fn process_partition(&self, topic: &str, partition: i32) {
+        let should_commit = {
+            let state = self.state.lock();
+            state.should_commit(&self.config)
+        };
+        if !should_commit {
+            return;
+        }
+
+        if self.tracker.should_commit(topic, partition) {
+            if let Some(offset) = self.tracker.highest_contiguous(topic, partition) {
+                self.commit_partition(topic, partition, offset).await;
+            }
+        }
+
+        self.state.lock().reset();
+    }
+
     /// Processes all topic-partitions that are ready to commit.
     ///
     /// Evaluates the throttle state and, if conditions are met, calls
     /// `store_offset` + `commit` for each ready partition sequentially.
+    /// Called by interval ticker as a safety net to process all partitions.
     async fn process_ready_partitions(&self) {
         // Collect all ready partitions by scanning all known partitions.
-        // Since the committer ticks on interval and processes all ready partitions,
-        // we ignore the specific TopicPartition from the watch signal and always
-        // scan all registered partitions. The watch channel is kept for future
-        // signal-driven triggering.
+        // This is the safety-net path triggered by interval ticks.
         let ready: Vec<(String, i32, i64)> = {
             let state = self.state.lock();
             if !state.should_commit(&self.config) {

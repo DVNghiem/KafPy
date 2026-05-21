@@ -12,6 +12,7 @@ KafPy provides a handler-based API for building Kafka consumers in Python. It co
 
 **Key capabilities:**
 
+- Signal-driven offset commits with interval/batch throttle
 - Sync and async handlers
 - Batch message processing
 - Built-in retry and dead-letter queue (DLQ) support

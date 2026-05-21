@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import threading
 from typing import Any, Callable
 
 from ._kafpy import Consumer
@@ -48,7 +47,6 @@ class KafPy:
         self._consumer = consumer
         self._handlers: dict[str, dict[str, Any]] = {}
         self._stopping = False
-        self._loop_thread: threading.Thread | None = None
 
     def start(self):
         """Start consuming messages.

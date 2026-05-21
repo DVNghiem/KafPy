@@ -47,7 +47,7 @@ use tokio_util::sync::CancellationToken;
 pub struct RuntimeBuilder {
     config: ConsumerConfig,
     handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
-    fan_out_handlers: HashMap<String, std::sync::Arc<crate::execution::callback::PythonHandler>>,
+    fan_out_handlers: HashMap<String, Arc<crate::execution::callback::PythonHandler>>,
     shutdown_token: CancellationToken,
 }
 
@@ -58,7 +58,7 @@ impl RuntimeBuilder {
         handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
         fan_out_handlers: HashMap<
             String,
-            std::sync::Arc<crate::execution::callback::PythonHandler>,
+            Arc<crate::execution::callback::PythonHandler>,
         >,
         shutdown_token: CancellationToken,
     ) -> Self {
@@ -255,7 +255,7 @@ impl RuntimeBuilder {
         );
 
         // 11. Spawn RuntimeSnapshotTask for introspection
-        let _snapshot_task = RuntimeSnapshotTask::spawn(
+        RuntimeSnapshotTask::spawn(
             Some(queue_manager_arc.clone()),
             Some(offset_tracker.clone()),
             Some(Arc::clone(&pool.worker_pool_state)),
@@ -263,23 +263,24 @@ impl RuntimeBuilder {
             prometheus_sink,
         );
 
-        // 12. Create OffsetCommitter and spawn committer task
+        // 12. Create watch channel for signal-driven commits
+        let (commit_tx, rx) = watch::channel(TopicPartition::new("", 0));
+
+        // 12b. Set the commit sender on the tracker so it can signal on each ack
+        offset_tracker.set_commit_sender(commit_tx.clone());
+
+        // 13. Create OffsetCommitter and spawn committer task
         let committer = OffsetCommitter::new(
             Arc::clone(&runner_arc),
             Arc::clone(&offset_tracker),
             CommitConfig::default(),
             Arc::clone(&coordinator),
         );
-        let (commit_tx, rx) = watch::channel(TopicPartition::new("", 0));
         let committer_handle = tokio::spawn(async move {
             committer.run(rx).await;
         });
-        // Keep commit_tx alive in Runtime so the watch channel stays open.
-        // Dropping it immediately (as before) caused rx.changed() to return Err
-        // in a tight busy-loop inside the committer. The committer is driven by
-        // its interval ticker; the watch channel is reserved for future signal-driven commits.
 
-        // 13. Spawn dispatcher task
+        // 14. Spawn dispatcher task
         let dispatcher_handle = tokio::spawn(async move {
             dispatcher.run().await;
         });
@@ -291,7 +292,6 @@ impl RuntimeBuilder {
             committer_handle,
             coordinator,
             runner: runner_arc,
-            _commit_tx: commit_tx,
         })
     }
 }
@@ -310,8 +310,6 @@ pub struct Runtime {
     pub coordinator: Arc<ShutdownCoordinator>,
     /// Consumer runner — kept here so shutdown can signal it to stop.
     runner: Arc<ConsumerRunner>,
-    /// Commit watch channel sender — kept alive to prevent busy-loop in committer.
-    _commit_tx: watch::Sender<TopicPartition>,
 }
 
 impl Runtime {

@@ -93,6 +93,21 @@ config = kafpy.ConsumerConfig(
 | `observability_config` | [`ObservabilityConfig`](#observabilityconfig) \| `None` | `None` | OTLP tracing and metrics configuration |
 | `handler_timeout_ms` | `int \| None` | `None` | Per-handler execution timeout in milliseconds |
 
+### Commit Behavior
+
+KafPy uses a **signal-driven commit architecture** that provides low-latency offset persistence without busy-waiting:
+
+1. **On each message ack** — the offset tracker signals the committer immediately via an internal watch channel
+2. **Commiter throttle check** — if throttle conditions are met (interval elapsed OR batch threshold reached), it commits that specific topic-partition
+3. **Interval fallback** — a periodic tick (every 100ms) ensures all pending offsets are committed even if signals are missed
+
+This hybrid approach balances responsiveness (immediate commit after ack) with robustness (safety-net interval tick). Default throttle settings:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `commit_interval_ms` | 100 | Minimum interval between commit cycles |
+| `commit_max_messages` | 100 | Messages accumulated before forcing a commit |
+
 **Raises:** `ValueError` for invalid values (negative timeouts, invalid `auto_offset_reset`, etc.)
 
 **Methods:**

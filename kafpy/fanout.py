@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from ._kafpy import Consumer
@@ -57,30 +57,12 @@ class FanOutBuilder:
         registration = builder.max_fan_out(8).register()
     """
 
-    consumer: Consumer
-    group_name: str
-    sink_topics: list[str]
-    handler: Callable
-    max_fan_out: int | None
-    timeout_ms: int | None
-
-    def max_fan_out(self, n: int) -> "FanOutBuilder":
-        """Set the maximum fan-out degree.
-
-        Args:
-            n: Maximum concurrent sink branches (capped at 64).
-
-        Returns:
-            A new FanOutBuilder with max_fan_out set.
-        """
-        return FanOutBuilder(
-            consumer=self.consumer,
-            group_name=self.group_name,
-            sink_topics=self.sink_topics,
-            handler=self.handler,
-            max_fan_out=n,
-            timeout_ms=self.timeout_ms,
-        )
+    timeout_ms: int | None = None
+    consumer: Consumer = field(default=None)
+    group_name: str = ""
+    sink_topics: list[str] = field(default_factory=list)
+    handler: Callable = field(default=None)
+    max_fan_out: int | None = None
 
     def register(self) -> "FanOutRegistration":
         """Register the fan-out group with the consumer.

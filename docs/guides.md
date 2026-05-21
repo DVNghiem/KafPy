@@ -12,6 +12,7 @@ Practical guides for common KafPy patterns. Each guide is self-contained with wo
 - [Custom Middleware](#custom-middleware)
 - [Error Handling Patterns](#error-handling-patterns)
 - [Graceful Shutdown](#graceful-shutdown)
+- [Offset Commit](#offset-commit)
 - [Performance Tuning](#performance-tuning)
 
 ---
@@ -324,6 +325,42 @@ config = kafpy.ConsumerConfig(
     drain_timeout_secs=60,  # wait up to 60s for in-flight messages
 )
 ```
+
+---
+
+## Offset Commit
+
+KafPy commits offsets using a hybrid signal-driven architecture for low-latency persistence.
+
+### How It Works
+
+1. **Message ack** — When your handler returns `action="ack"`, the offset is recorded immediately
+2. **Signal** — The offset tracker signals the committer for that specific topic-partition
+3. **Throttle check** — Commits execute if the interval has elapsed or the batch threshold is reached
+4. **Kafka persist** — `store_offset` + `commit` is called for the highest contiguous offset
+
+### Throttle Parameters
+
+The committer applies two throttles:
+
+| Parameter | Default | Effect |
+|-----------|---------|--------|
+| `commit_interval_ms` | 100 | Spacing between commit cycles (minimum 100ms) |
+| `commit_max_messages` | 100 | Forces commit when accumulated messages reach this count |
+
+This means commits happen at least every 100ms, or sooner if 100 messages accumulate.
+
+### Signal-Driven Architecture
+
+The key benefit of signal-driven commits is **per-partition responsiveness**. When a message is acked, only its topic-partition is immediately evaluated for commit — no scanning of all partitions. This provides:
+
+- Low latency commit for low-volume partitions (commit within 100ms of ack)
+- High throughput for high-volume partitions (batch threshold triggers commit)
+- No busy-waiting — committer sleeps between interval ticks
+
+### Graceful Shutdown Commit
+
+During [Graceful Shutdown](#graceful-shutdown), all pending offsets are committed before the consumer exits (Phase 3: Finalizing).
 
 ---
 

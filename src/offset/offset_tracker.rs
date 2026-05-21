@@ -13,10 +13,12 @@
 use crate::consumer::ConsumerRunner;
 use crate::failure::{FailureCategory, FailureReason};
 use crate::log::{info, warn};
+use crate::offset::commit_task::TopicPartition;
 use parking_lot::Mutex;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::watch;
 
 /// Key type for topic-partition lookup.
 /// Using a tuple struct for type safety over raw (String, i32) pairs.
@@ -81,6 +83,7 @@ impl PartitionState {
     pub fn ack(&mut self, offset: i64) {
         // Seed the cursor on first ack so consumers that start mid-partition
         // (e.g., at offset 3) don't wait forever for offset 0.
+        info!("Ack received: offset={}", offset);
         if self.committed_offset == -1 {
             self.committed_offset = offset - 1;
         }
@@ -97,6 +100,7 @@ impl PartitionState {
                 break;
             }
         }
+        info!("Updated committed_offset: {}", self.committed_offset);
     }
 
     /// Marks `offset` as failed — moves from pending to failed.
@@ -104,6 +108,7 @@ impl PartitionState {
     /// Does NOT advance `committed_offset`. The gap remains until the failed
     /// offset is explicitly retried and acked again.
     pub fn mark_failed(&mut self, offset: i64) {
+        info!("Marking offset as failed: {}", offset);
         self.pending_offsets.remove(&offset);
         self.failed_offsets.insert(offset);
     }
@@ -122,6 +127,9 @@ pub struct OffsetTracker {
     partitions: Mutex<HashMap<TopicPartitionKey, PartitionState>>,
     /// ConsumerRunner for Kafka commit operations. Set via set_runner() before use.
     runner: Mutex<Option<Arc<ConsumerRunner>>>,
+    /// Optional watch sender to signal committer after each ack.
+    /// When present, the committer receives a signal for immediate commit processing.
+    commit_tx: Mutex<Option<watch::Sender<TopicPartition>>>,
 }
 
 impl OffsetTracker {
@@ -130,7 +138,13 @@ impl OffsetTracker {
         Self {
             partitions: Mutex::new(HashMap::new()),
             runner: Mutex::new(None),
+            commit_tx: Mutex::new(None),
         }
+    }
+
+    /// Sets the watch sender for signaling committer on each ack.
+    pub fn set_commit_sender(&self, tx: watch::Sender<TopicPartition>) {
+        *self.commit_tx.lock() = Some(tx);
     }
 
     /// Sets the ConsumerRunner for Kafka commit operations.
@@ -143,6 +157,7 @@ impl OffsetTracker {
     ///
     /// Creates the partition state if it doesn't exist.
     /// Advances the contiguous cursor if the ack fills a gap.
+    /// Signals the committer via watch channel if configured.
     ///
     /// # Panics
     ///
@@ -153,6 +168,11 @@ impl OffsetTracker {
         let mut guard = self.partitions.lock();
         let state = guard.entry(key).or_default();
         state.ack(offset);
+
+        // Signal committer for immediate commit processing of this topic-partition
+        if let Some(ref tx) = *self.commit_tx.lock() {
+            let _ = tx.send(TopicPartition::new(topic, partition));
+        }
     }
 
     /// Returns the highest contiguous offset for the given topic-partition.
