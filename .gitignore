@@ -363,3 +363,5 @@ test_app_2.py
 .idea
 test.py
 *.so
+.codebase
+.planning

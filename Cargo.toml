@@ -7,31 +7,53 @@ description = "High-performance Rust Kafka consumer"
 
 [lib]
 name = "_kafpy"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[features]
 
 [dependencies]
-
-pyo3 = { version = "0.27.2", features = ["extension-module", "generate-import-lib"] }
-pyo3-async-runtimes = { version = "0.27.0", features = ["tokio-runtime"] }
+pyo3 = { version = "0.28.3", features = ["extension-module", "generate-import-lib"] }
 
 # Async runtime
-tokio = { version = "1.40", features = ["full"] }
-tokio-util = "0.7.17"
+tokio = { version = "1.52.3", features = ["full"] }
+tokio-util = "0.7.18"
 async-trait = "0.1"
-dotenvy = "0.15.7"
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
-thiserror = "2.0.17"
+thiserror = "2.0.18"
+anyhow = "1.0"
+glob = "0.3"
+regex = "1"
+parking_lot = "0.12"
+metrics = "0.24.6"
+prometheus-client = "0.24"
 num_cpus = "1.16"
+rand = "0.10.1"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.149"
+tdigest = "0.2"
+dotenvy = "0.15.7"
+
+arc-swap = "~1.9.1"
+log = { version = "~0.4.21", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
-rdkafka = { version = "0.38" }
+rdkafka = { version = "0.39.0", features = ["cmake-build"] }
 
 [target.'cfg(windows)'.dependencies]
-rdkafka = { version = "0.38", features = ["cmake-build"] }
+rdkafka = { version = "0.39.0", features = ["cmake-build"] }
+
+[dependencies.async-stream]
+version = "0.3"
+
+[dependencies.futures-util]
+version = "0.3.32"
+
+[dependencies.tokio-stream]
+version = "0.1"
+features = ["sync"]
 
 [build-dependencies]
-pyo3-build-config = "=0.27.2"
+pyo3-build-config = "=0.28.3"
 
 [package.metadata.maturin]
 name = "kafpy"
@@ -45,6 +67,5 @@ panic = "abort"
 strip = true
 debug = true
 
-[profile.dev]
-opt-level = 0
-debug = true
+[dev-dependencies]
+serde_json = "1.0"

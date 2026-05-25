@@ -1,0 +1,77 @@
+//! DlqMetadata — structured envelope for DLQ messages.
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+/// Original message context (topic, partition, offset).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OriginalMessage {
+    /// Original Kafka topic the message came from.
+    pub topic: String,
+    /// Original partition the message was assigned to.
+    pub partition: i32,
+    /// Original offset of the message.
+    pub offset: i64,
+}
+
+/// Metadata envelope attached to every DLQ message.
+///
+/// Contains the original message context plus failure information
+/// needed for debugging, replay, and alerting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DlqMetadata {
+    /// Original message context.
+    pub original: OriginalMessage,
+    /// Why the message was sent to DLQ.
+    pub failure_reason: String,
+    /// How many times the handler was invoked before DLQ routing.
+    pub attempt_count: u32,
+    /// When the first failure occurred (UTC).
+    pub first_failure_timestamp: DateTime<Utc>,
+    /// When the most recent failure occurred (UTC).
+    pub last_failure_timestamp: DateTime<Utc>,
+    /// Timeout duration in seconds when a handler timeout triggered DLQ routing.
+    /// None when routing for non-timeout reasons.
+    pub timeout_duration: Option<u64>,
+    /// Offset of the last message the handler completed before timeout fired.
+    /// None when not trackable or for non-timeout reasons.
+    pub last_processed_offset: Option<i64>,
+    /// Fan-out branch ID that produced this DLQ message. None when not from fan-out.
+    pub branch_id: Option<u64>,
+    /// Fan-out dispatch ID (unique per primary message). None when not from fan-out.
+    pub fan_out_id: Option<u64>,
+}
+
+impl DlqMetadata {
+    /// Creates a new DlqMetadata with the given fields.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        original_topic: String,
+        original_partition: i32,
+        original_offset: i64,
+        failure_reason: String,
+        attempt_count: u32,
+        first_failure_timestamp: DateTime<Utc>,
+        last_failure_timestamp: DateTime<Utc>,
+        timeout_duration: Option<u64>,
+        last_processed_offset: Option<i64>,
+        branch_id: Option<u64>,
+        fan_out_id: Option<u64>,
+    ) -> Self {
+        Self {
+            original: OriginalMessage {
+                topic: original_topic,
+                partition: original_partition,
+                offset: original_offset,
+            },
+            failure_reason,
+            attempt_count,
+            first_failure_timestamp,
+            last_failure_timestamp,
+            timeout_duration,
+            last_processed_offset,
+            branch_id,
+            fan_out_id,
+        }
+    }
+}

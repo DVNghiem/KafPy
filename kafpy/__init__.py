@@ -1,16 +1,211 @@
+"""
+KafPy: A Pythonic Kafka consumer framework built on Rust.
+
+Public API entry point. All public types are re-exported here for convenience::
+
+    import kafpy
+
+    config = kafpy.ConsumerConfig(
+        bootstrap_servers="localhost:9092",
+        group_id="my-group",
+        topics=["my-topic"],
+    )
+    consumer = kafpy.Consumer(config)
+    app = kafpy.KafPy(consumer)
+
+    @app.handler(topic="my-topic")
+    def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerResult:
+        print(f"Received: {msg.value}")
+        return kafpy.HandlerResult(action="ack")
+
+    app.start()
+
+Exception types are available via ``kafpy.exceptions``:
+    from kafpy.exceptions import KafPyError, ConsumerError, HandlerError, ConfigurationError
+
+Configuration types are available via ``kafpy.config``:
+    from kafpy.config import ConsumerConfig, ProducerConfig
+
+For handler and message types, use ``kafpy.handlers``:
+    from kafpy.handlers import KafkaMessage, HandlerContext, HandlerResult
+"""
+
 __version__ = "0.1.0"
-from ._kafpy import (
+
+# KafPy uses Python's standard logging module. All log messages from the Rust
+# extension are forwarded to Python logging via the "kafpy" logger.
+#
+# Users can customise logging:
+#
+#     import logging
+#     logging.basicConfig(
+#         level=logging.INFO,
+#         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+#     )
+#     logging.getLogger("kafpy").setLevel(logging.DEBUG)
+#
+import logging
+
+# Configuration classes (Python wrapper, Phase 34)
+from .config import (
     ConsumerConfig,
-    ProducerConfig,
-    KafkaMessage,
-    Consumer,
-    Producer,
+    RoutingConfig,
+    RetryConfig,
+    BatchConfig,
+    ConcurrencyConfig,
+    ObservabilityConfig,
+    FailureCategory,
+    FailureReason,
 )
 
+# Handler types and registration (Phase 35/36)
+from .handlers import (
+    KafkaMessage,
+    HandlerContext,
+    HandlerResult,
+    HandlerAction,
+)
+
+# Consumer wrapper (Phase 35)
+from .consumer import Consumer
+
+# Runtime with KafPy class (Phase 35)
+from .runtime import KafPy
+
+# Fan-out builder (Phase 13)
+from .fanout import FanOutBuilder, FanOutRegistration, FanInRegistration
+
+# Exception types (Phase 36)
+from .exceptions import (
+    KafPyError,
+    ConsumerError,
+    HandlerError,
+    ConfigurationError,
+)
+
+_logger = logging.getLogger("kafpy")
+_logger.setLevel(logging.INFO)
+if not _logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    ))
+    _logger.addHandler(_handler)
+
+# Re-export from Rust extension (_kafpy) — conditional until extension is built
+try:
+    from ._kafpy import (
+        ProducerConfig,
+        Producer,
+    )
+    # New PyO3-exposed types
+    from ._kafpy import RetryPolicy, ObservabilityConfig
+    from ._kafpy import FailureCategory, FailureReason
+except (ModuleNotFoundError, ImportError):
+    ProducerConfig = None  # type: ignore
+    Producer = None  # type: ignore
+    RetryPolicy = None  # type: ignore
+    ObservabilityConfig = None  # type: ignore
+    FailureCategory = None  # type: ignore
+    FailureReason = None  # type: ignore
+
+
+class BaseMiddleware:
+    """Base class for user-defined middleware.
+
+    Subclass and override before(), after(), on_error().
+    All methods are optional — default implementations are no-ops.
+
+    Example::
+
+        class MyMiddleware(BaseMiddleware):
+            def before(self, ctx):
+                print(f"Handling message on {ctx['topic']}")
+
+            def after(self, ctx, result, elapsed_ms):
+                print(f"Handler completed in {elapsed_ms}ms with result={result}")
+    """
+
+    def before(self, ctx: dict) -> None:
+        """Called before the handler is invoked."""
+        pass
+
+    def after(self, ctx: dict, result: str, elapsed_ms: float) -> None:
+        """Called after the handler succeeds.
+
+        Args:
+            ctx: ExecutionContext dict with topic, partition, offset, etc.
+            result: Result label (e.g., "ok", "error", "timeout")
+            elapsed_ms: Wall-clock time in milliseconds since before() was called
+        """
+        pass
+
+    def on_error(self, ctx: dict, result: str) -> None:
+        """Called when the handler invocation returns an error.
+
+        Args:
+            ctx: ExecutionContext dict with topic, partition, offset, etc.
+            result: Result label (e.g., "error", "timeout")
+        """
+        pass
+
+
+class Logging(BaseMiddleware):
+    """Built-in logging middleware.
+
+    Emits tracing span events on handler start/complete/error with trace context.
+    Uses Rust tracing/logging infrastructure for structured output.
+    """
+
+    pass
+
+
+class Metrics(BaseMiddleware):
+    """Built-in metrics middleware.
+
+    Records kafpy.handler.latency histogram and kafpy.message.throughput counter
+    per handler invocation. Uses pre-registered Prometheus metrics.
+    """
+
+    pass
+
+
 __all__ = [
-    "ConsumerConfig",
+    # Rust extension types (available when _kafpy is built)
     "ProducerConfig",
-    "KafkaMessage",
-    "Consumer",
     "Producer",
+    "RetryPolicy",
+    "ObservabilityConfig",
+    "FailureCategory",
+    "FailureReason",
+    # Configuration types — Phase 34
+    "ConsumerConfig",
+    "RoutingConfig",
+    "RetryConfig",
+    "BatchConfig",
+    "ConcurrencyConfig",
+    "ObservabilityConfig",
+    "FailureCategory",
+    "FailureReason",
+    # Consumer wrapper and runtime — Phase 35
+    "Consumer",
+    "KafPy",
+    # Fan-out builder — Phase 13
+    "FanOutBuilder",
+    "FanOutRegistration",
+    "FanInRegistration",
+    # Handler types and registration — Phase 35/36
+    "KafkaMessage",
+    "HandlerContext",
+    "HandlerResult",
+    "HandlerAction",
+    # Exception types — Phase 36
+    "KafPyError",
+    "ConsumerError",
+    "HandlerError",
+    "ConfigurationError",
+    # Middleware classes — Phase 09
+    "BaseMiddleware",
+    "Logging",
+    "Metrics",
 ]

@@ -1,0 +1,14 @@
+site_name: KafPy
+theme:
+  name: material
+plugins:
+  - search
+  - mermaid2
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Tutorial: tutorial.md
+  - Guides: guides.md
+  - Best Practices: best-practices.md
+  - API Reference: api.md
+  - Contributing: contributing.md

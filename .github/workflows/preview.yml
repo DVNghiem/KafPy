@@ -1,0 +1,244 @@
+# Preview CI — runs on every PR and push to main.
+# Builds the full multi-platform wheel matrix (same platforms as release.yml)
+# but does NOT publish to PyPI.
+
+name: Preview
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system deps (rdkafka cmake-build needs cmake + ssl + curl headers)
+        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends cmake libssl-dev libcurl4-openssl-dev
+
+      - run: cargo fmt --check
+      - run: cargo clippy -- -D warnings
+
+  test:
+    name: Python tests (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y --no-install-recommends cmake libssl-dev libcurl4-openssl-dev
+
+      - name: Create venv and install build deps
+        run: python -m venv .venv && .venv/bin/pip install maturin pytest
+
+      - name: Build and install dev wheel
+        run: .venv/bin/maturin develop
+
+      - run: .venv/bin/pytest tests/test_exceptions.py -v
+
+  # Linux wheels (glibc + musl, x86_64 + aarch64)
+  build-linux:
+    name: Linux / ${{ matrix.platform.target }} / ${{ matrix.platform.libc }} / py${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    needs: [lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13', '3.14']
+        platform:
+          - target: x86_64
+            manylinux: 2_28
+            libc: manylinux
+          - target: aarch64
+            manylinux: 2_28
+            libc: manylinux
+          - target: x86_64
+            manylinux: musllinux_1_2
+            libc: musl
+          - target: aarch64
+            manylinux: musllinux_1_2
+            libc: musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          manylinux: ${{ matrix.platform.manylinux }}
+          # rdkafka-sys 4.10.0 / librdkafka 2.12.1 unconditionally includes curl/curl.h
+          # even with -DWITH_CURL=0. maturin-action images vary by arch/libc (Debian,
+          # AlmaLinux, Alpine) so detect the package manager at runtime.
+          # For cross-compilation (aarch64 on x86_64 runner) the cross-compiler uses a
+          # separate sysroot (/usr/<triple>/include), not /usr/include, so we must copy
+          # the header there too. If no real header is found, a stub satisfies the preprocessor
+          # (WITH_CURL=0 means the header content is never actually used).
+          before-script-linux: |
+            if command -v apt-get >/dev/null 2>&1; then
+              apt-get update -q && apt-get install -y --no-install-recommends libcurl4-openssl-dev || true
+            elif command -v dnf >/dev/null 2>&1; then
+              dnf install -y libcurl-devel || true
+            elif command -v yum >/dev/null 2>&1; then
+              yum install -y libcurl-devel || true
+            elif command -v apk >/dev/null 2>&1; then
+              apk add --no-cache curl-dev zlib-dev || true
+            fi
+            # librdkafka 2.12.1 unconditionally #includes <curl/curl.h> even with
+            # -DWITH_CURL=0. The manylinux_2_28 images ship a partial curl.h at
+            # /usr/local/include/curl/ that references curlver.h which is absent.
+            # Always overwrite with a self-contained stub so nothing cascades.
+            mkdir -p /usr/local/include/curl
+            printf '#pragma once\ntypedef void CURL;\ntypedef int CURLcode;\ntypedef long curl_off_t;\nstruct curl_slist { char *data; struct curl_slist *next; };\n' \
+              > /usr/local/include/curl/curl.h
+            # Propagate stub into cross-compiler sysroots.
+            # manylinux_2_28 aarch64 uses triple aarch64-unknown-linux-gnu (crosstool-ng)
+            # with sysroot at /usr/<triple>/<triple>/sysroot/.
+            for TRIPLE in aarch64-linux-gnu aarch64-unknown-linux-gnu aarch64-linux-musl armv7-linux-musleabihf; do
+              [ -d "/usr/$TRIPLE" ] || continue
+              for SDIR in "/usr/$TRIPLE/include" "/usr/$TRIPLE/$TRIPLE/sysroot/usr/include"; do
+                mkdir -p "$SDIR/curl"
+                cp /usr/local/include/curl/curl.h "$SDIR/curl/curl.h"
+              done
+            done
+            # rust-musl-cross images are Ubuntu-based with a musl sysroot at
+            # /usr/local/musl/<target>/. The $RUST_MUSL_CROSS_TARGET env var is
+            # set by the container. The musl cross-compiler searches this sysroot
+            # for headers, not /usr/local/include or /usr/include.
+            if [ -n "${RUST_MUSL_CROSS_TARGET:-}" ] && [ -d "/usr/local/musl/${RUST_MUSL_CROSS_TARGET}" ]; then
+              MUSL_SYSROOT="/usr/local/musl/${RUST_MUSL_CROSS_TARGET}"
+              mkdir -p "${MUSL_SYSROOT}/include/curl"
+              cp /usr/local/include/curl/curl.h "${MUSL_SYSROOT}/include/curl/curl.h"
+              # rdkafka default features include libz, which causes rdkafka-sys to pass
+              # -DWITH_ZLIB=1 to cmake. In musl cross-compile mode cmake's find_library()
+              # uses CMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY with an empty root path,
+              # so it cannot find the glibc libz.a. Create a cmake toolchain file that
+              # sets the musl cross-compiler and explicitly points to the musl libz.a.
+              {
+                echo 'set(CMAKE_SYSTEM_NAME Linux)'
+                echo 'string(REGEX REPLACE "-.*" "" _MUSL_ARCH "$ENV{RUST_MUSL_CROSS_TARGET}")'
+                echo 'set(CMAKE_SYSTEM_PROCESSOR "${_MUSL_ARCH}")'
+                echo 'set(CMAKE_C_COMPILER $ENV{TARGET_CC})'
+                echo 'set(CMAKE_CXX_COMPILER $ENV{TARGET_CXX})'
+                echo "set(ZLIB_LIBRARY \"${MUSL_SYSROOT}/lib/libz.a\" CACHE FILEPATH \"\" FORCE)"
+                echo "set(ZLIB_INCLUDE_DIR \"${MUSL_SYSROOT}/include\" CACHE PATH \"\" FORCE)"
+              } > /tmp/musl-toolchain.cmake
+              export CMAKE_TOOLCHAIN_FILE=/tmp/musl-toolchain.cmake
+            fi
+          args: --release --strip --out dist -i python${{ matrix.python-version }}
+          sccache: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-linux-${{ matrix.platform.target }}-${{ matrix.platform.libc }}-py${{ matrix.python-version }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  # macOS wheels (universal2 — runs on both Intel x86_64 and Apple Silicon)
+  # macos-13 (Intel) is deprecated. macos-latest is arm64 (Apple Silicon).
+  # universal2-apple-darwin cross-compiles x86_64 on the arm64 runner and combines
+  # both slices with lipo — one wheel works on all modern macOS hardware.
+  build-macos:
+    name: macOS / universal2 / py${{ matrix.python-version }}
+    runs-on: macos-latest
+    needs: [lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: universal2-apple-darwin
+          args: --release --strip --out dist -i python${{ matrix.python-version }}
+          sccache: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-macos-universal2-py${{ matrix.python-version }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  # Windows wheels (x86_64)
+  build-windows:
+    name: Windows / x86_64 / py${{ matrix.python-version }}
+    runs-on: windows-latest
+    needs: [lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install curl dev headers (rdkafka cmake-build, Windows)
+        # vcpkg is pre-installed on GitHub Windows runners.
+        # MSVC respects the INCLUDE env var for additional header search paths.
+        shell: pwsh
+        run: |
+          vcpkg install curl:x64-windows
+          "INCLUDE=C:\vcpkg\installed\x64-windows\include;$env:INCLUDE" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x86_64
+          args: --release --strip --out dist -i python${{ matrix.python-version }}
+          sccache: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-windows-x86_64-py${{ matrix.python-version }}
+          path: dist/*.whl
+          if-no-files-found: error

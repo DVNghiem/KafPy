@@ -35,6 +35,22 @@ python = ">=3.11,<4.0"
 requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
+[dependency-groups]
+doc = [
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.7.6",
+    "mkdocs-mermaid2-plugin>=1.2.3",
+]
+
 [tool.maturin]
-module-name = 'kafpy._kafpy'
-bindings = 'pyo3'
+# BUILD-02: module-name must match Cargo.toml [lib] name = "_kafpy"
+# Python imports _kafpy, so this is "kafpy._kafpy"
+module-name = "kafpy._kafpy"
+# Location of Python source files for maturin to bundle
+python-source = "."
+
+# BUILD-01: rdkafka is a SYSTEM LIBRARY, not a Python package.
+# Install librdkafka before running maturin develop:
+#   macOS:  brew install librdkafka
+#   Ubuntu: apt install librdkafka-dev
+#   Fedora: dnf install librdkafka-devel

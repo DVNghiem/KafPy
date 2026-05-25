@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any
 
 @dataclass
 class ConsumerConfig:
@@ -19,6 +20,13 @@ class ConsumerConfig:
     partition_assignment_strategy: str
     retry_backoff_ms: int
     message_batch_size: int
+    default_retry_policy: RetryPolicy | None
+    dlq_topic_prefix: str | None
+    drain_timeout_secs: int | None
+    num_workers: int | None
+    enable_auto_offset_store: bool | None
+    observability_config: ObservabilityConfig | None
+    handler_timeout_ms: int | None
 
     def __init__(
         self,
@@ -39,6 +47,13 @@ class ConsumerConfig:
         partition_assignment_strategy: str = "roundrobin",
         retry_backoff_ms: int = 100,
         message_batch_size: int = 100,
+        default_retry_policy: RetryPolicy | None = None,
+        dlq_topic_prefix: str | None = None,
+        drain_timeout_secs: int | None = None,
+        num_workers: int | None = None,
+        enable_auto_offset_store: bool | None = None,
+        observability_config: ObservabilityConfig | None = None,
+        handler_timeout_ms: int | None = None,
     ): ...
 
     @staticmethod
@@ -89,6 +104,7 @@ class ProducerConfig:
     @staticmethod
     def from_env() -> "ProducerConfig": ...
 
+
 @dataclass
 class KafkaMessage:
     topic: str
@@ -96,20 +112,39 @@ class KafkaMessage:
     offset: int
     key: None | bytes
     payload: None | bytes
+    timestamp_millis: None | int
     headers: list[tuple[str, bytes | None]]
 
     def get_key(self) -> None | bytes: ...
     def get_headers(self) -> list[tuple[str, bytes | None]]: ...
+    def get_timestamp_millis(self) -> None | int: ...
 
+
+@dataclass
+class FanOutRegistration:
+    group_name: str
+    fan_out_id: int
+    sink_topics: list[str]
+
+@dataclass
+class FanInRegistration:
+    handler_key: str
+    fan_in_id: int
+    sources: list[str]
 
 @dataclass
 class Consumer:
     config: ConsumerConfig
 
     def __init__(self, config: ConsumerConfig) -> None: ...
-    def add_handler(self, topic: str, handler: callable[[KafkaMessage], None]) -> None: ...
+    def add_handler(self, topic: str, handler: callable[[KafkaMessage], None], *, mode: str | None = None, batch_max_size: int | None = None, batch_max_wait_ms: int | None = None, timeout_ms: int | None = None, concurrency: int | None = None, middleware: list | None = None) -> None: ...
     async def start(self) -> None: ...
     def stop(self) -> None: ...
+    def status(self) -> dict: ...
+    def register_fanout(self, group_name: str, sink_topics: list[str], callback: callable, max_fan_out: int | None = None, timeout_ms: int | None = None) -> "FanOutRegistration": ...
+    def register_fanin(self, handler_key: str, sources: list[str], callback: callable, timeout_ms: int | None = None) -> "FanInRegistration": ...
+    def __enter__(self) -> "Consumer": ...
+    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, traceback: Any) -> bool: ...
 
 
 @dataclass
@@ -137,3 +172,101 @@ class Producer:
     async def flush(self, timeout_ms: int | None = None) -> None: ...
     def in_flight_count(self) -> int: ...
 
+
+class RetryPolicy:
+    """Retry policy configuration for message processing.
+
+    Uses milliseconds for delay values (Python-friendly) and converts
+    to Duration internally when passing to Rust RetryPolicy.
+
+    Defaults match the Rust RetryPolicy::default():
+    - max_attempts: 3
+    - base_delay_ms: 100
+    - max_delay_ms: 30000
+    - jitter_factor: 0.1
+    """
+
+    max_attempts: int
+    base_delay_ms: int
+    max_delay_ms: int
+    jitter_factor: float
+
+    def __init__(
+        self,
+        max_attempts: int = 3,
+        base_delay_ms: int = 100,
+        max_delay_ms: int = 30000,
+        jitter_factor: float = 0.1,
+    ): ...
+    def __repr__(self) -> str: ...
+
+
+class ObservabilityConfig:
+    """Observability configuration for metrics and tracing.
+
+    When otlp_endpoint is None, tracing is disabled (zero-cost).
+
+    Defaults:
+    - otlp_endpoint: None
+    - service_name: "kafpy"
+    - sampling_ratio: 1.0
+    - log_format: "pretty"
+    """
+
+    otlp_endpoint: str | None
+    service_name: str
+    sampling_ratio: float
+    log_format: str
+
+    def __init__(
+        self,
+        otlp_endpoint: str | None = None,
+        service_name: str = "kafpy",
+        sampling_ratio: float = 1.0,
+        log_format: str = "pretty",
+    ): ...
+    def __repr__(self) -> str: ...
+
+
+class FailureCategory:
+    """High-level failure category for classifying message processing errors.
+
+    Members:
+        Retryable: Transient failures that may succeed on retry.
+        Terminal: Permanent failures indicating a bad message.
+        NonRetryable: Failures that should not be retried.
+    """
+    Retryable: int  # enum value
+    Terminal: int  # enum value
+    NonRetryable: int  # enum value
+
+    def __repr__(self) -> str: ...
+
+
+class FailureReason:
+    """A specific failure reason with its category and description.
+
+    Represents the classification of why a message failed processing,
+    used for retry and DLQ routing decisions.
+    """
+
+    category: FailureCategory
+    description: str
+
+    def __init__(self, category: FailureCategory, description: str) -> None: ...
+    def __repr__(self) -> str: ...
+
+
+def get_runtime_snapshot() -> dict: ...
+"""Return the current runtime snapshot as a Python dict.
+
+Contains worker_states, queue_depths, accumulator_info, and consumer_lag_summary.
+Zero-cost when not called — no atomic updates on the hot path.
+"""
+
+def register_status_callback(callback: callable) -> None: ...
+"""Register a Python callable invoked on every runtime snapshot update.
+
+The callback receives a single dict argument (same structure as get_runtime_snapshot()).
+This is opt-in — no callbacks are invoked unless one is registered.
+"""
