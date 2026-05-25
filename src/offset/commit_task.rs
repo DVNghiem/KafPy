@@ -224,9 +224,7 @@ impl OffsetCommitter {
     async fn commit_partition(&self, topic: &str, partition: i32, offset: i64) {
         debug!(
             "Committing offset: topic={} partition={} offset={}",
-            topic,
-            partition,
-            offset
+            topic, partition, offset
         );
 
         // store_offset(N) tells rdkafka to commit N+1 as the next fetch offset.
@@ -234,20 +232,14 @@ impl OffsetCommitter {
         if let Err(e) = self.runner.store_offset(topic, partition, offset).await {
             error!(
                 "Failed to store offset: topic={} partition={} offset={} error={}",
-                topic,
-                partition,
-                offset,
-                e
+                topic, partition, offset, e
             );
             return;
         }
         if let Err(e) = self.runner.commit() {
             error!(
                 "Failed to commit offset: topic={} partition={} offset={} error={}",
-                topic,
-                partition,
-                offset,
-                e
+                topic, partition, offset, e
             );
         }
     }

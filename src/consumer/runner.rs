@@ -63,8 +63,7 @@ impl ConsumerRunner {
 
         info!(
             "Consumer subscribed: topics={:?} group_id={}",
-            config.topics,
-            config.group_id
+            config.topics, config.group_id
         );
 
         // Pre-fetch committed offsets from Kafka and seed the context cache.
@@ -86,10 +85,8 @@ impl ConsumerRunner {
                         {
                             for elem in committed.elements() {
                                 if let rdkafka::Offset::Offset(o) = elem.offset() {
-                                    startup_offsets.insert(
-                                        (elem.topic().to_string(), elem.partition()),
-                                        o,
-                                    );
+                                    startup_offsets
+                                        .insert((elem.topic().to_string(), elem.partition()), o);
                                 }
                             }
                         }

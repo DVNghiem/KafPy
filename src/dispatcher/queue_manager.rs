@@ -211,5 +211,4 @@ impl QueueManager {
             entry.metadata.ack(count);
         }
     }
-
 }

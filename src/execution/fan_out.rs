@@ -100,4 +100,3 @@ impl FanOutBuilderRust {
         (self.group_name, fan_out_id)
     }
 }
-

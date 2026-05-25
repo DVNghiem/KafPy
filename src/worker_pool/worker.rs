@@ -44,7 +44,10 @@ fn handler_for_topic<'a>(
     topic: &str,
 ) -> &'a Arc<PythonHandler> {
     handlers.get(topic).unwrap_or_else(|| {
-        warn!("no handler registered for topic, using first available: topic={}", topic);
+        warn!(
+            "no handler registered for topic, using first available: topic={}",
+            topic
+        );
         handlers.values().next().expect("handler map is empty")
     })
 }
@@ -104,10 +107,7 @@ async fn handle_execution_result(
         ExecutionResult::Ok => {
             debug!(
                 "handler executed successfully: worker_id={} topic={} partition={} offset={}",
-                worker_id,
-                ctx.topic,
-                ctx.partition,
-                ctx.offset
+                worker_id, ctx.topic, ctx.partition, ctx.offset
             );
             retry_coordinator.record_success(&ctx.topic, ctx.partition, ctx.offset);
             queue_manager.ack(&msg.topic, 1);
@@ -147,11 +147,7 @@ async fn handle_execution_result(
         ExecutionResult::Rejected { ref reason, .. } => {
             warn!(
                 "handler rejected message: worker_id={} topic={} partition={} offset={} reason={}",
-                worker_id,
-                ctx.topic,
-                ctx.partition,
-                ctx.offset,
-                reason
+                worker_id, ctx.topic, ctx.partition, ctx.offset, reason
             );
             let exc_name = "Rejected";
             crate::failure::logging::log_failure(ctx, reason, exc_name, false);
@@ -174,11 +170,7 @@ async fn handle_execution_result(
         ExecutionResult::Timeout { ref info } => {
             warn!(
                 "handler timed out: worker_id={} topic={} partition={} offset={} timeout_ms={}",
-                worker_id,
-                ctx.topic,
-                ctx.partition,
-                ctx.offset,
-                info.timeout_ms
+                worker_id, ctx.topic, ctx.partition, ctx.offset, info.timeout_ms
             );
             let reason = FailureReason::Terminal(crate::failure::TerminalKind::HandlerPanic);
             crate::failure::logging::log_failure(ctx, &reason, "HandlerTimeout", false);
@@ -222,8 +214,7 @@ async fn process_fan_out(
     if fan_out_config.is_exhausted() {
         warn!(
             "fan-out slots exhausted, returning backpressure: topic={} max_fan_out={}",
-            msg.topic,
-            fan_out_config.max_fan_out
+            msg.topic, fan_out_config.max_fan_out
         );
         // Primary already ACKed above. Return backpressure signal to caller.
         // The caller (ConsumerDispatcher) will pause the partition.

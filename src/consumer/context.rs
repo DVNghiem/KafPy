@@ -65,10 +65,7 @@ impl CustomConsumerContext {
     ///
     /// Must be called BEFORE polling starts (i.e., before `consumer.stream()` / `consumer.recv()`).
     /// Calling `committed_offsets()` from within a rebalance callback deadlocks the poll thread.
-    pub fn seed_startup_offsets(
-        &self,
-        offsets: std::collections::HashMap<(String, i32), i64>,
-    ) {
+    pub fn seed_startup_offsets(&self, offsets: std::collections::HashMap<(String, i32), i64>) {
         let mut guard = self.startup_offsets.lock();
         *guard = offsets;
     }
@@ -171,8 +168,7 @@ impl ConsumerContext for CustomConsumerContext {
                     } else {
                         debug!(
                             "no committed offset to revoke: topic={} partition={}",
-                            topic,
-                            partition
+                            topic, partition
                         );
                     }
 
@@ -207,10 +203,7 @@ impl ConsumerContext for CustomConsumerContext {
                     debug!("post_rebalance: Assign with empty list");
                     return;
                 }
-                info!(
-                    "rebalance: partitions assigned: count={}",
-                    tpl.count()
-                );
+                info!("rebalance: partitions assigned: count={}", tpl.count());
 
                 // rd_kafka_assign/incremental_assign sets the initial fetch position to
                 // auto.offset.reset BEFORE committed offsets are fetched from Kafka.
@@ -235,7 +228,9 @@ impl ConsumerContext for CustomConsumerContext {
                         Some(in_memory + 1)
                     } else {
                         // Fresh startup: use pre-fetched Kafka committed offset
-                        startup_offsets.get(&(topic_owned.clone(), partition)).copied()
+                        startup_offsets
+                            .get(&(topic_owned.clone(), partition))
+                            .copied()
                     };
 
                     match seek_to {

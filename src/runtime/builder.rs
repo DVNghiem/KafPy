@@ -26,6 +26,7 @@ use crate::dlq::produce::SharedDlqProducer;
 use crate::dlq::router::DefaultDlqRouter;
 use crate::dlq::DlqRouter;
 use crate::execution::callback::PythonHandler;
+use crate::log::info;
 use crate::observability::metrics::SharedPrometheusSink;
 use crate::observability::runtime_snapshot::RuntimeSnapshotTask;
 use crate::offset::commit_task::{CommitConfig, OffsetCommitter, TopicPartition};
@@ -34,7 +35,6 @@ use crate::retry::retry_coordinator::RetryCoordinator;
 use crate::shutdown::ShutdownCoordinator;
 use crate::worker_pool::concurrency::HandlerConcurrency;
 use crate::worker_pool::pool::WorkerPool;
-use crate::log::info;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -56,10 +56,7 @@ impl RuntimeBuilder {
     pub fn new(
         config: ConsumerConfig,
         handlers: Arc<Mutex<HashMap<String, HandlerMetadata>>>,
-        fan_out_handlers: HashMap<
-            String,
-            Arc<crate::execution::callback::PythonHandler>,
-        >,
+        fan_out_handlers: HashMap<String, Arc<crate::execution::callback::PythonHandler>>,
         shutdown_token: CancellationToken,
     ) -> Self {
         Self {

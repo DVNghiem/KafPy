@@ -252,7 +252,9 @@ impl PyConsumer {
                         runtime.run_with_sigterm().await;
                         Ok(())
                     }
-                    Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())),
+                    Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                        e.to_string(),
+                    )),
                 }
             })
         })

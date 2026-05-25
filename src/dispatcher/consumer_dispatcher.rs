@@ -64,7 +64,10 @@ impl ConsumerDispatcher {
         // Try to populate partition handles now; likely fails on first call (no assignment yet).
         // The backpressure path below will retry when needed.
         if let Err(e) = self.populate_partitions() {
-            debug!("partition handles not yet available at startup (will retry on backpressure): {}", e);
+            debug!(
+                "partition handles not yet available at startup (will retry on backpressure): {}",
+                e
+            );
         }
         while let Some(result) = stream.next().await {
             match result {

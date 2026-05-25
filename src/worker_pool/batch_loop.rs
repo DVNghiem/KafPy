@@ -319,9 +319,7 @@ pub(crate) async fn handle_batch_result_inline(
                 offset_coordinator.record_ack(topic, partition, offset);
                 debug!(
                     "batch message acked: topic={} partition={} offset={}",
-                    topic,
-                    partition,
-                    offset
+                    topic, partition, offset
                 );
             }
         }

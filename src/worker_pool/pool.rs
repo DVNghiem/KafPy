@@ -19,7 +19,7 @@ use crate::shutdown::ShutdownCoordinator;
 use crate::worker_pool::batch_loop::batch_worker_loop;
 use crate::worker_pool::concurrency::HandlerConcurrency;
 use crate::worker_pool::worker::worker_loop;
-use log::{error, warn, info};
+use log::{error, info, warn};
 
 /// WorkerPool — manages N Tokio workers via `JoinSet`.
 ///
@@ -67,9 +67,9 @@ impl WorkerPool {
         let worker_pool_state = Arc::new(WorkerPoolState::new(n_workers));
 
         // Determine whether ALL handlers are batch mode
-        let all_batch = handlers.values().all(|h| {
-            matches!(h.mode(), crate::execution::callback::HandlerMode::BatchSync)
-        });
+        let all_batch = handlers
+            .values()
+            .all(|h| matches!(h.mode(), crate::execution::callback::HandlerMode::BatchSync));
 
         // Share the handler map across all workers via Arc
         let handlers_arc = Arc::new(handlers);
@@ -124,7 +124,7 @@ impl WorkerPool {
         }
 
         info!("WorkerPool created n_workers={}", n_workers);
-        
+
         Self {
             join_set,
             shutdown_token,
@@ -174,7 +174,7 @@ impl WorkerPool {
     /// Also triggers Rayon pool drain during the finalizing phase.
     pub async fn shutdown(&mut self) {
         info!("initiating worker pool shutdown");
-        
+
         self.shutdown_token.cancel();
         // LSC-03: Drain with timeout from coordinator
         let drain_timeout = self.coordinator.drain_timeout();

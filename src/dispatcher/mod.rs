@@ -168,10 +168,7 @@ impl Dispatcher {
         let entry = match guard.get(&topic) {
             Some(e) => e,
             None => {
-                return (
-                    Err(DispatchError::HandlerNotRegistered { topic }),
-                    None,
-                );
+                return (Err(DispatchError::HandlerNotRegistered { topic }), None);
             }
         };
 

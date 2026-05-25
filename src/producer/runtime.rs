@@ -1,4 +1,5 @@
 use crate::log::{debug, error, info};
+use parking_lot::Mutex;
 use pyo3::prelude::*;
 use rdkafka::{
     config::ClientConfig,
@@ -6,11 +7,10 @@ use rdkafka::{
     util::Timeout,
 };
 use std::sync::Arc;
-use std::thread::{JoinHandle, spawn};
+use std::thread::{spawn, JoinHandle};
 use std::time::Duration;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::RwLock;
-use parking_lot::Mutex;
 
 use crate::config::ProducerConfig;
 
@@ -137,8 +137,9 @@ impl PyProducer {
         {
             let tx = self.task_tx.lock();
             if let Some(tx) = tx.as_ref() {
-                tx.blocking_send(task)
-                    .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Worker channel closed"))?;
+                tx.blocking_send(task).map_err(|_| {
+                    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Worker channel closed")
+                })?;
             }
         }
 
@@ -146,7 +147,9 @@ impl PyProducer {
         match result_rx.blocking_recv() {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)),
-            Err(_) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Worker thread died during producer init")),
+            Err(_) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "Worker thread died during producer init",
+            )),
         }
     }
 
@@ -177,7 +180,8 @@ impl PyProducer {
                     "Producer not initialized",
                 ));
             }
-            tx.as_ref().unwrap()
+            tx.as_ref()
+                .unwrap()
                 .blocking_send(task)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
         }
@@ -186,7 +190,9 @@ impl PyProducer {
         match result_rx.blocking_recv() {
             Ok(Ok(v)) => Ok(v),
             Ok(Err(e)) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)),
-            Err(_) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Worker thread died unexpectedly")),
+            Err(_) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "Worker thread died unexpectedly",
+            )),
         }
     }
 
@@ -222,7 +228,8 @@ impl PyProducer {
                     "Producer not initialized",
                 ));
             }
-            tx.as_ref().unwrap()
+            tx.as_ref()
+                .unwrap()
                 .blocking_send(task)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
         }
@@ -231,7 +238,9 @@ impl PyProducer {
         match result_rx.blocking_recv() {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)),
-            Err(_) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Worker thread died unexpectedly")),
+            Err(_) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "Worker thread died unexpectedly",
+            )),
         }
     }
 
@@ -248,7 +257,8 @@ impl PyProducer {
                     "Producer not initialized",
                 ));
             }
-            tx.as_ref().unwrap()
+            tx.as_ref()
+                .unwrap()
                 .blocking_send(task)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
         }
@@ -257,7 +267,9 @@ impl PyProducer {
         match result_rx.blocking_recv() {
             Ok(Ok(v)) => Ok(v),
             Ok(Err(e)) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)),
-            Err(_) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Worker thread died unexpectedly")),
+            Err(_) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "Worker thread died unexpectedly",
+            )),
         }
     }
 }
@@ -324,7 +336,9 @@ impl PyProducer {
         let timeout_ms = 30000; // Default timeout
 
         let lock = producer_lock.read().await;
-        let producer = lock.as_ref().ok_or_else(|| "Producer not initialized".to_string())?;
+        let producer = lock
+            .as_ref()
+            .ok_or_else(|| "Producer not initialized".to_string())?;
 
         let mut record = FutureRecord::to(topic);
 
@@ -376,7 +390,9 @@ impl PyProducer {
         timeout_ms: u64,
     ) -> Result<(), String> {
         let lock = producer_lock.read().await;
-        let producer = lock.as_ref().ok_or_else(|| "Producer not initialized".to_string())?;
+        let producer = lock
+            .as_ref()
+            .ok_or_else(|| "Producer not initialized".to_string())?;
 
         producer
             .flush(Timeout::After(Duration::from_millis(timeout_ms)))
@@ -390,7 +406,9 @@ impl PyProducer {
         producer_lock: &Arc<RwLock<Option<FutureProducer>>>,
     ) -> Result<i32, String> {
         let lock = producer_lock.read().await;
-        let producer = lock.as_ref().ok_or_else(|| "Producer not initialized".to_string())?;
+        let producer = lock
+            .as_ref()
+            .ok_or_else(|| "Producer not initialized".to_string())?;
 
         Ok(producer.in_flight_count())
     }
