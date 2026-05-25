@@ -61,12 +61,6 @@ def handle(msg: kafpy.KafkaMessage, ctx: kafpy.HandlerContext) -> kafpy.HandlerR
 app.start()
 ```
 
-## What KafPy does NOT do
-
-- **Async handlers are not supported** — `async def` handlers raise `TypeError`. Use synchronous handlers.
-- **No `run()` method** — use `app.start()` instead.
-- **No `batch=True` parameter** — use the `@app.batch_handler()` decorator for batch processing.
-
 ## Installation
 
 ### Prerequisites
@@ -85,7 +79,7 @@ brew install librdkafka
 apt install librdkafka-dev
 
 # Fedora
-dn install librdkafka-devel
+dnf install librdkafka-devel
 ```
 
 ### From PyPI
