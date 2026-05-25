@@ -35,6 +35,12 @@ python = ">=3.11,<4.0"
 requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
+[dependency-groups]
+doc = [
+    "mkdocs>=1.6.1",
+    "mkdocs-mermaid2-plugin>=1.2.3",
+]
+
 [tool.maturin]
 # BUILD-02: module-name must match Cargo.toml [lib] name = "_kafpy"
 # Python imports _kafpy, so this is "kafpy._kafpy"
