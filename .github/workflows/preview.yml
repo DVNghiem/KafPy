@@ -19,7 +19,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -37,9 +37,9 @@ jobs:
     name: Python tests (Linux x86_64)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -82,9 +82,9 @@ jobs:
             manylinux: musllinux_1_2
             libc: musl
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
@@ -155,7 +155,7 @@ jobs:
           args: --release --strip --out dist -i python${{ matrix.python-version }}
           sccache: true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheel-linux-${{ matrix.platform.target }}-${{ matrix.platform.libc }}-py${{ matrix.python-version }}
           path: dist/*.whl
@@ -174,9 +174,9 @@ jobs:
       matrix:
         python-version: ['3.11', '3.12', '3.13', '3.14']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
@@ -194,7 +194,7 @@ jobs:
           args: --release --strip --out dist -i python${{ matrix.python-version }}
           sccache: true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheel-macos-universal2-py${{ matrix.python-version }}
           path: dist/*.whl
@@ -210,9 +210,9 @@ jobs:
       matrix:
         python-version: ['3.11', '3.12', '3.13', '3.14']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
@@ -237,7 +237,7 @@ jobs:
           args: --release --strip --out dist -i python${{ matrix.python-version }}
           sccache: true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheel-windows-x86_64-py${{ matrix.python-version }}
           path: dist/*.whl
